@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mission_control.cli import build_parser, cmd_init, main
+from mission_control.cli import build_parser, cmd_init, cmd_parallel, main
 
 
 class TestArgParsing:
@@ -62,3 +62,39 @@ class TestCmdInit:
 		args = parser.parse_args(["init", str(tmp_path)])
 		result = cmd_init(args)
 		assert result == 1
+
+
+class TestParallelArgs:
+	def test_parallel_defaults(self) -> None:
+		parser = build_parser()
+		args = parser.parse_args(["parallel"])
+		assert args.command == "parallel"
+		assert args.config == "mission-control.toml"
+		assert args.workers is None
+		assert args.dry_run is False
+
+	def test_parallel_with_flags(self) -> None:
+		parser = build_parser()
+		args = parser.parse_args(["parallel", "--workers", "8", "--dry-run", "--config", "c.toml"])
+		assert args.workers == 8
+		assert args.dry_run is True
+		assert args.config == "c.toml"
+
+	def test_parallel_dry_run(self, tmp_path: Path) -> None:
+		config_file = tmp_path / "mission-control.toml"
+		config_file.write_text("""\
+[target]
+name = "test"
+path = "/tmp/test"
+objective = "fix things"
+
+[target.verification]
+command = "pytest"
+
+[scheduler]
+model = "sonnet"
+""")
+		parser = build_parser()
+		args = parser.parse_args(["parallel", "--config", str(config_file), "--dry-run"])
+		result = cmd_parallel(args)
+		assert result == 0

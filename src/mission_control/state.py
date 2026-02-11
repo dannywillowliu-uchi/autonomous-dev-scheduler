@@ -79,9 +79,9 @@ async def _run_command(cmd: str, cwd: str, timeout: int = 300) -> dict[str, Any]
 		return {"output": f"Command not found: {cmd}", "returncode": -1}
 
 
-async def snapshot_project_health(config: MissionConfig) -> Snapshot:
+async def snapshot_project_health(config: MissionConfig, cwd: str | None = None) -> Snapshot:
 	"""Take a project health snapshot by running verification commands."""
-	cwd = str(config.target.resolved_path)
+	cwd = cwd or str(config.target.resolved_path)
 	timeout = config.target.verification.timeout
 
 	# Run pytest, ruff, mypy separately for parsing

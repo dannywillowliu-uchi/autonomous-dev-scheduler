@@ -41,6 +41,12 @@ def build_parser() -> argparse.ArgumentParser:
 	snap = sub.add_parser("snapshot", help="Take a project health snapshot")
 	snap.add_argument("--config", default=DEFAULT_CONFIG)
 
+	# mc parallel
+	par = sub.add_parser("parallel", help="Run parallel execution mode")
+	par.add_argument("--config", default=DEFAULT_CONFIG, help="Config file path")
+	par.add_argument("--workers", type=int, default=None, help="Number of workers")
+	par.add_argument("--dry-run", action="store_true", help="Show plan without executing")
+
 	# mc init
 	init_cmd = sub.add_parser("init", help="Initialize a mission-control config")
 	init_cmd.add_argument("path", nargs="?", default=".")
@@ -147,6 +153,41 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
 	return 0
 
 
+def cmd_parallel(args: argparse.Namespace) -> int:
+	"""Run the parallel coordinator."""
+	from mission_control.coordinator import Coordinator
+
+	config = load_config(args.config)
+	db_path = _get_db_path(args.config)
+
+	num_workers = args.workers or config.scheduler.parallel.num_workers
+
+	if args.dry_run:
+		print(f"Target: {config.target.name} ({config.target.resolved_path})")
+		print(f"Objective: {config.target.objective}")
+		print(f"Model: {config.scheduler.model}")
+		print(f"Workers: {num_workers}")
+		print(f"Pool dir: {config.scheduler.parallel.pool_dir or '(auto)'}")
+		print(f"Session timeout: {config.scheduler.session_timeout}s")
+		print(f"Budget: ${config.scheduler.budget.max_per_session_usd}/session")
+		print(f"Database: {db_path}")
+		return 0
+
+	db = Database(db_path)
+	try:
+		coordinator = Coordinator(config, db, num_workers=num_workers)
+		report = asyncio.run(coordinator.run())
+		print(f"Plan: {report.plan_id}")
+		print(f"Units: {report.total_units} total, {report.units_completed} completed, {report.units_failed} failed")
+		print(f"Merged: {report.units_merged}, Rejected: {report.units_rejected}")
+		print(f"Workers: {report.workers_spawned}")
+		print(f"Wall time: {report.wall_time_seconds:.1f}s")
+		print(f"Stopped: {report.stopped_reason}")
+		return 0
+	finally:
+		db.close()
+
+
 INIT_TEMPLATE = """\
 [target]
 name = "{name}"
@@ -196,6 +237,7 @@ COMMANDS = {
 	"status": cmd_status,
 	"history": cmd_history,
 	"snapshot": cmd_snapshot,
+	"parallel": cmd_parallel,
 	"init": cmd_init,
 }
 

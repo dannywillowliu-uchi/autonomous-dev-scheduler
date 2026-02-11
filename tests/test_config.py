@@ -103,3 +103,53 @@ def test_resolved_path_tilde(full_config: Path) -> None:
 	resolved = cfg.target.resolved_path
 	assert "~" not in str(resolved)
 	assert str(resolved).endswith("personal_projects/my-project")
+
+
+# -- Parallel config tests --
+
+
+def test_parallel_config_defaults() -> None:
+	cfg = MissionConfig()
+	assert cfg.scheduler.parallel.num_workers == 4
+	assert cfg.scheduler.parallel.pool_dir == ""
+	assert cfg.scheduler.parallel.heartbeat_timeout == 600
+	assert cfg.scheduler.parallel.max_rebase_attempts == 3
+	assert cfg.scheduler.parallel.warm_clones == 0
+
+
+def test_parallel_config_from_toml(tmp_path: Path) -> None:
+	toml = tmp_path / "mission-control.toml"
+	toml.write_text("""\
+[target]
+name = "test"
+path = "/tmp/test"
+
+[scheduler.parallel]
+num_workers = 8
+pool_dir = "/tmp/pool"
+heartbeat_timeout = 300
+max_rebase_attempts = 5
+warm_clones = 2
+""")
+	cfg = load_config(toml)
+	assert cfg.scheduler.parallel.num_workers == 8
+	assert cfg.scheduler.parallel.pool_dir == "/tmp/pool"
+	assert cfg.scheduler.parallel.heartbeat_timeout == 300
+	assert cfg.scheduler.parallel.max_rebase_attempts == 5
+	assert cfg.scheduler.parallel.warm_clones == 2
+
+
+def test_parallel_config_partial(tmp_path: Path) -> None:
+	"""Partial parallel config uses defaults for missing fields."""
+	toml = tmp_path / "mission-control.toml"
+	toml.write_text("""\
+[target]
+name = "test"
+path = "/tmp/test"
+
+[scheduler.parallel]
+num_workers = 16
+""")
+	cfg = load_config(toml)
+	assert cfg.scheduler.parallel.num_workers == 16
+	assert cfg.scheduler.parallel.heartbeat_timeout == 600  # default

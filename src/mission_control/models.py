@@ -95,3 +95,81 @@ class SnapshotDelta:
 	@property
 	def regressed(self) -> bool:
 		return self.tests_broken > 0 or self.security_delta > 0
+
+
+# -- Parallel mode models --
+
+
+@dataclass
+class Plan:
+	"""A decomposed objective for parallel execution."""
+
+	id: str = field(default_factory=_new_id)
+	objective: str = ""
+	status: str = "pending"  # pending/active/completed/failed
+	created_at: str = field(default_factory=_now_iso)
+	finished_at: str | None = None
+	raw_planner_output: str = ""
+	total_units: int = 0
+	completed_units: int = 0
+	failed_units: int = 0
+
+
+@dataclass
+class WorkUnit:
+	"""A single work item within a Plan, claimable by a worker."""
+
+	id: str = field(default_factory=_new_id)
+	plan_id: str = ""
+	title: str = ""
+	description: str = ""
+	files_hint: str = ""  # comma-separated paths this unit likely touches
+	verification_hint: str = ""  # specific verification focus
+	priority: int = 1  # 1=highest
+	status: str = "pending"  # pending/claimed/running/completed/failed/blocked
+	worker_id: str | None = None
+	depends_on: str = ""  # comma-separated WorkUnit IDs
+	branch_name: str = ""
+	claimed_at: str | None = None
+	heartbeat_at: str | None = None
+	started_at: str | None = None
+	finished_at: str | None = None
+	exit_code: int | None = None
+	commit_hash: str | None = None
+	output_summary: str = ""
+	attempt: int = 0
+	max_attempts: int = 3
+
+
+@dataclass
+class Worker:
+	"""A parallel worker agent and its workspace."""
+
+	id: str = field(default_factory=_new_id)
+	workspace_path: str = ""
+	status: str = "idle"  # idle/working/dead
+	current_unit_id: str | None = None
+	pid: int | None = None
+	started_at: str = field(default_factory=_now_iso)
+	last_heartbeat: str = field(default_factory=_now_iso)
+	units_completed: int = 0
+	units_failed: int = 0
+	total_cost_usd: float = 0.0
+
+
+@dataclass
+class MergeRequest:
+	"""A request to merge a completed work unit into the base branch."""
+
+	id: str = field(default_factory=_new_id)
+	work_unit_id: str = ""
+	worker_id: str = ""
+	branch_name: str = ""
+	commit_hash: str = ""
+	status: str = "pending"  # pending/verifying/merged/rejected/conflict
+	position: int = 0
+	created_at: str = field(default_factory=_now_iso)
+	verified_at: str | None = None
+	merged_at: str | None = None
+	rejection_reason: str = ""
+	rebase_attempts: int = 0

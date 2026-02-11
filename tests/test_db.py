@@ -5,7 +5,16 @@ from __future__ import annotations
 import pytest
 
 from mission_control.db import Database
-from mission_control.models import Decision, Session, Snapshot, TaskRecord
+from mission_control.models import (
+	Decision,
+	MergeRequest,
+	Plan,
+	Session,
+	Snapshot,
+	TaskRecord,
+	Worker,
+	WorkUnit,
+)
 
 
 @pytest.fixture()
@@ -115,3 +124,232 @@ class TestBulkPersist:
 		assert db.get_session("bulk1") is not None
 		assert db.get_latest_snapshot() is not None
 		assert len(db.get_recent_decisions()) == 1
+
+
+# -- Parallel mode tests --
+
+
+class TestPlans:
+	def test_insert_and_get(self, db: Database) -> None:
+		p = Plan(id="p1", objective="Build API", status="active", total_units=3)
+		db.insert_plan(p)
+		result = db.get_plan("p1")
+		assert result is not None
+		assert result.objective == "Build API"
+		assert result.status == "active"
+		assert result.total_units == 3
+
+	def test_update_plan(self, db: Database) -> None:
+		p = Plan(id="p2", objective="Fix tests")
+		db.insert_plan(p)
+		p.status = "completed"
+		p.completed_units = 5
+		p.finished_at = "2025-01-01T00:00:00"
+		db.update_plan(p)
+		result = db.get_plan("p2")
+		assert result is not None
+		assert result.status == "completed"
+		assert result.completed_units == 5
+		assert result.finished_at == "2025-01-01T00:00:00"
+
+	def test_get_nonexistent(self, db: Database) -> None:
+		assert db.get_plan("nope") is None
+
+
+class TestWorkUnits:
+	def _make_plan(self, db: Database, plan_id: str = "plan1") -> None:
+		db.insert_plan(Plan(id=plan_id, objective="test"))
+
+	def test_insert_and_get(self, db: Database) -> None:
+		self._make_plan(db)
+		wu = WorkUnit(id="wu1", plan_id="plan1", title="Fix tests", priority=1)
+		db.insert_work_unit(wu)
+		result = db.get_work_unit("wu1")
+		assert result is not None
+		assert result.title == "Fix tests"
+		assert result.status == "pending"
+		assert result.attempt == 0
+
+	def test_update_work_unit(self, db: Database) -> None:
+		self._make_plan(db)
+		wu = WorkUnit(id="wu2", plan_id="plan1", title="Lint")
+		db.insert_work_unit(wu)
+		wu.status = "completed"
+		wu.exit_code = 0
+		wu.commit_hash = "abc123"
+		db.update_work_unit(wu)
+		result = db.get_work_unit("wu2")
+		assert result is not None
+		assert result.status == "completed"
+		assert result.commit_hash == "abc123"
+
+	def test_get_units_for_plan(self, db: Database) -> None:
+		self._make_plan(db)
+		db.insert_work_unit(WorkUnit(id="a", plan_id="plan1", title="A", priority=2))
+		db.insert_work_unit(WorkUnit(id="b", plan_id="plan1", title="B", priority=1))
+		units = db.get_work_units_for_plan("plan1")
+		assert len(units) == 2
+		assert units[0].id == "b"  # priority 1 first
+
+	def test_atomic_claim_returns_different_units(self, db: Database) -> None:
+		"""Two claims should return different work units."""
+		self._make_plan(db)
+		db.insert_work_unit(WorkUnit(id="wu1", plan_id="plan1", title="Task 1", priority=1))
+		db.insert_work_unit(WorkUnit(id="wu2", plan_id="plan1", title="Task 2", priority=2))
+
+		claimed1 = db.claim_work_unit("worker-A")
+		claimed2 = db.claim_work_unit("worker-B")
+
+		assert claimed1 is not None
+		assert claimed2 is not None
+		assert claimed1.id != claimed2.id
+		assert claimed1.status == "claimed"
+		assert claimed2.status == "claimed"
+
+	def test_claim_no_available_units(self, db: Database) -> None:
+		self._make_plan(db)
+		db.insert_work_unit(WorkUnit(id="wu1", plan_id="plan1", status="completed"))
+		result = db.claim_work_unit("worker-A")
+		assert result is None
+
+	def test_claim_respects_dependencies(self, db: Database) -> None:
+		"""Units with incomplete deps should not be claimable."""
+		self._make_plan(db)
+		db.insert_work_unit(WorkUnit(id="wu1", plan_id="plan1", title="Base", priority=1))
+		db.insert_work_unit(WorkUnit(
+			id="wu2", plan_id="plan1", title="Dependent", priority=1, depends_on="wu1",
+		))
+
+		# First claim should get wu1 (wu2 is blocked by wu1)
+		claimed = db.claim_work_unit("worker-A")
+		assert claimed is not None
+		assert claimed.id == "wu1"
+
+		# Second claim should get nothing (wu2 depends on incomplete wu1)
+		claimed2 = db.claim_work_unit("worker-B")
+		assert claimed2 is None
+
+	def test_claim_after_dependency_completed(self, db: Database) -> None:
+		"""Units become claimable when deps are completed."""
+		self._make_plan(db)
+		wu1 = WorkUnit(id="wu1", plan_id="plan1", title="Base")
+		wu2 = WorkUnit(id="wu2", plan_id="plan1", title="Dependent", depends_on="wu1")
+		db.insert_work_unit(wu1)
+		db.insert_work_unit(wu2)
+
+		# Complete wu1
+		wu1.status = "completed"
+		db.update_work_unit(wu1)
+
+		# Now wu2 should be claimable
+		claimed = db.claim_work_unit("worker-A")
+		assert claimed is not None
+		assert claimed.id == "wu2"
+
+	def test_recover_stale_units(self, db: Database) -> None:
+		"""Stale units should be released back to pending."""
+		self._make_plan(db)
+		wu = WorkUnit(
+			id="wu1", plan_id="plan1", title="Stale",
+			status="running", worker_id="dead-worker",
+			heartbeat_at="2020-01-01T00:00:00",  # very old
+			attempt=1, max_attempts=3,
+		)
+		db.insert_work_unit(wu)
+
+		recovered = db.recover_stale_units(timeout_seconds=60)
+		assert len(recovered) == 1
+		assert recovered[0].id == "wu1"
+		assert recovered[0].status == "pending"
+		assert recovered[0].worker_id is None
+
+	def test_recover_skips_max_attempts(self, db: Database) -> None:
+		"""Units at max attempts should not be recovered."""
+		self._make_plan(db)
+		wu = WorkUnit(
+			id="wu1", plan_id="plan1", title="Exhausted",
+			status="running", worker_id="dead",
+			heartbeat_at="2020-01-01T00:00:00",
+			attempt=3, max_attempts=3,
+		)
+		db.insert_work_unit(wu)
+		recovered = db.recover_stale_units(timeout_seconds=60)
+		assert len(recovered) == 0
+
+
+class TestWorkers:
+	def test_insert_and_get(self, db: Database) -> None:
+		w = Worker(id="w1", workspace_path="/tmp/clone1", status="idle")
+		db.insert_worker(w)
+		result = db.get_worker("w1")
+		assert result is not None
+		assert result.workspace_path == "/tmp/clone1"
+		assert result.status == "idle"
+
+	def test_update_worker(self, db: Database) -> None:
+		w = Worker(id="w2", workspace_path="/tmp/clone2")
+		db.insert_worker(w)
+		w.status = "working"
+		w.current_unit_id = "wu1"
+		w.units_completed = 3
+		db.update_worker(w)
+		result = db.get_worker("w2")
+		assert result is not None
+		assert result.status == "working"
+		assert result.units_completed == 3
+
+	def test_get_all_workers(self, db: Database) -> None:
+		db.insert_worker(Worker(id="w1", workspace_path="/a", started_at="2025-01-01T00:00:00"))
+		db.insert_worker(Worker(id="w2", workspace_path="/b", started_at="2025-01-02T00:00:00"))
+		workers = db.get_all_workers()
+		assert len(workers) == 2
+
+
+class TestMergeRequests:
+	def _setup(self, db: Database) -> None:
+		db.insert_plan(Plan(id="p1", objective="test"))
+		db.insert_work_unit(WorkUnit(id="wu1", plan_id="p1"))
+
+	def test_insert_and_get_next(self, db: Database) -> None:
+		self._setup(db)
+		mr = MergeRequest(
+			id="mr1", work_unit_id="wu1", worker_id="w1",
+			branch_name="mc/unit-wu1", commit_hash="abc",
+			position=1,
+		)
+		db.insert_merge_request(mr)
+		result = db.get_next_merge_request()
+		assert result is not None
+		assert result.id == "mr1"
+		assert result.branch_name == "mc/unit-wu1"
+
+	def test_update_merge_request(self, db: Database) -> None:
+		self._setup(db)
+		mr = MergeRequest(id="mr1", work_unit_id="wu1", worker_id="w1", position=1)
+		db.insert_merge_request(mr)
+		mr.status = "merged"
+		mr.merged_at = "2025-01-01T00:00:00"
+		db.update_merge_request(mr)
+		# No pending left
+		assert db.get_next_merge_request() is None
+
+	def test_position_ordering(self, db: Database) -> None:
+		self._setup(db)
+		db.insert_work_unit(WorkUnit(id="wu2", plan_id="p1"))
+		db.insert_merge_request(MergeRequest(
+			id="mr2", work_unit_id="wu2", worker_id="w1", position=2,
+		))
+		db.insert_merge_request(MergeRequest(
+			id="mr1", work_unit_id="wu1", worker_id="w1", position=1,
+		))
+		first = db.get_next_merge_request()
+		assert first is not None
+		assert first.id == "mr1"  # position 1 first
+
+	def test_next_merge_position(self, db: Database) -> None:
+		self._setup(db)
+		assert db.get_next_merge_position() == 1
+		db.insert_merge_request(MergeRequest(
+			id="mr1", work_unit_id="wu1", worker_id="w1", position=1,
+		))
+		assert db.get_next_merge_position() == 2

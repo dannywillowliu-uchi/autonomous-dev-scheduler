@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from mission_control.config import MissionConfig
 from mission_control.db import Database
-from mission_control.models import Session, TaskRecord
+from mission_control.models import Session, TaskRecord, WorkUnit
 from mission_control.reviewer import ReviewVerdict
 
 CONTEXT_BUDGET = 16000  # ~4000 tokens
@@ -82,6 +82,51 @@ def compress_history(sessions: list[Session], max_chars: int = 4000) -> str:
 		total += len(line) + 1
 
 	return "\n".join(lines)
+
+
+def load_context_for_work_unit(
+	unit: WorkUnit,
+	db: Database,
+	config: MissionConfig,
+) -> str:
+	"""Assemble context for a parallel worker session.
+
+	Includes plan context, sibling unit status, and project instructions.
+	"""
+	sections: list[str] = []
+	budget = CONTEXT_BUDGET
+
+	# 1. Plan objective
+	plan = db.get_plan(unit.plan_id) if unit.plan_id else None
+	if plan:
+		obj_text = f"Objective: {plan.objective}"
+		sections.append(f"### Plan\n{obj_text}")
+		budget -= len(obj_text)
+
+	# 2. Sibling unit status (what else is being worked on)
+	if unit.plan_id:
+		siblings = db.get_work_units_for_plan(unit.plan_id)
+		sibling_lines = []
+		for s in siblings:
+			if s.id == unit.id:
+				continue
+			line = f"- [{s.status}] {s.title}"
+			if s.output_summary:
+				line += f" ({s.output_summary[:60]})"
+			sibling_lines.append(line)
+		if sibling_lines:
+			sib_text = "\n".join(sibling_lines)
+			if len(sib_text) < budget:
+				sections.append(f"### Sibling Units\n{sib_text}")
+				budget -= len(sib_text)
+
+	# 3. Project CLAUDE.md (truncated)
+	claude_md = _read_project_claude_md(config)
+	if claude_md:
+		truncated = claude_md[:min(2000, budget)]
+		sections.append(f"### Project Instructions\n{truncated}")
+
+	return "\n\n".join(sections) if sections else ""
 
 
 def _read_project_claude_md(config: MissionConfig) -> str:

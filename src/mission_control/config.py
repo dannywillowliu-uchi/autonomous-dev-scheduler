@@ -49,6 +49,17 @@ class BudgetConfig:
 
 
 @dataclass
+class ParallelConfig:
+	"""Parallel execution settings."""
+
+	num_workers: int = 4
+	pool_dir: str = ""
+	heartbeat_timeout: int = 600
+	max_rebase_attempts: int = 3
+	warm_clones: int = 0
+
+
+@dataclass
 class SchedulerConfig:
 	"""Scheduler settings."""
 
@@ -58,6 +69,7 @@ class SchedulerConfig:
 	model: str = "sonnet"
 	git: GitConfig = field(default_factory=GitConfig)
 	budget: BudgetConfig = field(default_factory=BudgetConfig)
+	parallel: ParallelConfig = field(default_factory=ParallelConfig)
 
 
 @dataclass
@@ -105,6 +117,16 @@ def _build_budget(data: dict[str, Any]) -> BudgetConfig:
 	return bc
 
 
+def _build_parallel(data: dict[str, Any]) -> ParallelConfig:
+	pc = ParallelConfig()
+	for key in ("num_workers", "heartbeat_timeout", "max_rebase_attempts", "warm_clones"):
+		if key in data:
+			setattr(pc, key, int(data[key]))
+	if "pool_dir" in data:
+		pc.pool_dir = str(data["pool_dir"])
+	return pc
+
+
 def _build_scheduler(data: dict[str, Any]) -> SchedulerConfig:
 	sc = SchedulerConfig()
 	for key in ("session_timeout", "cooldown", "max_sessions_per_run"):
@@ -116,6 +138,8 @@ def _build_scheduler(data: dict[str, Any]) -> SchedulerConfig:
 		sc.git = _build_git(data["git"])
 	if "budget" in data:
 		sc.budget = _build_budget(data["budget"])
+	if "parallel" in data:
+		sc.parallel = _build_parallel(data["parallel"])
 	return sc
 
 
