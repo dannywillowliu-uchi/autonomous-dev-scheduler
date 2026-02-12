@@ -417,7 +417,7 @@ class TestInvokePlannerLlm:
 		mock_proc.returncode = 1
 		mock_proc.communicate.return_value = (b"", b"Error occurred")
 
-		with patch("mission_control.recursive_planner.asyncio.create_subprocess_shell", return_value=mock_proc):
+		with patch("mission_control.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc):
 			result = await planner._invoke_planner_llm(node, "obj", "hash", [])
 
 		assert result.type == "leaves"
@@ -439,26 +439,61 @@ class TestInvokePlannerLlm:
 		mock_proc.returncode = 0
 		mock_proc.communicate.return_value = (response.encode(), b"")
 
-		with patch("mission_control.recursive_planner.asyncio.create_subprocess_shell", return_value=mock_proc):
+		with patch("mission_control.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc):
 			result = await planner._invoke_planner_llm(node, "obj", "hash", ["discovery 1"])
 
 		assert result.type == "leaves"
 		assert result.units[0]["title"] == "Parsed task"
 
 	@pytest.mark.asyncio
-	async def test_llm_timeout_returns_fallback(self) -> None:
-		"""When subprocess times out, return a single fallback leaf."""
+	async def test_llm_timeout_returns_fallback_and_kills_process(self) -> None:
+		"""When subprocess times out, kill the process and return a fallback leaf."""
 		planner = _planner()
 		planner.config.target.verification.timeout = 10
 		node = PlanNode(depth=1, scope="Slow scope", node_type="branch")
 
 		mock_proc = AsyncMock()
 		mock_proc.communicate.side_effect = asyncio.TimeoutError()
+		mock_proc.kill = MagicMock()
+		mock_proc.wait = AsyncMock()
 
-		with patch("mission_control.recursive_planner.asyncio.create_subprocess_shell", return_value=mock_proc):
+		with patch("mission_control.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc):
 			result = await planner._invoke_planner_llm(node, "obj", "hash", [])
 
 		assert result.type == "leaves"
 		assert len(result.units) == 1
 		assert result.units[0]["title"] == "Execute scope"
 		assert result.units[0]["description"] == "Slow scope"
+		mock_proc.kill.assert_called_once()
+		mock_proc.wait.assert_awaited_once()
+
+	@pytest.mark.asyncio
+	async def test_llm_uses_stdin_not_shell_interpolation(self) -> None:
+		"""Prompt with shell metacharacters is passed via stdin, not shell command."""
+		planner = _planner()
+		node = PlanNode(depth=0, scope='$(echo INJECTED) && `rm -rf /`', node_type="branch")
+
+		response = json.dumps({
+			"type": "leaves",
+			"units": [{"title": "Safe task", "description": "ok", "files_hint": "", "priority": 1}],
+		})
+		mock_proc = AsyncMock()
+		mock_proc.returncode = 0
+		mock_proc.communicate.return_value = (response.encode(), b"")
+
+		with patch("mission_control.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+			result = await planner._invoke_planner_llm(node, "obj with $() backticks", "hash", [])
+
+		# Verify create_subprocess_exec was called (not shell)
+		mock_exec.assert_called_once()
+		call_args = mock_exec.call_args
+		# First positional args should be the command parts
+		assert call_args[0][0] == "claude"
+		assert call_args[0][1] == "-p"
+		# Prompt should be passed via stdin, not as a command argument
+		assert call_args[1].get("stdin") is not None
+		# communicate should have been called with input= containing the prompt
+		comm_call = mock_proc.communicate.call_args
+		assert comm_call[1].get("input") is not None or (comm_call[0] and comm_call[0][0] is not None)
+		assert result.type == "leaves"
+		assert result.units[0]["title"] == "Safe task"

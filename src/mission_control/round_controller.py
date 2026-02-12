@@ -93,6 +93,7 @@ class RoundController:
 
 			while self.running:
 				round_number += 1
+				mission.total_rounds = round_number
 				reason = self._should_stop(mission, result.round_scores)
 				if reason:
 					result.stopped_reason = reason
@@ -319,6 +320,7 @@ class RoundController:
 				)
 			except RuntimeError as e:
 				logger.error("Failed to provision workspace: %s", e)
+				unit.attempt += 1
 				unit.status = "failed"
 				unit.output_summary = str(e)
 				unit.finished_at = _now_iso()
@@ -372,6 +374,7 @@ class RoundController:
 					await asyncio.sleep(monitor_interval)
 				else:
 					await self._backend.kill(handle)
+					unit.attempt += 1
 					unit.status = "failed"
 					unit.output_summary = f"Timed out after {timeout}s"
 					unit.finished_at = _now_iso()
@@ -417,6 +420,7 @@ class RoundController:
 					if not merged:
 						logger.warning("Merge conflict for unit %s", unit.id)
 				else:
+					unit.attempt += 1
 					unit.status = "failed"
 
 				unit.finished_at = _now_iso()
@@ -424,18 +428,21 @@ class RoundController:
 
 			except (RuntimeError, OSError) as e:
 				logger.error("Infrastructure error executing unit %s: %s", unit.id, e)
+				unit.attempt += 1
 				unit.status = "failed"
 				unit.output_summary = f"Infrastructure error: {e}"
 				unit.finished_at = _now_iso()
 				self.db.update_work_unit(unit)
 			except asyncio.CancelledError:
 				logger.info("Unit %s execution cancelled", unit.id)
+				unit.attempt += 1
 				unit.status = "failed"
 				unit.output_summary = "Cancelled"
 				unit.finished_at = _now_iso()
 				self.db.update_work_unit(unit)
 			except (ValueError, KeyError, json.JSONDecodeError) as e:
 				logger.error("Data error executing unit %s: %s", unit.id, e)
+				unit.attempt += 1
 				unit.status = "failed"
 				unit.output_summary = f"Data error: {e}"
 				unit.finished_at = _now_iso()

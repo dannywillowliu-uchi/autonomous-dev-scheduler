@@ -30,6 +30,7 @@ class LocalBackend(WorkerBackend):
 		)
 		self._processes: dict[str, asyncio.subprocess.Process] = {}
 		self._stdout_bufs: dict[str, bytes] = {}
+		self._stdout_collected: set[str] = set()
 
 	async def initialize(self, warm_count: int = 0) -> None:
 		await self._pool.initialize(warm_count=warm_count)
@@ -91,10 +92,13 @@ class LocalBackend(WorkerBackend):
 				except asyncio.TimeoutError:
 					pass
 		else:
-			# Process finished -- collect remaining output
-			if proc.stdout and handle.worker_id not in self._stdout_bufs:
-				out = await proc.stdout.read()
-				self._stdout_bufs[handle.worker_id] = out
+			# Process finished -- collect remaining output once
+			if proc.stdout and handle.worker_id not in self._stdout_collected:
+				remaining = await proc.stdout.read()
+				self._stdout_bufs[handle.worker_id] = (
+					self._stdout_bufs.get(handle.worker_id, b"") + remaining
+				)
+				self._stdout_collected.add(handle.worker_id)
 		return self._stdout_bufs.get(handle.worker_id, b"").decode(errors="replace")
 
 	async def kill(self, handle: WorkerHandle) -> None:
@@ -113,4 +117,5 @@ class LocalBackend(WorkerBackend):
 				await proc.wait()
 		self._processes.clear()
 		self._stdout_bufs.clear()
+		self._stdout_collected.clear()
 		await self._pool.cleanup()

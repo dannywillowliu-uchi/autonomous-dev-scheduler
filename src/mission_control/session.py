@@ -8,6 +8,7 @@ import re
 from datetime import datetime, timezone
 
 from mission_control.config import MissionConfig
+from mission_control.json_utils import extract_json_from_text
 from mission_control.models import Session, Snapshot, TaskRecord
 
 PROMPT_TEMPLATE = """\
@@ -61,15 +62,32 @@ def render_prompt(
 
 
 def parse_mc_result(output: str) -> dict[str, object] | None:
-	"""Extract MC_RESULT JSON from session output."""
-	# Search for MC_RESULT:{...} pattern, possibly across output
-	for line in reversed(output.splitlines()):
-		match = re.search(r"MC_RESULT:(\{.*\})", line)
-		if match:
-			try:
-				return json.loads(match.group(1))  # type: ignore[no-any-return]
-			except json.JSONDecodeError:
-				continue
+	"""Extract MC_RESULT JSON from session output.
+
+	Handles both single-line and multiline JSON after the MC_RESULT: marker.
+	"""
+	# Find the last MC_RESULT: marker in the output
+	marker = "MC_RESULT:"
+	idx = output.rfind(marker)
+	if idx == -1:
+		return None
+
+	# Extract everything after the marker
+	remainder = output[idx + len(marker):]
+
+	# Try balanced brace extraction (handles multiline JSON)
+	result = extract_json_from_text(remainder)
+	if isinstance(result, dict):
+		return result
+
+	# Fallback: single-line regex for simple cases
+	match = re.search(r"\{.*\}", remainder.split("\n")[0])
+	if match:
+		try:
+			return json.loads(match.group(0))  # type: ignore[no-any-return]
+		except json.JSONDecodeError:
+			pass
+
 	return None
 
 
@@ -191,6 +209,11 @@ async def spawn_session(
 		session.exit_code = proc.returncode
 
 	except asyncio.TimeoutError:
+		try:
+			proc.kill()
+			await proc.wait()
+		except ProcessLookupError:
+			pass
 		session.status = "failed"
 		session.output_summary = f"Session timed out after {config.scheduler.session_timeout}s"
 		session.finished_at = datetime.now(timezone.utc).isoformat()

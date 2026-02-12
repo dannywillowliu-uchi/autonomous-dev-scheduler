@@ -217,12 +217,30 @@ class TestLocalBackend:
 		mock_stdout.read = AsyncMock(return_value=b"hello world\n")
 		mock_proc.stdout = mock_stdout
 		backend._processes["w1"] = mock_proc
-		# Ensure the buffer key does NOT exist so the branch reads from proc.stdout
-		backend._stdout_bufs.pop("w1", None)
 
 		handle = WorkerHandle(worker_id="w1")
 		output = await backend.get_output(handle)
 		assert output == "hello world\n"
+
+	async def test_get_output_finished_appends_remaining(self, backend: LocalBackend) -> None:
+		"""get_output appends remaining stdout to partial buffer for finished process."""
+		mock_proc = MagicMock()
+		mock_proc.returncode = 0
+		mock_stdout = AsyncMock()
+		mock_stdout.read = AsyncMock(return_value=b" world\n")
+		mock_proc.stdout = mock_stdout
+		backend._processes["w1"] = mock_proc
+		# Simulate partial data already read during polling
+		backend._stdout_bufs["w1"] = b"hello"
+
+		handle = WorkerHandle(worker_id="w1")
+		output = await backend.get_output(handle)
+		assert output == "hello world\n"
+		# Second call should not re-read (already collected)
+		mock_stdout.read.reset_mock()
+		output2 = await backend.get_output(handle)
+		assert output2 == "hello world\n"
+		mock_stdout.read.assert_not_awaited()
 
 	async def test_get_output_unknown_worker(self, backend: LocalBackend) -> None:
 		"""get_output returns empty string for unknown worker_id."""

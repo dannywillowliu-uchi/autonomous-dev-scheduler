@@ -172,21 +172,32 @@ For subdivision:
 For leaf tasks:
 {{"type": "leaves", "units": [{{"title": "...", "description": "...", "files_hint": "...", "priority": 1}}, ...]}}"""
 
-		cmd = f'claude -p --output-format text --max-budget-usd {budget} --model {model} "{prompt}"'
 		log.info("Invoking planner LLM at depth %d for scope: %s", node.depth, node.scope[:80])
 
 		timeout = self.config.target.verification.timeout
 
 		try:
-			proc = await asyncio.create_subprocess_shell(
-				cmd,
+			proc = await asyncio.create_subprocess_exec(
+				"claude", "-p",
+				"--output-format", "text",
+				"--max-budget-usd", str(budget),
+				"--model", model,
+				stdin=asyncio.subprocess.PIPE,
 				stdout=asyncio.subprocess.PIPE,
 				stderr=asyncio.subprocess.PIPE,
 			)
-			stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+			stdout, stderr = await asyncio.wait_for(
+				proc.communicate(input=prompt.encode()),
+				timeout=timeout,
+			)
 			output = stdout.decode() if stdout else ""
 		except asyncio.TimeoutError:
 			log.error("Planner LLM timed out after %ds at depth %d", timeout, node.depth)
+			try:
+				proc.kill()
+				await proc.wait()
+			except ProcessLookupError:
+				pass
 			fallback = {"title": "Execute scope", "description": node.scope, "files_hint": "", "priority": 1}
 			return PlannerResult(type="leaves", units=[fallback])
 

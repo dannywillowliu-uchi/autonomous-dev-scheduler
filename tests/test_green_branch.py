@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from unittest.mock import AsyncMock
 
 from mission_control.config import (
@@ -120,6 +122,39 @@ class TestMergeToWorking:
 		# Should have cleaned up the remote
 		remove_calls = [c for c in calls if c.args[0] == "remote" and c.args[1] == "remove"]
 		assert len(remove_calls) == 1
+
+
+	async def test_concurrent_merges_are_serialized(self) -> None:
+		"""Concurrent merge_to_working calls are serialized by the lock."""
+		mgr = _manager()
+		call_order: list[str] = []
+
+		async def side_effect(*args: str) -> tuple[bool, str]:
+			if args[0] == "checkout":
+				call_order.append(f"checkout-{args[1]}")
+				await asyncio.sleep(0.01)  # Simulate git latency
+			elif args[0] == "merge" and args[1] == "--no-ff":
+				call_order.append(f"merge-{args[2]}")
+			return (True, "")
+
+		mgr._run_git = AsyncMock(side_effect=side_effect)
+
+		# Launch two concurrent merges
+		results = await asyncio.gather(
+			mgr.merge_to_working("/tmp/w1", "branch-a"),
+			mgr.merge_to_working("/tmp/w2", "branch-b"),
+		)
+		assert all(results)
+
+		# Checkout calls should not interleave -- all of one merge's
+		# operations should complete before the other starts
+		checkout_indices = [i for i, c in enumerate(call_order) if c.startswith("checkout")]
+		merge_indices = [i for i, c in enumerate(call_order) if c.startswith("merge")]
+		# With serialization, merge-a should come before checkout for branch-b
+		# (or vice versa), meaning they don't interleave
+		assert len(merge_indices) == 2
+		# The first merge should complete (checkout + merge) before second starts
+		assert merge_indices[0] < checkout_indices[1]
 
 
 class TestRunFixup:

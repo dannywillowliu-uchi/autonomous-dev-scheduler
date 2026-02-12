@@ -414,3 +414,25 @@ class TestPersistPlanTree:
 		assert retrieved_leaf is not None
 		assert retrieved_leaf.node_type == "leaf"
 		assert retrieved_leaf.work_unit_id == wu.id
+
+
+class TestShouldStopOffByOne:
+	"""Verify max_rounds boundary is exact (no off-by-one)."""
+
+	def test_stops_at_exactly_max_rounds(self, db: Database) -> None:
+		"""When total_rounds equals max_rounds, should stop."""
+		cfg = MissionConfig()
+		cfg.rounds = RoundsConfig(max_rounds=5)
+		ctrl = RoundController(cfg, db)
+		mission = Mission(objective="test")
+		mission.total_rounds = 5
+		assert ctrl._should_stop(mission, []) == "max_rounds"
+
+	def test_does_not_stop_before_max_rounds(self, db: Database) -> None:
+		"""When total_rounds is less than max_rounds, should not stop."""
+		cfg = MissionConfig()
+		cfg.rounds = RoundsConfig(max_rounds=5)
+		ctrl = RoundController(cfg, db)
+		mission = Mission(objective="test")
+		mission.total_rounds = 4
+		assert ctrl._should_stop(mission, []) == ""

@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
 from mission_control.config import (
 	MissionConfig,
 	SchedulerConfig,
@@ -13,6 +18,7 @@ from mission_control.session import (
 	build_branch_name,
 	parse_mc_result,
 	render_prompt,
+	spawn_session,
 )
 
 
@@ -102,6 +108,49 @@ class TestParseMcResult:
 		result = parse_mc_result("")
 		assert result is None
 
+	def test_multiline_json(self) -> None:
+		"""MC_RESULT with pretty-printed multiline JSON should parse correctly."""
+		output = (
+			"Some output\n"
+			"MC_RESULT:{\n"
+			'  "status": "completed",\n'
+			'  "commits": ["abc123"],\n'
+			'  "summary": "Fixed the thing",\n'
+			'  "files_changed": ["src/foo.py"]\n'
+			"}\n"
+			"More output after"
+		)
+		result = parse_mc_result(output)
+		assert result is not None
+		assert result["status"] == "completed"
+		assert result["commits"] == ["abc123"]
+
+	def test_multiline_json_no_trailing_content(self) -> None:
+		"""MC_RESULT with multiline JSON at end of output."""
+		output = (
+			"Working on task...\n"
+			"MC_RESULT:{\n"
+			'  "status": "failed",\n'
+			'  "commits": [],\n'
+			'  "summary": "Could not fix"\n'
+			"}"
+		)
+		result = parse_mc_result(output)
+		assert result is not None
+		assert result["status"] == "failed"
+
+	def test_uses_last_mc_result(self) -> None:
+		"""When multiple MC_RESULT markers exist, use the last one."""
+		output = (
+			'MC_RESULT:{"status":"failed","commits":[],"summary":"first attempt"}\n'
+			"Retrying...\n"
+			'MC_RESULT:{"status":"completed","commits":["def456"],"summary":"second attempt"}'
+		)
+		result = parse_mc_result(output)
+		assert result is not None
+		assert result["status"] == "completed"
+		assert result["summary"] == "second attempt"
+
 
 class TestBranchName:
 	def test_format(self) -> None:
@@ -109,3 +158,37 @@ class TestBranchName:
 
 	def test_unique(self) -> None:
 		assert build_branch_name("a") != build_branch_name("b")
+
+
+class TestSpawnSessionTimeout:
+	@pytest.mark.asyncio
+	async def test_timeout_kills_subprocess(self) -> None:
+		"""When session times out, the subprocess should be killed."""
+		config = MissionConfig(
+			target=TargetConfig(
+				name="test-proj",
+				path="/tmp/test",
+				branch="main",
+				objective="Build something",
+				verification=VerificationConfig(command="pytest -q"),
+			),
+			scheduler=SchedulerConfig(model="sonnet", session_timeout=5),
+		)
+		task = TaskRecord(source="test", description="Do work", priority=1)
+		snapshot = Snapshot(test_total=10, test_passed=10)
+
+		mock_proc = AsyncMock()
+		mock_proc.communicate.side_effect = asyncio.TimeoutError()
+		mock_proc.kill = MagicMock()
+		mock_proc.wait = AsyncMock()
+
+		with (
+			patch("mission_control.session.asyncio.create_subprocess_exec", return_value=mock_proc),
+			patch("mission_control.session.create_branch", return_value=True),
+		):
+			session = await spawn_session(task, snapshot, config)
+
+		assert session.status == "failed"
+		assert "timed out" in session.output_summary
+		mock_proc.kill.assert_called_once()
+		mock_proc.wait.assert_awaited_once()

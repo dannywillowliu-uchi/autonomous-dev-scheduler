@@ -31,6 +31,7 @@ class GreenBranchManager:
 		self.config = config
 		self.db = db
 		self.workspace: str = ""
+		self._merge_lock = asyncio.Lock()
 
 	async def initialize(self, workspace: str) -> None:
 		"""Create mc/working and mc/green branches if they don't exist."""
@@ -48,32 +49,33 @@ class GreenBranchManager:
 				await self._run_git("branch", branch, base)
 
 	async def merge_to_working(self, worker_workspace: str, branch_name: str) -> bool:
-		"""Merge a worker branch into mc/working. No verification gate."""
-		gb = self.config.green_branch
-		remote_name = f"worker-{branch_name}"
+		"""Merge a worker branch into mc/working. Serialized via lock."""
+		async with self._merge_lock:
+			gb = self.config.green_branch
+			remote_name = f"worker-{branch_name}"
 
-		# Add worker workspace as a remote (ignore error if already exists)
-		await self._run_git("remote", "add", remote_name, worker_workspace)
-		ok, _ = await self._run_git("fetch", remote_name, branch_name)
-		if not ok:
+			# Add worker workspace as a remote (ignore error if already exists)
+			await self._run_git("remote", "add", remote_name, worker_workspace)
+			ok, _ = await self._run_git("fetch", remote_name, branch_name)
+			if not ok:
+				await self._run_git("remote", "remove", remote_name)
+				return False
+
+			await self._run_git("checkout", gb.working_branch)
+			ok, output = await self._run_git(
+				"merge", "--no-ff", f"{remote_name}/{branch_name}",
+				"-m", f"Merge {branch_name} into {gb.working_branch}",
+			)
+
+			# Clean up remote
 			await self._run_git("remote", "remove", remote_name)
-			return False
 
-		await self._run_git("checkout", gb.working_branch)
-		ok, output = await self._run_git(
-			"merge", "--no-ff", f"{remote_name}/{branch_name}",
-			"-m", f"Merge {branch_name} into {gb.working_branch}",
-		)
+			if not ok:
+				logger.warning("Merge conflict for %s: %s", branch_name, output)
+				await self._run_git("merge", "--abort")
+				return False
 
-		# Clean up remote
-		await self._run_git("remote", "remove", remote_name)
-
-		if not ok:
-			logger.warning("Merge conflict for %s: %s", branch_name, output)
-			await self._run_git("merge", "--abort")
-			return False
-
-		return True
+			return True
 
 	async def run_fixup(self) -> FixupResult:
 		"""Run verification on mc/working; promote to mc/green if passing.
