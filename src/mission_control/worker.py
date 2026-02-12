@@ -125,7 +125,7 @@ Run: {verification_command}
 
 ## Context
 {context_block}
-
+{experience_block}
 ## Output
 When done, write a summary as the LAST line of output:
 MC_RESULT:{{"status":"completed|failed|blocked","commits":["hash"],\
@@ -140,9 +140,13 @@ def render_mission_worker_prompt(
 	workspace_path: str,
 	branch_name: str,
 	context: str = "",
+	experience_context: str = "",
 ) -> str:
 	"""Render constraint-based prompt for mission mode workers."""
 	verify_cmd = unit.verification_command or config.target.verification.command
+	exp_block = ""
+	if experience_context:
+		exp_block = f"\n## Relevant Past Experiences\n{experience_context}\n"
 	return MISSION_WORKER_PROMPT_TEMPLATE.format(
 		target_name=config.target.name,
 		workspace_path=workspace_path,
@@ -151,6 +155,7 @@ def render_mission_worker_prompt(
 		files_hint=unit.files_hint or "Not specified",
 		verification_command=verify_cmd,
 		context_block=context or "No additional context.",
+		experience_block=exp_block,
 	)
 
 

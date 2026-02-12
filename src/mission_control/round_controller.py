@@ -13,7 +13,7 @@ from mission_control.backends import LocalBackend, SSHBackend, WorkerBackend
 from mission_control.config import MissionConfig
 from mission_control.db import Database
 from mission_control.evaluator import evaluate_objective
-from mission_control.feedback import get_planner_context, record_round_outcome
+from mission_control.feedback import get_planner_context, get_worker_context, record_round_outcome
 from mission_control.green_branch import FixupResult, GreenBranchManager
 from mission_control.models import (
 	Handoff,
@@ -382,6 +382,7 @@ class RoundController:
 			# Build prompt (fresh-start pattern)
 			from mission_control.memory import load_context_for_mission_worker
 			context = load_context_for_mission_worker(unit, self.config)
+			experience_context = get_worker_context(self.db, unit)
 
 			prompt = render_mission_worker_prompt(
 				unit=unit,
@@ -389,6 +390,7 @@ class RoundController:
 				workspace_path=workspace if "::" not in workspace else workspace.split("::")[0],
 				branch_name=branch_name,
 				context=context,
+				experience_context=experience_context,
 			)
 
 			budget = self.config.scheduler.budget.max_per_session_usd
