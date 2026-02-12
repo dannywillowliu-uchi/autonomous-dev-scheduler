@@ -13,6 +13,7 @@ from mission_control.backends import LocalBackend, SSHBackend, WorkerBackend
 from mission_control.config import MissionConfig
 from mission_control.db import Database
 from mission_control.evaluator import evaluate_objective
+from mission_control.feedback import get_planner_context, record_round_outcome
 from mission_control.green_branch import FixupResult, GreenBranchManager
 from mission_control.models import (
 	Handoff,
@@ -210,6 +211,9 @@ class RoundController:
 
 		result = RoundResult(round_id=rnd.id, number=round_number)
 
+		# 0. Load feedback context for planner
+		planner_context = get_planner_context(self.db, mission.id)
+
 		# 1. Recursive planning
 		curated_discoveries = _curate_discoveries(prior_discoveries, self.config.rounds.max_discovery_chars)
 		plan, root_node = await self._planner.plan_round(
@@ -217,6 +221,7 @@ class RoundController:
 			snapshot_hash=rnd.snapshot_hash,
 			prior_discoveries=curated_discoveries,
 			round_number=round_number,
+			feedback_context=planner_context,
 		)
 		plan.round_id = rnd.id
 		self.db.insert_plan(plan)
@@ -235,6 +240,9 @@ class RoundController:
 			rnd.finished_at = _now_iso()
 			self.db.update_round(rnd)
 			return result
+
+		# Capture pre-round snapshot for feedback
+		snapshot_before = self.db.get_latest_snapshot()
 
 		# 2. Execute all leaf work units
 		await self._execute_units(plan, rnd)
@@ -268,9 +276,34 @@ class RoundController:
 			objective=mission.objective,
 		)
 
-		# 6. Finalize round
+		# 6. Record feedback
 		rnd.objective_score = evaluation.score
 		rnd.objective_met = evaluation.met
+		snapshot_after = self.db.get_latest_snapshot()
+		prev_rounds = self.db.get_rounds_for_mission(mission.id)
+		# Get score from previous round (exclude current)
+		prev_score = 0.0
+		for pr in reversed(prev_rounds):
+			if pr.id != rnd.id:
+				prev_score = pr.objective_score
+				break
+		try:
+			reward = record_round_outcome(
+				db=self.db,
+				mission_id=mission.id,
+				rnd=rnd,
+				plan=plan,
+				handoffs=handoffs,
+				fixup_result=fixup_result,
+				snapshot_before=snapshot_before,
+				snapshot_after=snapshot_after,
+				prev_score=prev_score,
+			)
+			logger.info("Round %d reward: %.3f", round_number, reward.reward)
+		except Exception:
+			logger.exception("Failed to record feedback for round %d", round_number)
+
+		# 7. Finalize round
 		max_disc = self.config.rounds.max_discoveries_per_round
 		rnd.discoveries = json.dumps(all_discoveries[:max_disc])
 		rnd.status = "completed"

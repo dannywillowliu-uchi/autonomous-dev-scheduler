@@ -51,6 +51,7 @@ class RecursivePlanner:
 		snapshot_hash: str,
 		prior_discoveries: list[str],
 		round_number: int,
+		feedback_context: str = "",
 	) -> tuple[Plan, PlanNode]:
 		plan = Plan(objective=objective)
 		root = PlanNode(
@@ -60,6 +61,7 @@ class RecursivePlanner:
 			node_type="branch",
 		)
 		plan.root_node_id = root.id
+		self._feedback_context = feedback_context
 
 		await self.expand_node(root, plan, objective, snapshot_hash, prior_discoveries)
 
@@ -146,6 +148,11 @@ class RecursivePlanner:
 		budget = self.config.planner.budget_per_call_usd
 		model = self.config.scheduler.model
 
+		feedback_text = getattr(self, "_feedback_context", "")
+		feedback_section = ""
+		if feedback_text and node.depth == 0:
+			feedback_section = f"\n## Past Round Performance\n{feedback_text}\n"
+
 		prompt = f"""You are a recursive planner decomposing work for parallel execution.
 
 ## Objective
@@ -158,7 +165,7 @@ class RecursivePlanner:
 
 ## Prior Discoveries
 {discoveries_text}
-
+{feedback_section}
 ## Heuristics
 - SUBDIVIDE when: scope spans multiple unrelated subsystems, >5 files across different directories
 - PRODUCE LEAVES when: scope is focused, 1-3 concrete tasks can handle it
