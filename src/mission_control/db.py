@@ -9,11 +9,14 @@ from typing import Any, Sequence
 
 from mission_control.models import (
 	Decision,
+	Experience,
 	Handoff,
 	MergeRequest,
 	Mission,
 	Plan,
 	PlanNode,
+	Reflection,
+	Reward,
 	Round,
 	Session,
 	Snapshot,
@@ -215,6 +218,70 @@ CREATE TABLE IF NOT EXISTS handoffs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_handoffs_round ON handoffs(round_id);
+
+CREATE TABLE IF NOT EXISTS reflections (
+	id TEXT PRIMARY KEY,
+	mission_id TEXT NOT NULL,
+	round_id TEXT NOT NULL,
+	round_number INTEGER NOT NULL,
+	timestamp TEXT NOT NULL,
+	tests_before INTEGER DEFAULT 0,
+	tests_after INTEGER DEFAULT 0,
+	tests_delta INTEGER DEFAULT 0,
+	lint_delta INTEGER DEFAULT 0,
+	type_delta INTEGER DEFAULT 0,
+	objective_score REAL DEFAULT 0.0,
+	score_delta REAL DEFAULT 0.0,
+	units_planned INTEGER DEFAULT 0,
+	units_completed INTEGER DEFAULT 0,
+	units_failed INTEGER DEFAULT 0,
+	completion_rate REAL DEFAULT 0.0,
+	plan_depth INTEGER DEFAULT 0,
+	plan_strategy TEXT DEFAULT '',
+	fixup_promoted INTEGER DEFAULT 0,
+	fixup_attempts INTEGER DEFAULT 0,
+	merge_conflicts INTEGER DEFAULT 0,
+	discoveries_count INTEGER DEFAULT 0,
+	FOREIGN KEY (mission_id) REFERENCES missions(id),
+	FOREIGN KEY (round_id) REFERENCES rounds(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reflections_mission ON reflections(mission_id, round_number);
+
+CREATE TABLE IF NOT EXISTS rewards (
+	id TEXT PRIMARY KEY,
+	round_id TEXT NOT NULL,
+	mission_id TEXT NOT NULL,
+	timestamp TEXT NOT NULL,
+	reward REAL DEFAULT 0.0,
+	verification_improvement REAL DEFAULT 0.0,
+	completion_rate REAL DEFAULT 0.0,
+	score_progress REAL DEFAULT 0.0,
+	fixup_efficiency REAL DEFAULT 0.0,
+	no_regression REAL DEFAULT 0.0,
+	FOREIGN KEY (round_id) REFERENCES rounds(id),
+	FOREIGN KEY (mission_id) REFERENCES missions(id)
+);
+
+CREATE TABLE IF NOT EXISTS experiences (
+	id TEXT PRIMARY KEY,
+	round_id TEXT NOT NULL,
+	work_unit_id TEXT NOT NULL,
+	timestamp TEXT NOT NULL,
+	title TEXT DEFAULT '',
+	scope TEXT DEFAULT '',
+	files_hint TEXT DEFAULT '',
+	status TEXT DEFAULT '',
+	summary TEXT DEFAULT '',
+	files_changed TEXT DEFAULT '',
+	discoveries TEXT DEFAULT '',
+	concerns TEXT DEFAULT '',
+	reward REAL DEFAULT 0.0,
+	FOREIGN KEY (round_id) REFERENCES rounds(id),
+	FOREIGN KEY (work_unit_id) REFERENCES work_units(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_experiences_reward ON experiences(reward DESC);
 """
 
 
@@ -1115,4 +1182,154 @@ class Database:
 			discoveries=row["discoveries"],
 			concerns=row["concerns"],
 			files_changed=row["files_changed"],
+		)
+
+	# -- Reflections --
+
+	def insert_reflection(self, r: Reflection) -> None:
+		self.conn.execute(
+			"""INSERT INTO reflections
+			(id, mission_id, round_id, round_number, timestamp,
+			 tests_before, tests_after, tests_delta, lint_delta, type_delta,
+			 objective_score, score_delta, units_planned, units_completed,
+			 units_failed, completion_rate, plan_depth, plan_strategy,
+			 fixup_promoted, fixup_attempts, merge_conflicts, discoveries_count)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+			(
+				r.id, r.mission_id, r.round_id, r.round_number, r.timestamp,
+				r.tests_before, r.tests_after, r.tests_delta, r.lint_delta,
+				r.type_delta, r.objective_score, r.score_delta,
+				r.units_planned, r.units_completed, r.units_failed,
+				r.completion_rate, r.plan_depth, r.plan_strategy,
+				int(r.fixup_promoted), r.fixup_attempts, r.merge_conflicts,
+				r.discoveries_count,
+			),
+		)
+		self.conn.commit()
+
+	def get_recent_reflections(self, mission_id: str, limit: int = 5) -> list[Reflection]:
+		rows = self.conn.execute(
+			"SELECT * FROM reflections WHERE mission_id=? ORDER BY round_number DESC LIMIT ?",
+			(mission_id, limit),
+		).fetchall()
+		return [self._row_to_reflection(r) for r in rows]
+
+	@staticmethod
+	def _row_to_reflection(row: sqlite3.Row) -> Reflection:
+		return Reflection(
+			id=row["id"],
+			mission_id=row["mission_id"],
+			round_id=row["round_id"],
+			round_number=row["round_number"],
+			timestamp=row["timestamp"],
+			tests_before=row["tests_before"],
+			tests_after=row["tests_after"],
+			tests_delta=row["tests_delta"],
+			lint_delta=row["lint_delta"],
+			type_delta=row["type_delta"],
+			objective_score=row["objective_score"],
+			score_delta=row["score_delta"],
+			units_planned=row["units_planned"],
+			units_completed=row["units_completed"],
+			units_failed=row["units_failed"],
+			completion_rate=row["completion_rate"],
+			plan_depth=row["plan_depth"],
+			plan_strategy=row["plan_strategy"],
+			fixup_promoted=bool(row["fixup_promoted"]),
+			fixup_attempts=row["fixup_attempts"],
+			merge_conflicts=row["merge_conflicts"],
+			discoveries_count=row["discoveries_count"],
+		)
+
+	# -- Rewards --
+
+	def insert_reward(self, r: Reward) -> None:
+		self.conn.execute(
+			"""INSERT INTO rewards
+			(id, round_id, mission_id, timestamp, reward,
+			 verification_improvement, completion_rate, score_progress,
+			 fixup_efficiency, no_regression)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+			(
+				r.id, r.round_id, r.mission_id, r.timestamp, r.reward,
+				r.verification_improvement, r.completion_rate,
+				r.score_progress, r.fixup_efficiency, r.no_regression,
+			),
+		)
+		self.conn.commit()
+
+	@staticmethod
+	def _row_to_reward(row: sqlite3.Row) -> Reward:
+		return Reward(
+			id=row["id"],
+			round_id=row["round_id"],
+			mission_id=row["mission_id"],
+			timestamp=row["timestamp"],
+			reward=row["reward"],
+			verification_improvement=row["verification_improvement"],
+			completion_rate=row["completion_rate"],
+			score_progress=row["score_progress"],
+			fixup_efficiency=row["fixup_efficiency"],
+			no_regression=row["no_regression"],
+		)
+
+	# -- Experiences --
+
+	def insert_experience(self, e: Experience) -> None:
+		self.conn.execute(
+			"""INSERT INTO experiences
+			(id, round_id, work_unit_id, timestamp, title, scope,
+			 files_hint, status, summary, files_changed,
+			 discoveries, concerns, reward)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+			(
+				e.id, e.round_id, e.work_unit_id, e.timestamp,
+				e.title, e.scope, e.files_hint, e.status, e.summary,
+				e.files_changed, e.discoveries, e.concerns, e.reward,
+			),
+		)
+		self.conn.commit()
+
+	def get_high_reward_experiences(self, limit: int = 10) -> list[Experience]:
+		rows = self.conn.execute(
+			"SELECT * FROM experiences ORDER BY reward DESC LIMIT ?",
+			(limit,),
+		).fetchall()
+		return [self._row_to_experience(r) for r in rows]
+
+	def search_experiences(self, keywords: list[str], limit: int = 5) -> list[Experience]:
+		"""Search experiences by keyword overlap on title + scope + files_hint."""
+		if not keywords:
+			return []
+		conditions = []
+		params: list[str] = []
+		for kw in keywords:
+			conditions.append(
+				"(title LIKE ? OR scope LIKE ? OR files_hint LIKE ?)"
+			)
+			pattern = f"%{kw}%"
+			params.extend([pattern, pattern, pattern])
+		where = " OR ".join(conditions)
+		rows = self.conn.execute(
+			f"SELECT * FROM experiences WHERE {where} ORDER BY reward DESC LIMIT ?",  # noqa: S608
+			(*params, limit),
+		).fetchall()
+		return [self._row_to_experience(r) for r in rows]
+
+	@staticmethod
+	def _row_to_experience(row: sqlite3.Row) -> Experience:
+		return Experience(
+			id=row["id"],
+			round_id=row["round_id"],
+			work_unit_id=row["work_unit_id"],
+			timestamp=row["timestamp"],
+			title=row["title"],
+			scope=row["scope"],
+			files_hint=row["files_hint"],
+			status=row["status"],
+			summary=row["summary"],
+			files_changed=row["files_changed"],
+			discoveries=row["discoveries"],
+			concerns=row["concerns"],
+			reward=row["reward"],
 		)

@@ -252,3 +252,79 @@ class Handoff:
 	discoveries: str = ""  # JSON array of discovery strings
 	concerns: str = ""  # JSON array of concern strings
 	files_changed: str = ""  # JSON array of file paths
+
+
+# -- Feedback models --
+
+
+@dataclass
+class Reflection:
+	"""Post-round structured reflection grounded in objective metrics."""
+
+	id: str = field(default_factory=_new_id)
+	mission_id: str = ""
+	round_id: str = ""
+	round_number: int = 0
+	timestamp: str = field(default_factory=_now_iso)
+	# Objective metrics (from Snapshot/SnapshotDelta)
+	tests_before: int = 0
+	tests_after: int = 0
+	tests_delta: int = 0
+	lint_delta: int = 0
+	type_delta: int = 0
+	# Round performance
+	objective_score: float = 0.0
+	score_delta: float = 0.0  # vs previous round
+	units_planned: int = 0
+	units_completed: int = 0
+	units_failed: int = 0
+	completion_rate: float = 0.0
+	# Planning metrics
+	plan_depth: int = 0
+	plan_strategy: str = ""  # "subdivide" or "leaves" at root
+	# Merge/fixup metrics
+	fixup_promoted: bool = False
+	fixup_attempts: int = 0
+	merge_conflicts: int = 0
+	# Discoveries
+	discoveries_count: int = 0
+
+
+@dataclass
+class Reward:
+	"""Composite reward score grounded in objective signals."""
+
+	id: str = field(default_factory=_new_id)
+	round_id: str = ""
+	mission_id: str = ""
+	timestamp: str = field(default_factory=_now_iso)
+	reward: float = 0.0
+	# Components (all derived from objective data)
+	verification_improvement: float = 0.0  # SnapshotDelta: did quality improve?
+	completion_rate: float = 0.0  # units_completed / units_planned
+	score_progress: float = 0.0  # objective score delta
+	fixup_efficiency: float = 0.0  # promoted on first attempt?
+	no_regression: float = 0.0  # no tests broken, no security added
+
+
+@dataclass
+class Experience:
+	"""Successful approach indexed by task keywords for retrieval."""
+
+	id: str = field(default_factory=_new_id)
+	round_id: str = ""
+	work_unit_id: str = ""
+	timestamp: str = field(default_factory=_now_iso)
+	# Task description
+	title: str = ""
+	scope: str = ""
+	files_hint: str = ""
+	# Outcome
+	status: str = ""  # completed/failed
+	summary: str = ""
+	files_changed: str = ""  # JSON array
+	# Approach data
+	discoveries: str = ""  # JSON array
+	concerns: str = ""  # JSON array
+	# Reward
+	reward: float = 0.0
