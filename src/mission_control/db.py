@@ -826,6 +826,28 @@ class Database:
 		).fetchone()
 		return int(row["next_pos"]) if row else 1
 
+	def insert_merge_request_atomic(self, mr: MergeRequest) -> MergeRequest:
+		"""Assign next position and insert in one transaction (TOCTOU-safe)."""
+		row = self.conn.execute(
+			"SELECT COALESCE(MAX(position), 0) + 1 AS next_pos FROM merge_requests"
+		).fetchone()
+		mr.position = int(row["next_pos"]) if row else 1
+		self.conn.execute(
+			"""INSERT INTO merge_requests
+			(id, work_unit_id, worker_id, branch_name, commit_hash,
+			 status, position, created_at, verified_at, merged_at,
+			 rejection_reason, rebase_attempts)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+			(
+				mr.id, mr.work_unit_id, mr.worker_id, mr.branch_name,
+				mr.commit_hash, mr.status, mr.position, mr.created_at,
+				mr.verified_at, mr.merged_at, mr.rejection_reason,
+				mr.rebase_attempts,
+			),
+		)
+		self.conn.commit()
+		return mr
+
 	@staticmethod
 	def _row_to_merge_request(row: sqlite3.Row) -> MergeRequest:
 		return MergeRequest(

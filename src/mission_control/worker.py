@@ -187,20 +187,20 @@ class WorkerAgent:
 	async def run(self) -> None:
 		"""Main loop: claim -> execute -> report, until stopped."""
 		while self.running:
-			unit = self.db.claim_work_unit(self.worker.id)
+			unit = await self.db.locked_call("claim_work_unit", self.worker.id)
 			if unit is None:
 				await asyncio.sleep(self.config.scheduler.polling_interval)
 				continue
 
 			self.worker.status = "working"
 			self.worker.current_unit_id = unit.id
-			self.db.update_worker(self.worker)
+			await self.db.locked_call("update_worker", self.worker)
 
 			await self._execute_unit(unit)
 
 			self.worker.status = "idle"
 			self.worker.current_unit_id = None
-			self.db.update_worker(self.worker)
+			await self.db.locked_call("update_worker", self.worker)
 
 	async def _execute_unit(self, unit: WorkUnit) -> None:
 		"""Execute a single work unit via backend: provision, spawn, collect."""
@@ -208,7 +208,7 @@ class WorkerAgent:
 		unit.branch_name = branch_name
 		unit.status = "running"
 		unit.started_at = _now_iso()
-		self.db.update_work_unit(unit)
+		await self.db.locked_call("update_work_unit", unit)
 
 		# Start heartbeat
 		self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
@@ -223,7 +223,7 @@ class WorkerAgent:
 					base_branch=self.config.target.branch,
 				)
 				self.worker.workspace_path = workspace_path
-				self.db.update_worker(self.worker)
+				await self.db.locked_call("update_worker", self.worker)
 
 			# Create branch in workspace (try -b, fallback to -B for retry)
 			if not await self._run_git("checkout", "-b", branch_name, cwd=workspace_path):
@@ -231,7 +231,7 @@ class WorkerAgent:
 					unit.status = "failed"
 					unit.output_summary = f"Failed to create branch {branch_name}"
 					unit.finished_at = _now_iso()
-					self.db.update_work_unit(unit)
+					await self.db.locked_call("update_work_unit", unit)
 					self.worker.units_failed += 1
 					return
 
@@ -275,7 +275,7 @@ class WorkerAgent:
 						unit.status = "failed"
 						unit.output_summary = f"Timed out after {effective_timeout}s"
 						unit.finished_at = _now_iso()
-						self.db.update_work_unit(unit)
+						await self.db.locked_call("update_work_unit", unit)
 						self.worker.units_failed += 1
 						return
 					await asyncio.sleep(self.config.scheduler.polling_interval)
@@ -288,7 +288,7 @@ class WorkerAgent:
 				unit.status = "failed"
 				unit.output_summary = f"Backend error: {exc}"
 				unit.finished_at = _now_iso()
-				self.db.update_work_unit(unit)
+				await self.db.locked_call("update_work_unit", unit)
 				self.worker.units_failed += 1
 				return
 
@@ -303,7 +303,7 @@ class WorkerAgent:
 
 				# Create enhanced handoff record
 				handoff = _build_handoff(mc_result, unit.id, round_id=unit.round_id or "")
-				self.db.insert_handoff(handoff)
+				await self.db.locked_call("insert_handoff", handoff)
 				unit.handoff_id = handoff.id
 			else:
 				result_status = "completed" if unit.exit_code == 0 else "failed"
@@ -313,17 +313,16 @@ class WorkerAgent:
 			if result_status == "completed" and unit.commit_hash:
 				unit.status = "completed"
 				unit.finished_at = _now_iso()
-				self.db.update_work_unit(unit)
+				await self.db.locked_call("update_work_unit", unit)
 
-				# Submit merge request
+				# Submit merge request (atomic position assignment)
 				mr = MergeRequest(
 					work_unit_id=unit.id,
 					worker_id=self.worker.id,
 					branch_name=branch_name,
 					commit_hash=unit.commit_hash or "",
-					position=self.db.get_next_merge_position(),
 				)
-				self.db.insert_merge_request(mr)
+				await self.db.locked_call("insert_merge_request_atomic", mr)
 				self.worker.units_completed += 1
 
 				# Reset workspace to base branch for next task
@@ -336,7 +335,7 @@ class WorkerAgent:
 				unit.status = "failed"
 				unit.finished_at = _now_iso()
 				unit.attempt += 1
-				self.db.update_work_unit(unit)
+				await self.db.locked_call("update_work_unit", unit)
 				self.worker.units_failed += 1
 
 				# Reset workspace to base branch for next task
@@ -359,7 +358,7 @@ class WorkerAgent:
 		"""Periodically update heartbeat in the DB."""
 		while True:
 			await asyncio.sleep(self.heartbeat_interval)
-			self.db.update_heartbeat(self.worker.id)
+			await self.db.locked_call("update_heartbeat", self.worker.id)
 
 	async def _run_git(self, *args: str, cwd: str) -> bool:
 		"""Run a git command."""

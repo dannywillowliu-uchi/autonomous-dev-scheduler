@@ -106,7 +106,7 @@ class RoundController:
 
 				result.round_scores.append(round_result.score)
 				result.total_rounds = round_number
-				discoveries = round_result.discoveries
+				discoveries.extend(round_result.discoveries)
 
 				# Update mission
 				mission.total_rounds = round_number
@@ -429,6 +429,9 @@ class RoundController:
 					)
 					if not merged:
 						logger.warning("Merge conflict for unit %s", unit.id)
+				elif unit_status == "completed":
+					unit.status = "completed"
+					logger.info("Unit %s completed with no commits", unit.id)
 				elif unit_status == "blocked":
 					unit.status = "blocked"
 					logger.info(
