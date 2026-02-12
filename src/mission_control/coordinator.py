@@ -158,8 +158,14 @@ class Coordinator:
 			plan.finished_at = _now_iso()
 			self.db.update_plan(plan)
 
-		except Exception:
-			logger.exception("Coordinator error")
+		except (RuntimeError, OSError) as exc:
+			logger.error("Coordinator infrastructure error: %s", exc, exc_info=True)
+			report.stopped_reason = "error"
+		except asyncio.CancelledError:
+			logger.info("Coordinator cancelled")
+			report.stopped_reason = "cancelled"
+		except (ValueError, KeyError) as exc:
+			logger.error("Coordinator data error: %s", exc, exc_info=True)
 			report.stopped_reason = "error"
 		finally:
 			# Shutdown workers and merge queue

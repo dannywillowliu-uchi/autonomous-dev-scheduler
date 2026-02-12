@@ -123,8 +123,14 @@ class RoundController:
 				if cooldown > 0:
 					await asyncio.sleep(cooldown)
 
-		except Exception:
-			logger.exception("Mission error")
+		except (RuntimeError, OSError) as exc:
+			logger.error("Mission infrastructure error: %s", exc, exc_info=True)
+			result.stopped_reason = "error"
+		except asyncio.CancelledError:
+			logger.info("Mission cancelled")
+			result.stopped_reason = "cancelled"
+		except (ValueError, KeyError, json.JSONDecodeError) as exc:
+			logger.error("Mission data error: %s", exc, exc_info=True)
 			result.stopped_reason = "error"
 		finally:
 			mission.status = "completed" if result.objective_met else "stopped"
@@ -416,10 +422,22 @@ class RoundController:
 				unit.finished_at = _now_iso()
 				self.db.update_work_unit(unit)
 
-			except Exception as e:
-				logger.error("Error executing unit %s: %s", unit.id, e)
+			except (RuntimeError, OSError) as e:
+				logger.error("Infrastructure error executing unit %s: %s", unit.id, e)
 				unit.status = "failed"
-				unit.output_summary = str(e)
+				unit.output_summary = f"Infrastructure error: {e}"
+				unit.finished_at = _now_iso()
+				self.db.update_work_unit(unit)
+			except asyncio.CancelledError:
+				logger.info("Unit %s execution cancelled", unit.id)
+				unit.status = "failed"
+				unit.output_summary = "Cancelled"
+				unit.finished_at = _now_iso()
+				self.db.update_work_unit(unit)
+			except (ValueError, KeyError, json.JSONDecodeError) as e:
+				logger.error("Data error executing unit %s: %s", unit.id, e)
+				unit.status = "failed"
+				unit.output_summary = f"Data error: {e}"
 				unit.finished_at = _now_iso()
 				self.db.update_work_unit(unit)
 			finally:
