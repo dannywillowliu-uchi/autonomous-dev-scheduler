@@ -438,9 +438,10 @@ class RoundController:
 				self.db.insert_plan_node(leaf)
 				self.db.insert_work_unit(wu)
 
-		# Recurse into children (tracked by children_ids)
-		# The recursive planner stores children in _child_leaves or via children_ids
-		# We need to traverse the in-memory tree structure
+		# Recurse into subdivided children
+		if hasattr(node, "_subdivided_children"):
+			for child in node._subdivided_children:
+				self._persist_plan_tree(child, plan)
 
 	def _should_stop(self, mission: Mission, scores: list[float]) -> str:
 		"""Check stopping conditions. Returns reason string or empty."""

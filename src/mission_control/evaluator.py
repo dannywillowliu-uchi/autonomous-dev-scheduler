@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import re
 from dataclasses import dataclass, field
 
 from mission_control.config import MissionConfig
+from mission_control.json_utils import extract_json_from_text
 
 log = logging.getLogger(__name__)
 
@@ -47,24 +46,10 @@ class ObjectiveEvaluation:
 
 def _parse_evaluation(text: str) -> ObjectiveEvaluation:
 	"""Extract JSON from Claude output and build an ObjectiveEvaluation."""
-	# Strip markdown fences if present
-	cleaned = re.sub(r"```(?:json)?\s*", "", text)
-	cleaned = re.sub(r"```", "", cleaned)
-	cleaned = cleaned.strip()
-
-	try:
-		data = json.loads(cleaned)
-	except json.JSONDecodeError:
-		# Try to find JSON object in the text
-		match = re.search(r"\{[^{}]*\}", cleaned, re.DOTALL)
-		if not match:
-			log.warning("Failed to parse evaluation response")
-			return ObjectiveEvaluation()
-		try:
-			data = json.loads(match.group())
-		except json.JSONDecodeError:
-			log.warning("Failed to parse evaluation JSON from response")
-			return ObjectiveEvaluation()
+	data = extract_json_from_text(text)
+	if not isinstance(data, dict):
+		log.warning("Failed to parse evaluation response")
+		return ObjectiveEvaluation()
 
 	score = float(data.get("score", 0.0))
 	score = max(0.0, min(1.0, score))
@@ -100,13 +85,15 @@ async def evaluate_objective(
 
 	log.info("Evaluating objective (commit %s)", snapshot_hash[:8])
 
+	timeout = config.target.verification.timeout
+
 	try:
 		proc = await asyncio.create_subprocess_exec(
 			*cmd,
 			stdout=asyncio.subprocess.PIPE,
 			stderr=asyncio.subprocess.PIPE,
 		)
-		stdout, stderr = await proc.communicate()
+		stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
 
 		if proc.returncode != 0:
 			log.warning(
@@ -130,6 +117,9 @@ async def evaluate_objective(
 		)
 		return evaluation
 
+	except asyncio.TimeoutError:
+		log.error("Evaluator timed out after %ds", timeout)
+		return ObjectiveEvaluation()
 	except (OSError, FileNotFoundError) as exc:
 		log.error("Failed to run evaluator: %s", exc)
 		return ObjectiveEvaluation()

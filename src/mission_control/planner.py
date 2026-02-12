@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import re
 from pathlib import Path
 
 from mission_control.config import MissionConfig
 from mission_control.db import Database
+from mission_control.json_utils import extract_json_from_text
 from mission_control.models import Plan, Snapshot, WorkUnit, _new_id
 
 logger = logging.getLogger(__name__)
@@ -97,6 +96,8 @@ async def create_plan(config: MissionConfig, snapshot: Snapshot, db: Database) -
 		prompt,
 	]
 
+	timeout = config.target.verification.timeout
+
 	try:
 		proc = await asyncio.create_subprocess_exec(
 			*cmd,
@@ -104,9 +105,12 @@ async def create_plan(config: MissionConfig, snapshot: Snapshot, db: Database) -
 			stderr=asyncio.subprocess.STDOUT,
 			cwd=cwd,
 		)
-		stdout_bytes, _ = await proc.communicate()
+		stdout_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
 		output = stdout_bytes.decode("utf-8", errors="replace")
-	except (OSError, asyncio.TimeoutError) as exc:
+	except asyncio.TimeoutError:
+		logger.error("Planner subprocess timed out after %ds", timeout)
+		output = ""
+	except OSError as exc:
 		logger.error("Planner subprocess failed: %s", exc)
 		output = ""
 
@@ -137,24 +141,7 @@ def _parse_plan_output(output: str, plan_id: str) -> list[WorkUnit]:
 	if not output.strip():
 		return []
 
-	# Try to extract JSON array -- look for ```json ... ``` fences first
-	json_str: str | None = None
-	fence_match = re.search(r"```(?:json)?\s*\n(\[[\s\S]*?\])\s*\n```", output)
-	if fence_match:
-		json_str = fence_match.group(1)
-	else:
-		# Fall back to finding a bare JSON array
-		bracket_match = re.search(r"(\[[\s\S]*\])", output)
-		if bracket_match:
-			json_str = bracket_match.group(1)
-
-	if json_str is None:
-		return []
-
-	try:
-		raw_units = json.loads(json_str)
-	except (json.JSONDecodeError, ValueError):
-		return []
+	raw_units = extract_json_from_text(output, expect_array=True)
 
 	if not isinstance(raw_units, list):
 		return []

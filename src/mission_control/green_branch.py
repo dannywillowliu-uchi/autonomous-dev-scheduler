@@ -76,7 +76,12 @@ class GreenBranchManager:
 		return True
 
 	async def run_fixup(self) -> FixupResult:
-		"""Run verification on mc/working; promote to mc/green if passing."""
+		"""Run verification on mc/working; promote to mc/green if passing.
+
+		Each fixup attempt saves the pre-fixup state. If the fixup agent crashes
+		or makes things worse, the working branch is restored to the pre-fixup
+		state before the next attempt.
+		"""
 		gb = self.config.green_branch
 		verify_cmd = self.config.target.verification.command
 
@@ -95,15 +100,30 @@ class GreenBranchManager:
 		for attempt in range(1, max_attempts + 1):
 			logger.info("Fixup attempt %d/%d", attempt, max_attempts)
 
+			# Save pre-fixup state so we can restore on failure
+			_, pre_fixup_hash = await self._run_git("rev-parse", "HEAD")
+			pre_fixup_hash = pre_fixup_hash.strip()
+
 			prompt = (
 				"You are a fixup agent. ONLY fix these specific verification "
 				"failures. No features, no refactoring. "
 				f"Failures:\n{output}"
 			)
-			fixup_ok, _ = await self._run_command(
-				f"claude -p --permission-mode bypassPermissions "
-				f"--max-budget-usd 2.0 \"{prompt}\""
-			)
+
+			try:
+				fixup_ok, _ = await self._run_command(
+					f"claude -p --permission-mode bypassPermissions "
+					f"--max-budget-usd 2.0 \"{prompt}\""
+				)
+			except Exception as exc:
+				logger.warning("Fixup agent crashed on attempt %d: %s", attempt, exc)
+				await self._restore_to(pre_fixup_hash)
+				continue
+
+			if not fixup_ok:
+				logger.warning("Fixup agent failed on attempt %d, restoring state", attempt)
+				await self._restore_to(pre_fixup_hash)
+				continue
 
 			# Re-run verification
 			ok, output = await self._run_command(verify_cmd)
@@ -116,11 +136,20 @@ class GreenBranchManager:
 				)
 				return FixupResult(promoted=True, fixup_attempts=attempt)
 
+			# Verification still failing -- restore to pre-fixup state
+			logger.warning("Verification still failing after attempt %d, restoring state", attempt)
+			await self._restore_to(pre_fixup_hash)
+
 		return FixupResult(
 			promoted=False,
 			fixup_attempts=max_attempts,
 			failure_output=output,
 		)
+
+	async def _restore_to(self, commit_hash: str) -> None:
+		"""Restore working branch to a specific commit, discarding changes."""
+		await self._run_git("reset", "--hard", commit_hash)
+		await self._run_git("clean", "-fd")
 
 	async def get_green_hash(self) -> str:
 		"""Return the current commit hash of mc/green."""

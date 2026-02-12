@@ -143,11 +143,15 @@ class TestRunFixup:
 	async def test_verification_fails_fixup_succeeds(self) -> None:
 		"""Verification fails, Claude fixup runs, re-verify passes."""
 		mgr = _manager()
-		mgr._run_git = AsyncMock(return_value=(True, ""))
 
-		# First _run_command: verification fails
-		# Second _run_command: claude fixup (succeeds)
-		# Third _run_command: re-verification passes
+		git_results = [
+			(True, ""),              # checkout mc/working
+			(True, "abc123\n"),      # rev-parse HEAD (save state)
+			(True, ""),              # checkout mc/green
+			(True, ""),              # merge --ff-only
+		]
+		mgr._run_git = AsyncMock(side_effect=git_results)
+
 		cmd_results = [
 			(False, "2 failed, 8 passed"),  # initial verification
 			(True, ""),                       # claude fixup
@@ -162,12 +166,11 @@ class TestRunFixup:
 		assert result.failure_output == ""
 
 	async def test_verification_fails_all_fixups_exhausted(self) -> None:
-		"""Verification fails, all fixup attempts exhausted."""
+		"""Verification fails, all fixup attempts exhausted, state restored each time."""
 		mgr = _manager()
 		mgr.config.green_branch.fixup_max_attempts = 2
-		mgr._run_git = AsyncMock(return_value=(True, ""))
+		mgr._run_git = AsyncMock(return_value=(True, "abc123\n"))
 
-		# Pattern: initial verify fail, then for each attempt: claude fixup + re-verify fail
 		cmd_results = [
 			(False, "2 failed"),   # initial verification
 			(True, ""),            # claude fixup attempt 1
@@ -184,9 +187,9 @@ class TestRunFixup:
 		assert result.failure_output == "1 failed"
 
 	async def test_fixup_succeeds_on_second_attempt(self) -> None:
-		"""Verification fails, first fixup fails, second fixup succeeds."""
+		"""Verification fails, first fixup re-verify fails (restore), second succeeds."""
 		mgr = _manager()
-		mgr._run_git = AsyncMock(return_value=(True, ""))
+		mgr._run_git = AsyncMock(return_value=(True, "abc123\n"))
 
 		cmd_results = [
 			(False, "3 failed"),   # initial verification
@@ -201,6 +204,53 @@ class TestRunFixup:
 
 		assert result.promoted is True
 		assert result.fixup_attempts == 2
+
+	async def test_fixup_agent_crash_restores_state(self) -> None:
+		"""When fixup agent raises an exception, state is restored and next attempt runs."""
+		mgr = _manager()
+		mgr.config.green_branch.fixup_max_attempts = 2
+		mgr._run_git = AsyncMock(return_value=(True, "abc123\n"))
+
+		call_count = 0
+
+		async def mock_run_command(cmd: str) -> tuple[bool, str]:
+			nonlocal call_count
+			call_count += 1
+			if call_count == 1:
+				return (False, "2 failed")  # initial verification
+			if call_count == 2:
+				raise RuntimeError("Claude crashed")  # fixup agent crash
+			if call_count == 3:
+				return (True, "")  # fixup attempt 2
+			return (True, "10 passed")  # re-verification passes
+
+		mgr._run_command = AsyncMock(side_effect=mock_run_command)
+
+		result = await mgr.run_fixup()
+
+		assert result.promoted is True
+		assert result.fixup_attempts == 2
+
+	async def test_fixup_agent_returns_failure_restores_state(self) -> None:
+		"""When fixup agent returns non-zero exit, state is restored."""
+		mgr = _manager()
+		mgr.config.green_branch.fixup_max_attempts = 1
+		mgr._run_git = AsyncMock(return_value=(True, "abc123\n"))
+
+		cmd_results = [
+			(False, "2 failed"),   # initial verification
+			(False, "claude error"),  # fixup agent failed
+		]
+		mgr._run_command = AsyncMock(side_effect=cmd_results)
+
+		result = await mgr.run_fixup()
+
+		assert result.promoted is False
+		assert result.fixup_attempts == 1
+		# Verify restore was called (reset --hard + clean -fd)
+		git_calls = mgr._run_git.call_args_list
+		reset_calls = [c for c in git_calls if len(c.args) >= 2 and c.args[0] == "reset"]
+		assert len(reset_calls) >= 1
 
 
 class TestGetGreenHash:

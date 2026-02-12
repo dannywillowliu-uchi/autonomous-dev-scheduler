@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, patch
 
@@ -200,3 +201,21 @@ class TestEvaluateObjective:
 		call_args = mock_exec.call_args[0]
 		model_idx = list(call_args).index("--model")
 		assert call_args[model_idx + 1] == "opus"
+
+	async def test_timeout_returns_defaults(self) -> None:
+		config = _config()
+		config.target.verification.timeout = 10
+
+		mock_proc = AsyncMock()
+		mock_proc.communicate.side_effect = asyncio.TimeoutError()
+
+		with patch("mission_control.evaluator.asyncio.create_subprocess_exec", return_value=mock_proc):
+			result = await evaluate_objective(
+				config,
+				snapshot_hash="abc123",
+				round_summary="Timed out",
+				objective="Build feature",
+			)
+
+		assert result.score == 0.0
+		assert result.met is False

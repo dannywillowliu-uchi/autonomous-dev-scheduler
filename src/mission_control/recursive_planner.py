@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from mission_control.config import MissionConfig
 from mission_control.db import Database
+from mission_control.json_utils import extract_json_from_text
 from mission_control.models import Plan, PlanNode, WorkUnit
 
 log = logging.getLogger(__name__)
@@ -25,18 +24,8 @@ class PlannerResult:
 
 def _parse_planner_output(output: str) -> PlannerResult:
 	"""Extract JSON from planner LLM output, with fallback for malformed responses."""
-	# Try to find JSON in markdown fences first
-	fence_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", output, re.DOTALL)
-	text = fence_match.group(1).strip() if fence_match else output.strip()
-
-	# Try to find a JSON object in the remaining text
-	brace_match = re.search(r"\{.*\}", text, re.DOTALL)
-	if brace_match:
-		text = brace_match.group(0)
-
-	try:
-		data = json.loads(text)
-	except (json.JSONDecodeError, ValueError):
+	data = extract_json_from_text(output)
+	if not isinstance(data, dict):
 		log.warning("Failed to parse planner output, falling back to single leaf")
 		fallback = {"title": "Execute scope", "description": output[:500], "files_hint": "", "priority": 1}
 		return PlannerResult(type="leaves", units=[fallback])
@@ -99,6 +88,7 @@ class RecursivePlanner:
 			node.strategy = "subdivide"
 			node.node_type = "branch"
 			child_ids: list[str] = []
+			child_nodes: list[PlanNode] = []
 
 			for child_data in result.children[: self.config.planner.max_children_per_node]:
 				child = PlanNode(
@@ -109,9 +99,11 @@ class RecursivePlanner:
 					node_type="branch",
 				)
 				child_ids.append(child.id)
+				child_nodes.append(child)
 				await self.expand_node(child, plan, objective, snapshot_hash, prior_discoveries)
 
 			node.children_ids = ",".join(child_ids)
+			node._subdivided_children = child_nodes  # type: ignore[attr-defined]
 		else:
 			node.strategy = "leaves"
 			node.node_type = "branch"
@@ -183,13 +175,20 @@ For leaf tasks:
 		cmd = f'claude -p --output-format text --max-budget-usd {budget} --model {model} "{prompt}"'
 		log.info("Invoking planner LLM at depth %d for scope: %s", node.depth, node.scope[:80])
 
-		proc = await asyncio.create_subprocess_shell(
-			cmd,
-			stdout=asyncio.subprocess.PIPE,
-			stderr=asyncio.subprocess.PIPE,
-		)
-		stdout, stderr = await proc.communicate()
-		output = stdout.decode() if stdout else ""
+		timeout = self.config.target.verification.timeout
+
+		try:
+			proc = await asyncio.create_subprocess_shell(
+				cmd,
+				stdout=asyncio.subprocess.PIPE,
+				stderr=asyncio.subprocess.PIPE,
+			)
+			stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+			output = stdout.decode() if stdout else ""
+		except asyncio.TimeoutError:
+			log.error("Planner LLM timed out after %ds at depth %d", timeout, node.depth)
+			fallback = {"title": "Execute scope", "description": node.scope, "files_hint": "", "priority": 1}
+			return PlannerResult(type="leaves", units=[fallback])
 
 		if proc.returncode != 0:
 			log.warning("Planner LLM failed (rc=%d): %s", proc.returncode, stderr.decode()[:200])
@@ -221,5 +220,7 @@ For leaf tasks:
 		if hasattr(node, "_child_leaves"):
 			for leaf, _ in node._child_leaves:
 				leaves.append(leaf)
-		# Children tracked by expand_node are reached via _child_leaves or recursion
+		if hasattr(node, "_subdivided_children"):
+			for child in node._subdivided_children:
+				leaves.extend(self._iter_leaves(child, _seen))
 		return leaves

@@ -6,7 +6,7 @@ Long-running autonomous development framework. Spawns Claude Code sessions as su
 
 Before ANY commit, run:
 ```
-uv run pytest -q && uv run ruff check src/ tests/ && uv run mypy src/mission_control --strict --ignore-missing-imports
+.venv/bin/python -m pytest -q && .venv/bin/ruff check src/ tests/ && .venv/bin/python -m mypy src/mission_control --ignore-missing-imports
 ```
 
 ## Architecture

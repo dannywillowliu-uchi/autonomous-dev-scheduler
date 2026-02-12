@@ -7,7 +7,7 @@ import pytest
 from mission_control.config import MissionConfig, RoundsConfig
 from mission_control.db import Database
 from mission_control.green_branch import FixupResult
-from mission_control.models import Handoff, Mission, Plan
+from mission_control.models import Handoff, Mission, Plan, PlanNode, WorkUnit
 from mission_control.round_controller import (
 	MissionResult,
 	RoundController,
@@ -244,3 +244,161 @@ class TestBuildRoundSummary:
 		lines = result.split("\n")
 		work_bullets = [line for line in lines if line.startswith("- ")]
 		assert len(work_bullets) == 1
+
+
+# -- _persist_plan_tree --
+
+
+class TestPersistPlanTree:
+	def test_flat_tree_with_child_leaves(self, controller: RoundController, db: Database) -> None:
+		"""Root with _child_leaves persists root, leaves, and work units."""
+		plan = Plan(objective="Test")
+		db.insert_plan(plan)
+
+		root = PlanNode(
+			plan_id=plan.id, depth=0, scope="Root",
+			node_type="branch", strategy="leaves", status="expanded",
+		)
+		leaf1 = PlanNode(
+			plan_id=plan.id, parent_id=root.id, depth=1,
+			scope="Task A", node_type="leaf", status="expanded",
+		)
+		leaf2 = PlanNode(
+			plan_id=plan.id, parent_id=root.id, depth=1,
+			scope="Task B", node_type="leaf", status="expanded",
+		)
+		wu1 = WorkUnit(plan_id=plan.id, title="Task A", plan_node_id=leaf1.id)
+		wu2 = WorkUnit(plan_id=plan.id, title="Task B", plan_node_id=leaf2.id)
+		leaf1.work_unit_id = wu1.id
+		leaf2.work_unit_id = wu2.id
+		root._child_leaves = [(leaf1, wu1), (leaf2, wu2)]  # type: ignore[attr-defined]
+
+		controller._persist_plan_tree(root, plan)
+
+		# Verify all nodes persisted
+		nodes = db.get_plan_nodes_for_plan(plan.id)
+		assert len(nodes) == 3  # root + 2 leaves
+
+		# Verify work units persisted
+		units = db.get_work_units_for_plan(plan.id)
+		assert len(units) == 2
+
+	def test_subdivided_tree_persists_all_nodes(self, controller: RoundController, db: Database) -> None:
+		"""Subdivided tree with _subdivided_children persists the full tree."""
+		plan = Plan(objective="Test subdivide")
+		db.insert_plan(plan)
+
+		root = PlanNode(
+			plan_id=plan.id, depth=0, scope="Root",
+			node_type="branch", strategy="subdivide", status="expanded",
+		)
+		child_a = PlanNode(
+			plan_id=plan.id, parent_id=root.id, depth=1, scope="Backend",
+			node_type="branch", strategy="leaves", status="expanded",
+		)
+		child_b = PlanNode(
+			plan_id=plan.id, parent_id=root.id, depth=1, scope="Frontend",
+			node_type="branch", strategy="leaves", status="expanded",
+		)
+
+		leaf_a = PlanNode(
+			plan_id=plan.id, parent_id=child_a.id, depth=2,
+			scope="API", node_type="leaf", status="expanded",
+		)
+		leaf_b = PlanNode(
+			plan_id=plan.id, parent_id=child_b.id, depth=2,
+			scope="UI", node_type="leaf", status="expanded",
+		)
+		wu_a = WorkUnit(plan_id=plan.id, title="API endpoint", plan_node_id=leaf_a.id)
+		wu_b = WorkUnit(plan_id=plan.id, title="UI component", plan_node_id=leaf_b.id)
+		leaf_a.work_unit_id = wu_a.id
+		leaf_b.work_unit_id = wu_b.id
+
+		child_a._child_leaves = [(leaf_a, wu_a)]  # type: ignore[attr-defined]
+		child_b._child_leaves = [(leaf_b, wu_b)]  # type: ignore[attr-defined]
+		root._subdivided_children = [child_a, child_b]  # type: ignore[attr-defined]
+		root.children_ids = f"{child_a.id},{child_b.id}"
+
+		controller._persist_plan_tree(root, plan)
+
+		# Verify all 5 nodes persisted: root + 2 branch children + 2 leaves
+		nodes = db.get_plan_nodes_for_plan(plan.id)
+		assert len(nodes) == 5
+
+		# Verify 2 work units persisted
+		units = db.get_work_units_for_plan(plan.id)
+		assert len(units) == 2
+		titles = {u.title for u in units}
+		assert titles == {"API endpoint", "UI component"}
+
+	def test_forced_leaf_persists(self, controller: RoundController, db: Database) -> None:
+		"""Node with _forced_unit (max depth forced leaf) persists correctly."""
+		plan = Plan(objective="Test forced")
+		db.insert_plan(plan)
+
+		node = PlanNode(
+			plan_id=plan.id, depth=3, scope="Forced leaf",
+			node_type="leaf", strategy="leaves", status="expanded",
+		)
+		wu = WorkUnit(plan_id=plan.id, title="Forced task", plan_node_id=node.id)
+		node.work_unit_id = wu.id
+		node._forced_unit = wu  # type: ignore[attr-defined]
+
+		controller._persist_plan_tree(node, plan)
+
+		nodes = db.get_plan_nodes_for_plan(plan.id)
+		assert len(nodes) == 1
+
+		units = db.get_work_units_for_plan(plan.id)
+		assert len(units) == 1
+		assert units[0].title == "Forced task"
+
+	def test_deeply_nested_subdivide_persists(self, controller: RoundController, db: Database) -> None:
+		"""Three-level tree persists all nodes via recursion."""
+		plan = Plan(objective="Deep tree")
+		db.insert_plan(plan)
+
+		root = PlanNode(
+			plan_id=plan.id, depth=0, scope="Root",
+			node_type="branch", strategy="subdivide", status="expanded",
+		)
+		mid = PlanNode(
+			plan_id=plan.id, parent_id=root.id, depth=1, scope="Mid",
+			node_type="branch", strategy="subdivide", status="expanded",
+		)
+		bottom = PlanNode(
+			plan_id=plan.id, parent_id=mid.id, depth=2, scope="Bottom",
+			node_type="branch", strategy="leaves", status="expanded",
+		)
+
+		leaf = PlanNode(
+			plan_id=plan.id, parent_id=bottom.id, depth=3,
+			scope="Deep task", node_type="leaf", status="expanded",
+		)
+		wu = WorkUnit(plan_id=plan.id, title="Deep work", plan_node_id=leaf.id)
+		leaf.work_unit_id = wu.id
+
+		bottom._child_leaves = [(leaf, wu)]  # type: ignore[attr-defined]
+		mid._subdivided_children = [bottom]  # type: ignore[attr-defined]
+		mid.children_ids = bottom.id
+		root._subdivided_children = [mid]  # type: ignore[attr-defined]
+		root.children_ids = mid.id
+
+		controller._persist_plan_tree(root, plan)
+
+		nodes = db.get_plan_nodes_for_plan(plan.id)
+		assert len(nodes) == 4  # root + mid + bottom + leaf
+
+		units = db.get_work_units_for_plan(plan.id)
+		assert len(units) == 1
+		assert units[0].title == "Deep work"
+
+		# Verify round-trip: retrieve nodes and check hierarchy
+		retrieved_root = db.get_plan_node(root.id)
+		assert retrieved_root is not None
+		assert retrieved_root.children_ids == mid.id
+
+		retrieved_leaf = db.get_plan_node(leaf.id)
+		assert retrieved_leaf is not None
+		assert retrieved_leaf.node_type == "leaf"
+		assert retrieved_leaf.work_unit_id == wu.id

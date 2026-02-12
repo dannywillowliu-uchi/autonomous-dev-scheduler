@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -188,6 +189,45 @@ class TestIterLeaves:
 		leaves = planner._iter_leaves(branch, {})
 		assert leaves == []
 
+	def test_branch_with_subdivided_children(self) -> None:
+		"""Subdivided children are traversed recursively."""
+		planner = _planner()
+		root = PlanNode(node_type="branch", scope="Root")
+		child_a = PlanNode(node_type="branch", scope="Child A")
+		child_b = PlanNode(node_type="branch", scope="Child B")
+
+		leaf_a = PlanNode(node_type="leaf", scope="Leaf A")
+		leaf_b = PlanNode(node_type="leaf", scope="Leaf B")
+		wu_a = MagicMock()
+		wu_b = MagicMock()
+
+		child_a._child_leaves = [(leaf_a, wu_a)]  # type: ignore[attr-defined]
+		child_b._child_leaves = [(leaf_b, wu_b)]  # type: ignore[attr-defined]
+		root._subdivided_children = [child_a, child_b]  # type: ignore[attr-defined]
+
+		leaves = planner._iter_leaves(root, {})
+		assert len(leaves) == 2
+		assert leaf_a in leaves
+		assert leaf_b in leaves
+
+	def test_nested_subdivide_recursion(self) -> None:
+		"""Deeply nested subdivisions are traversed."""
+		planner = _planner()
+		root = PlanNode(node_type="branch", scope="Root")
+		mid = PlanNode(node_type="branch", scope="Mid")
+		bottom = PlanNode(node_type="branch", scope="Bottom")
+
+		leaf = PlanNode(node_type="leaf", scope="Deep leaf")
+		wu = MagicMock()
+
+		bottom._child_leaves = [(leaf, wu)]  # type: ignore[attr-defined]
+		mid._subdivided_children = [bottom]  # type: ignore[attr-defined]
+		root._subdivided_children = [mid]  # type: ignore[attr-defined]
+
+		leaves = planner._iter_leaves(root, {})
+		assert len(leaves) == 1
+		assert leaves[0] is leaf
+
 
 # -- plan_round tests --
 
@@ -259,12 +299,8 @@ class TestPlanRound:
 		assert root.strategy == "subdivide"
 		assert root.node_type == "branch"
 		assert len(root.children_ids.split(",")) == 2
-		# _iter_leaves only walks _child_leaves on the given node, not
-		# recursively through children_ids. Subdivide child nodes are local
-		# objects inside expand_node and not reachable from root, so the
-		# in-memory leaf count at root level is 0. Full tree counting
-		# happens via DB queries after persistence.
-		assert plan.total_units == 0
+		# _iter_leaves now recurses through _subdivided_children
+		assert plan.total_units == 2
 		assert root.status == "expanded"
 
 	@pytest.mark.asyncio
@@ -408,3 +444,21 @@ class TestInvokePlannerLlm:
 
 		assert result.type == "leaves"
 		assert result.units[0]["title"] == "Parsed task"
+
+	@pytest.mark.asyncio
+	async def test_llm_timeout_returns_fallback(self) -> None:
+		"""When subprocess times out, return a single fallback leaf."""
+		planner = _planner()
+		planner.config.target.verification.timeout = 10
+		node = PlanNode(depth=1, scope="Slow scope", node_type="branch")
+
+		mock_proc = AsyncMock()
+		mock_proc.communicate.side_effect = asyncio.TimeoutError()
+
+		with patch("mission_control.recursive_planner.asyncio.create_subprocess_shell", return_value=mock_proc):
+			result = await planner._invoke_planner_llm(node, "obj", "hash", [])
+
+		assert result.type == "leaves"
+		assert len(result.units) == 1
+		assert result.units[0]["title"] == "Execute scope"
+		assert result.units[0]["description"] == "Slow scope"

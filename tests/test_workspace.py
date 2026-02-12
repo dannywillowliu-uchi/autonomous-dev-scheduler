@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -151,5 +152,117 @@ class TestWorkspacePool:
 		# All pre-warmed clones should have .git
 		for clone in pool._available:
 			assert (clone / ".git").exists()
+
+		await pool.cleanup()
+
+
+class TestWorkspacePoolConcurrency:
+	"""Integration tests for concurrent workspace access."""
+
+	async def test_concurrent_acquire(
+		self, source_repo: Path, pool_dir: Path,
+	) -> None:
+		"""Multiple concurrent acquires don't exceed max_clones."""
+		pool = WorkspacePool(source_repo, pool_dir, max_clones=3)
+		await pool.initialize()
+
+		# Acquire all 3 concurrently
+		results = await asyncio.gather(
+			pool.acquire(),
+			pool.acquire(),
+			pool.acquire(),
+		)
+		acquired = [r for r in results if r is not None]
+		assert len(acquired) == 3
+		assert pool.total_clones == 3
+
+		# All should be unique paths
+		assert len(set(acquired)) == 3
+
+		# Next acquire should return None
+		extra = await pool.acquire()
+		assert extra is None
+
+		await pool.cleanup()
+
+	async def test_concurrent_acquire_release_cycles(
+		self, source_repo: Path, pool_dir: Path,
+	) -> None:
+		"""Rapid acquire/release cycles don't leak resources."""
+		pool = WorkspacePool(source_repo, pool_dir, max_clones=2)
+		await pool.initialize()
+
+		for _ in range(5):
+			w1 = await pool.acquire()
+			w2 = await pool.acquire()
+			assert w1 is not None
+			assert w2 is not None
+
+			# Both in use
+			assert len(pool._in_use) == 2
+			assert len(pool._available) == 0
+
+			await pool.release(w1)
+			await pool.release(w2)
+
+			# Both back to available
+			assert len(pool._in_use) == 0
+			assert len(pool._available) == 2
+
+		# Total clones should not exceed max
+		assert pool.total_clones <= 2
+		await pool.cleanup()
+
+	async def test_cleanup_during_active_use(
+		self, source_repo: Path, pool_dir: Path,
+	) -> None:
+		"""Cleanup removes clones even if some are still in use."""
+		pool = WorkspacePool(source_repo, pool_dir, max_clones=3)
+		await pool.initialize()
+
+		w1 = await pool.acquire()
+		w2 = await pool.acquire()
+		assert w1 is not None
+		assert w2 is not None
+
+		# Don't release -- cleanup should still work
+		await pool.cleanup()
+
+		assert pool.total_clones == 0
+		assert len(pool._in_use) == 0
+		assert len(pool._available) == 0
+		assert not pool_dir.exists()
+
+	async def test_release_unknown_workspace_is_noop(
+		self, source_repo: Path, pool_dir: Path,
+	) -> None:
+		"""Releasing a path not in _in_use is silently ignored."""
+		pool = WorkspacePool(source_repo, pool_dir, max_clones=3)
+		await pool.initialize()
+
+		# Release a path that was never acquired
+		fake_path = pool_dir / "fake-workspace"
+		await pool.release(fake_path)
+
+		assert pool.total_clones == 0
+		await pool.cleanup()
+
+	async def test_workspace_isolation(
+		self, source_repo: Path, pool_dir: Path,
+	) -> None:
+		"""Changes in one workspace don't affect another."""
+		pool = WorkspacePool(source_repo, pool_dir, max_clones=3)
+		await pool.initialize()
+
+		w1 = await pool.acquire()
+		w2 = await pool.acquire()
+		assert w1 is not None
+		assert w2 is not None
+
+		# Create a file in w1
+		(w1 / "w1_only.txt").write_text("w1")
+
+		# w2 should not have it
+		assert not (w2 / "w1_only.txt").exists()
 
 		await pool.cleanup()
