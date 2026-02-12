@@ -106,6 +106,11 @@ async def create_plan(config: MissionConfig, snapshot: Snapshot, db: Database) -
 		output = stdout_bytes.decode("utf-8", errors="replace")
 	except asyncio.TimeoutError:
 		logger.error("Planner subprocess timed out after %ds", timeout)
+		try:
+			proc.kill()
+			await proc.wait()
+		except ProcessLookupError:
+			pass
 		output = ""
 	except OSError as exc:
 		logger.error("Planner subprocess failed: %s", exc)

@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, patch
 
-from mission_control.planner import _get_file_tree, _parse_plan_output
+from mission_control.config import (
+	MissionConfig,
+	SchedulerConfig,
+	TargetConfig,
+	VerificationConfig,
+)
+from mission_control.db import Database
+from mission_control.models import Snapshot
+from mission_control.planner import _get_file_tree, _parse_plan_output, create_plan
 
 
 def _raw_units(units: list[dict[str, object]]) -> str:
@@ -148,3 +157,46 @@ class TestGetFileTree:
 			result = await _get_file_tree("/tmp/fake")
 
 		assert result == "(file tree unavailable)"
+
+
+class TestCreatePlanTimeout:
+	async def test_timeout_kills_subprocess(self) -> None:
+		config = MissionConfig(
+			target=TargetConfig(
+				name="test",
+				path="/tmp/test",
+				branch="main",
+				objective="Build stuff",
+				verification=VerificationConfig(command="pytest -q", timeout=10),
+			),
+			scheduler=SchedulerConfig(),
+		)
+		snapshot = Snapshot(commit_hash="abc123")
+		db = Database(":memory:")
+
+		# Mock the claude subprocess to timeout
+		mock_proc = AsyncMock()
+		mock_proc.communicate.side_effect = asyncio.TimeoutError()
+
+		# Mock file tree subprocess (called first)
+		mock_tree_proc = AsyncMock()
+		mock_tree_proc.communicate.return_value = (b".\n./src\n", None)
+
+		call_count = 0
+
+		async def mock_exec(*args, **kwargs):
+			nonlocal call_count
+			call_count += 1
+			if call_count == 1:
+				return mock_tree_proc  # file tree call
+			return mock_proc  # planner call
+
+		with patch("mission_control.planner.asyncio.create_subprocess_exec", side_effect=mock_exec):
+			plan = await create_plan(config, snapshot, db)
+
+		# Plan should still be created (with empty output)
+		assert plan.raw_planner_output == ""
+		assert plan.total_units == 0
+		# Subprocess should have been killed
+		mock_proc.kill.assert_called_once()
+		mock_proc.wait.assert_called()

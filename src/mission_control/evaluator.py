@@ -119,6 +119,11 @@ async def evaluate_objective(
 
 	except asyncio.TimeoutError:
 		log.error("Evaluator timed out after %ds", timeout)
+		try:
+			proc.kill()
+			await proc.wait()
+		except ProcessLookupError:
+			pass
 		return ObjectiveEvaluation()
 	except (OSError, FileNotFoundError) as exc:
 		log.error("Failed to run evaluator: %s", exc)

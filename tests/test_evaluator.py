@@ -202,7 +202,7 @@ class TestEvaluateObjective:
 		model_idx = list(call_args).index("--model")
 		assert call_args[model_idx + 1] == "opus"
 
-	async def test_timeout_returns_defaults(self) -> None:
+	async def test_timeout_returns_defaults_and_kills_proc(self) -> None:
 		config = _config()
 		config.target.verification.timeout = 10
 
@@ -219,3 +219,5 @@ class TestEvaluateObjective:
 
 		assert result.score == 0.0
 		assert result.met is False
+		mock_proc.kill.assert_called_once()
+		mock_proc.wait.assert_called()
