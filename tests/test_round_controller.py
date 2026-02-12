@@ -640,3 +640,19 @@ class TestMergeToWorkingFailureMarksUnitFailed:
 		assert refreshed is not None
 		assert refreshed.status == "completed"
 		assert refreshed.attempt == 0  # NOT incremented on success
+
+
+class TestSSHBackendMissionModeRejection:
+	"""Phase 61: SSH backend raises NotImplementedError in mission mode."""
+
+	async def test_ssh_backend_raises_not_implemented(self, db: Database) -> None:
+		"""Mission mode with SSH backend should raise NotImplementedError at init."""
+		from mission_control.config import BackendConfig, SSHHostConfig
+
+		cfg = MissionConfig()
+		cfg.backend = BackendConfig(type="ssh", ssh_hosts=[SSHHostConfig(hostname="host1")])
+
+		controller = RoundController(cfg, db)
+
+		with pytest.raises(NotImplementedError, match="SSH backend is not yet supported"):
+			await controller._init_components()  # noqa: SLF001

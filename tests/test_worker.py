@@ -212,6 +212,12 @@ class TestWorkerAgent:
 	) -> None:
 		w, _ = worker_and_unit
 
+		# Set max_attempts=1 so the first failure is permanent
+		wu = db.get_work_unit("wu1")
+		assert wu is not None
+		wu.max_attempts = 1
+		db.update_work_unit(wu)
+
 		# Backend returns "failed" status with error output
 		mock_backend.check_status = AsyncMock(return_value="failed")  # type: ignore[method-assign]
 		mock_backend.get_output = AsyncMock(return_value="Error: something broke")  # type: ignore[method-assign]
@@ -237,6 +243,12 @@ class TestWorkerAgent:
 		mock_backend: MockBackend,
 	) -> None:
 		w, _ = worker_and_unit
+
+		# Set max_attempts=1 so the first failure is permanent
+		wu = db.get_work_unit("wu1")
+		assert wu is not None
+		wu.max_attempts = 1
+		db.update_work_unit(wu)
 
 		# Backend always returns "running" to trigger the deadline timeout
 		mock_backend.check_status = AsyncMock(return_value="running")  # type: ignore[method-assign]
@@ -299,6 +311,12 @@ class TestWorkerAgent:
 	) -> None:
 		"""If both checkout -b and -B fail, unit is marked failed."""
 		w, _ = worker_and_unit
+
+		# Set max_attempts=1 so the first failure is permanent
+		wu = db.get_work_unit("wu1")
+		assert wu is not None
+		wu.max_attempts = 1
+		db.update_work_unit(wu)
 
 		# Make git checkout always fail
 		mock_git_proc = AsyncMock()
@@ -550,6 +568,67 @@ class TestWorkerAgent:
 		assert result is False
 		assert "fatal: not a git repository" in caplog.text
 		assert "rc=128" in caplog.text
+
+
+	async def test_failed_unit_resets_to_pending_if_retries_remain(
+		self, db: Database, config: MissionConfig, worker_and_unit: tuple[Worker, WorkUnit],
+		mock_backend: MockBackend,
+	) -> None:
+		"""Failed unit with attempt < max_attempts is reset to pending for retry."""
+		w, _ = worker_and_unit
+
+		# Default max_attempts=3, so first failure should reset to pending
+		mock_backend.check_status = AsyncMock(return_value="failed")  # type: ignore[method-assign]
+		mock_backend.get_output = AsyncMock(return_value="Error: transient failure")  # type: ignore[method-assign]
+
+		agent = WorkerAgent(w, db, config, mock_backend, heartbeat_interval=9999)
+
+		async def ok_run_git(*args: str, cwd: str) -> bool:
+			return True
+
+		with patch.object(agent, "_run_git", side_effect=ok_run_git):
+			unit = db.claim_work_unit(w.id)
+			assert unit is not None
+			await agent._execute_unit(unit)  # noqa: SLF001
+
+		result = db.get_work_unit("wu1")
+		assert result is not None
+		assert result.status == "pending", f"Expected pending for retry, got {result.status}"
+		assert result.attempt == 1
+		assert result.claimed_at is None
+		assert result.started_at is None
+
+	async def test_permanently_failed_unit_stays_failed(
+		self, db: Database, config: MissionConfig, worker_and_unit: tuple[Worker, WorkUnit],
+		mock_backend: MockBackend,
+	) -> None:
+		"""Failed unit with attempt >= max_attempts stays permanently failed."""
+		w, _ = worker_and_unit
+
+		# Set max_attempts=1 so the first failure is permanent
+		wu = db.get_work_unit("wu1")
+		assert wu is not None
+		wu.max_attempts = 1
+		db.update_work_unit(wu)
+
+		mock_backend.check_status = AsyncMock(return_value="failed")  # type: ignore[method-assign]
+		mock_backend.get_output = AsyncMock(return_value="Error: permanent failure")  # type: ignore[method-assign]
+
+		agent = WorkerAgent(w, db, config, mock_backend, heartbeat_interval=9999)
+
+		async def ok_run_git(*args: str, cwd: str) -> bool:
+			return True
+
+		with patch.object(agent, "_run_git", side_effect=ok_run_git):
+			unit = db.claim_work_unit(w.id)
+			assert unit is not None
+			await agent._execute_unit(unit)  # noqa: SLF001
+
+		result = db.get_work_unit("wu1")
+		assert result is not None
+		assert result.status == "failed"
+		assert result.attempt == 1
+		assert result.finished_at is not None
 
 	def test_stop(self, db: Database, config: MissionConfig, mock_backend: MockBackend) -> None:
 		w = Worker(id="w1", workspace_path="/tmp/clone")

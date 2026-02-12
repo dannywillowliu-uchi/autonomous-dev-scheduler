@@ -179,6 +179,12 @@ class RoundController:
 				"green-branch-mgr", source_repo, self.config.target.branch,
 			)
 			await self._green_branch.initialize(gb_workspace)
+		else:
+			raise NotImplementedError(
+				"Mission mode requires a local workspace for green branch "
+				"merge/fixup operations. SSH backend is not yet supported "
+				"in mission mode. Use coordinator mode instead."
+			)
 
 		# Planner
 		self._planner = RecursivePlanner(self.config, self.db)

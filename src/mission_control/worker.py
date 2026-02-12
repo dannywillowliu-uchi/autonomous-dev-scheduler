@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 
 from mission_control.backends.base import WorkerBackend, WorkerHandle
 from mission_control.config import MissionConfig
@@ -202,6 +203,29 @@ class WorkerAgent:
 			self.worker.current_unit_id = None
 			await self.db.locked_call("update_worker", self.worker)
 
+	async def _mark_unit_failed(self, unit: WorkUnit) -> None:
+		"""Mark a unit as failed, resetting to pending if retries remain."""
+		unit.attempt += 1
+		if unit.attempt < unit.max_attempts:
+			unit.status = "pending"
+			unit.claimed_at = None
+			unit.heartbeat_at = None
+			unit.started_at = None
+			unit.finished_at = None
+			logger.info(
+				"Unit %s failed (attempt %d/%d), resetting to pending",
+				unit.id, unit.attempt, unit.max_attempts,
+			)
+		else:
+			unit.status = "failed"
+			unit.finished_at = _now_iso()
+			logger.warning(
+				"Unit %s permanently failed after %d attempts",
+				unit.id, unit.attempt,
+			)
+		await self.db.locked_call("update_work_unit", unit)
+		self.worker.units_failed += 1
+
 	async def _cleanup_merged_branches(self, workspace_path: str) -> None:
 		"""Delete feature branches for MRs that have been processed by the merge queue.
 
@@ -246,11 +270,8 @@ class WorkerAgent:
 			# Create branch in workspace (try -b, fallback to -B for retry)
 			if not await self._run_git("checkout", "-b", branch_name, cwd=workspace_path):
 				if not await self._run_git("checkout", "-B", branch_name, cwd=workspace_path):
-					unit.status = "failed"
 					unit.output_summary = f"Failed to create branch {branch_name}"
-					unit.finished_at = _now_iso()
-					await self.db.locked_call("update_work_unit", unit)
-					self.worker.units_failed += 1
+					await self._mark_unit_failed(unit)
 					return
 
 			# Build prompt and command
@@ -283,18 +304,15 @@ class WorkerAgent:
 
 			# Wait for completion (drain stdout to prevent pipe buffer deadlock)
 			try:
-				deadline = asyncio.get_running_loop().time() + effective_timeout
+				deadline = time.monotonic() + effective_timeout
 				while True:
 					status = await self.backend.check_status(handle)
 					if status != "running":
 						break
-					if asyncio.get_running_loop().time() > deadline:
+					if time.monotonic() > deadline:
 						await self.backend.kill(handle)
-						unit.status = "failed"
 						unit.output_summary = f"Timed out after {effective_timeout}s"
-						unit.finished_at = _now_iso()
-						await self.db.locked_call("update_work_unit", unit)
-						self.worker.units_failed += 1
+						await self._mark_unit_failed(unit)
 						return
 					await self.backend.get_output(handle)
 					await asyncio.sleep(self.config.scheduler.polling_interval)
@@ -304,11 +322,8 @@ class WorkerAgent:
 
 			except Exception as exc:
 				logger.error("Backend error for unit %s: %s", unit.id, exc)
-				unit.status = "failed"
 				unit.output_summary = f"Backend error: {exc}"
-				unit.finished_at = _now_iso()
-				await self.db.locked_call("update_work_unit", unit)
-				self.worker.units_failed += 1
+				await self._mark_unit_failed(unit)
 				return
 
 			# Parse result and build handoff
@@ -349,11 +364,7 @@ class WorkerAgent:
 				if not await self._run_git("checkout", base, cwd=workspace_path):
 					logger.warning("Failed to checkout %s in %s", base, workspace_path)
 			else:
-				unit.status = "failed"
-				unit.finished_at = _now_iso()
-				unit.attempt += 1
-				await self.db.locked_call("update_work_unit", unit)
-				self.worker.units_failed += 1
+				await self._mark_unit_failed(unit)
 
 				# Reset workspace to base branch for next task
 				if not await self._run_git("checkout", self.config.target.branch, cwd=workspace_path):
