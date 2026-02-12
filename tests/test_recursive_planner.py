@@ -481,7 +481,10 @@ class TestInvokePlannerLlm:
 		mock_proc.returncode = 0
 		mock_proc.communicate.return_value = (response.encode(), b"")
 
-		with patch("mission_control.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+		with patch(
+			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
+			return_value=mock_proc,
+		) as mock_exec:
 			result = await planner._invoke_planner_llm(node, "obj with $() backticks", "hash", [])
 
 		# Verify create_subprocess_exec was called (not shell)
