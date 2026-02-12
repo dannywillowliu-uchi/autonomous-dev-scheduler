@@ -133,9 +133,13 @@ class MergeQueue:
 		return ok
 
 	async def _merge_into_base(self, mr: MergeRequest) -> bool:
-		"""Fast-forward merge the branch into base."""
+		"""Merge the branch into base. Aborts and cleans up on failure."""
 		await self._run_git("checkout", self.config.target.branch)
-		return await self._run_git("merge", "--no-ff", mr.branch_name, "-m", f"Merge {mr.branch_name}")
+		ok = await self._run_git("merge", "--no-ff", mr.branch_name, "-m", f"Merge {mr.branch_name}")
+		if not ok:
+			await self._run_git("merge", "--abort")
+			await self._run_git("checkout", self.config.target.branch)
+		return ok
 
 	async def _release_unit_for_retry(self, mr: MergeRequest) -> None:
 		"""Release the work unit back to pending for retry if under max_attempts."""

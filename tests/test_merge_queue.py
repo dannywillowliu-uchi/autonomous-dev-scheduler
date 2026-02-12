@@ -471,3 +471,51 @@ class TestRebaseOntoBase:
 		assert len(abort_calls) == 1
 		# Last call should checkout the base branch
 		assert git_calls[-1] == ("checkout", config.target.branch)
+
+
+class TestMergeIntoBase:
+	async def test_failed_merge_aborts_and_checks_out_base(self) -> None:
+		"""When merge fails, workspace is cleaned up via merge --abort + checkout base."""
+		db, mr, unit, worker = _db_with_mr()
+		config = _config()
+		queue = MergeQueue(config, db, "/tmp/merge-workspace")
+
+		git_calls: list[tuple[str, ...]] = []
+
+		async def mock_run_git(*args: str) -> bool:
+			git_calls.append(args)
+			# merge --no-ff fails, everything else succeeds
+			if args[0] == "merge" and args[1] == "--no-ff":
+				return False
+			return True
+
+		queue._run_git = mock_run_git  # type: ignore[assignment]
+
+		result = await queue._merge_into_base(mr)
+
+		assert result is False
+		# Should have: checkout base, merge --no-ff (fail), merge --abort, checkout base
+		abort_calls = [c for c in git_calls if c == ("merge", "--abort")]
+		assert len(abort_calls) == 1
+		# Last call should checkout base branch
+		assert git_calls[-1] == ("checkout", "main")
+
+	async def test_successful_merge_no_abort(self) -> None:
+		"""Successful merge does not call merge --abort."""
+		db, mr, unit, worker = _db_with_mr()
+		config = _config()
+		queue = MergeQueue(config, db, "/tmp/merge-workspace")
+
+		git_calls: list[tuple[str, ...]] = []
+
+		async def mock_run_git(*args: str) -> bool:
+			git_calls.append(args)
+			return True
+
+		queue._run_git = mock_run_git  # type: ignore[assignment]
+
+		result = await queue._merge_into_base(mr)
+
+		assert result is True
+		abort_calls = [c for c in git_calls if c == ("merge", "--abort")]
+		assert len(abort_calls) == 0

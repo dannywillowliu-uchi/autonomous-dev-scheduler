@@ -241,6 +241,8 @@ def _build_green_branch(data: dict[str, Any]) -> GreenBranchConfig:
 			setattr(gc, key, str(data[key]))
 	if "fixup_max_attempts" in data:
 		gc.fixup_max_attempts = int(data["fixup_max_attempts"])
+	if "reset_on_init" in data:
+		gc.reset_on_init = bool(data["reset_on_init"])
 	return gc
 
 

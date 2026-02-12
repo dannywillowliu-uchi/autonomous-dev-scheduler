@@ -275,3 +275,64 @@ budget_per_call_usd = 0.5
 	assert cfg.planner.max_depth == 2
 	assert cfg.planner.max_file_tree_chars == 5000
 	assert cfg.planner.budget_per_call_usd == 0.5
+
+
+def test_green_branch_defaults() -> None:
+	"""GreenBranchConfig defaults."""
+	cfg = MissionConfig()
+	assert cfg.green_branch.reset_on_init is True
+	assert cfg.green_branch.working_branch == "mc/working"
+	assert cfg.green_branch.green_branch == "mc/green"
+	assert cfg.green_branch.fixup_max_attempts == 3
+
+
+def test_green_branch_reset_on_init_false_from_toml(tmp_path: Path) -> None:
+	"""reset_on_init=false in config is respected."""
+	toml = tmp_path / "mission-control.toml"
+	toml.write_text("""\
+[target]
+name = "test"
+path = "/tmp/test"
+
+[green_branch]
+reset_on_init = false
+""")
+	cfg = load_config(toml)
+	assert cfg.green_branch.reset_on_init is False
+
+
+def test_green_branch_reset_on_init_missing_defaults_true(tmp_path: Path) -> None:
+	"""Missing reset_on_init defaults to True."""
+	toml = tmp_path / "mission-control.toml"
+	toml.write_text("""\
+[target]
+name = "test"
+path = "/tmp/test"
+
+[green_branch]
+working_branch = "mc/dev"
+""")
+	cfg = load_config(toml)
+	assert cfg.green_branch.reset_on_init is True
+	assert cfg.green_branch.working_branch == "mc/dev"
+
+
+def test_green_branch_full_config_from_toml(tmp_path: Path) -> None:
+	"""All GreenBranchConfig fields loaded from TOML."""
+	toml = tmp_path / "mission-control.toml"
+	toml.write_text("""\
+[target]
+name = "test"
+path = "/tmp/test"
+
+[green_branch]
+working_branch = "mc/wip"
+green_branch = "mc/stable"
+fixup_max_attempts = 5
+reset_on_init = false
+""")
+	cfg = load_config(toml)
+	assert cfg.green_branch.working_branch == "mc/wip"
+	assert cfg.green_branch.green_branch == "mc/stable"
+	assert cfg.green_branch.fixup_max_attempts == 5
+	assert cfg.green_branch.reset_on_init is False

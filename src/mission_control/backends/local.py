@@ -42,6 +42,23 @@ class LocalBackend(WorkerBackend):
 		if workspace is None:
 			raise RuntimeError(f"No workspace available for worker {worker_id}")
 
+		# Checkout the target base branch before creating the feature branch.
+		# Without this, the feature branch starts from whatever HEAD the clone
+		# was reset to (origin/main), ignoring the caller's base_branch.
+		base_proc = await asyncio.create_subprocess_exec(
+			"git", "checkout", base_branch,
+			cwd=str(workspace),
+			stdout=asyncio.subprocess.PIPE,
+			stderr=asyncio.subprocess.STDOUT,
+		)
+		base_stdout, _ = await base_proc.communicate()
+		if base_proc.returncode != 0:
+			await self._pool.release(workspace)
+			raise RuntimeError(
+				f"Failed to checkout base branch {base_branch}: "
+				f"{base_stdout.decode(errors='replace')}"
+			)
+
 		branch_name = f"mc/unit-{worker_id}"
 		proc = await asyncio.create_subprocess_exec(
 			"git", "checkout", "-B", branch_name,
