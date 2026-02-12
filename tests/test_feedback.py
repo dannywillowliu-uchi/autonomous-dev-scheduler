@@ -257,6 +257,47 @@ class TestGetPlannerContext:
 		assert "Merge conflicts" in ctx
 		assert "Fixup promoted" in ctx
 
+	def test_includes_discoveries_from_top_experiences(self, db: Database) -> None:
+		"""Planner context includes discoveries from high-reward experiences."""
+		mission = Mission(id="m1", objective="test")
+		db.insert_mission(mission)
+		rnd = Round(id="r1", mission_id="m1", number=1)
+		db.insert_round(rnd)
+		ref = Reflection(
+			id="ref1", mission_id="m1", round_id="r1", round_number=1,
+			objective_score=0.5, completion_rate=0.9, plan_strategy="subdivide",
+			fixup_promoted=True, fixup_attempts=1,
+		)
+		db.insert_reflection(ref)
+
+		# Add some experiences with discoveries
+		plan = Plan(id="p1", objective="test", total_units=2)
+		db.insert_plan(plan)
+		wu1 = WorkUnit(id="wu1", plan_id="p1", title="Task 1")
+		wu2 = WorkUnit(id="wu2", plan_id="p1", title="Task 2")
+		db.insert_work_unit(wu1)
+		db.insert_work_unit(wu2)
+
+		exp1 = Experience(
+			id="exp1", round_id="r1", work_unit_id="wu1",
+			title="High reward task", status="completed", reward=0.95,
+			summary="Did something great",
+			discoveries='["Database has existing migration framework", "Use async for better performance"]',
+		)
+		exp2 = Experience(
+			id="exp2", round_id="r1", work_unit_id="wu2",
+			title="Lower reward task", status="completed", reward=0.65,
+			summary="Did something ok",
+			discoveries='["Error handling needs improvement"]',
+		)
+		db.insert_experience(exp1)
+		db.insert_experience(exp2)
+
+		ctx = get_planner_context(db, "m1")
+		assert "Key insights from successful past work:" in ctx
+		assert "Database has existing migration framework" in ctx
+		assert "Use async for better performance" in ctx
+
 
 class TestGetWorkerContext:
 	def test_matching_experience(self, db: Database) -> None:
@@ -291,6 +332,35 @@ class TestGetWorkerContext:
 		unit = WorkUnit(title="Database migration", description="Schema changes", files_hint="schema.sql")
 		ctx = get_worker_context(db, unit)
 		assert ctx == ""
+
+	def test_includes_discoveries_from_similar_work(self, db: Database) -> None:
+		"""Worker context includes discoveries from similar past experiences."""
+		mission = Mission(id="m1", objective="test")
+		db.insert_mission(mission)
+		rnd = Round(id="r1", mission_id="m1", number=1)
+		db.insert_round(rnd)
+		plan = Plan(id="p1", objective="test", total_units=1)
+		db.insert_plan(plan)
+		wu_past = WorkUnit(id="wu-past", plan_id="p1", title="API tests", files_hint="test_api.py")
+		db.insert_work_unit(wu_past)
+
+		exp = Experience(
+			id="exp1", round_id="r1", work_unit_id="wu-past",
+			title="API tests", scope="Unit tests for REST endpoints",
+			files_hint="test_api.py", status="completed",
+			summary="Added comprehensive test coverage", reward=0.9,
+			discoveries='["Fixtures can be shared across test modules", "Mock external API calls for speed"]',
+			concerns='["Test data cleanup needed"]',
+		)
+		db.insert_experience(exp)
+
+		# Search with a similar unit
+		unit = WorkUnit(title="Add API tests", description="Test REST endpoints", files_hint="test_api.py")
+		ctx = get_worker_context(db, unit)
+		assert "API tests" in ctx
+		assert "Insights: Fixtures can be shared across test modules" in ctx
+		assert "Mock external API calls for speed" in ctx
+		assert "Pitfalls: Test data cleanup needed" in ctx
 
 
 class TestExtractKeywords:

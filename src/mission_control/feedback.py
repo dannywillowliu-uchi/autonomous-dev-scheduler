@@ -278,6 +278,28 @@ def get_planner_context(
 		f"Fixup promoted: {len(fixup_rounds)}/{len(reflections)} recent rounds"
 	)
 
+	# High-value discoveries from top-rewarded experiences
+	top_experiences = db.get_top_experiences(limit=10)
+	discoveries_from_successes: list[str] = []
+	for exp in top_experiences:
+		if exp.discoveries:
+			try:
+				disc_list = json.loads(exp.discoveries)
+				for d in disc_list:
+					if d not in discoveries_from_successes:
+						discoveries_from_successes.append(d)
+						if len(discoveries_from_successes) >= 5:
+							break
+			except (json.JSONDecodeError, TypeError):
+				pass
+		if len(discoveries_from_successes) >= 5:
+			break
+
+	if discoveries_from_successes:
+		lines.append("\nKey insights from successful past work:")
+		for d in discoveries_from_successes:
+			lines.append(f"- {d}")
+
 	return "\n".join(lines)
 
 
@@ -312,6 +334,13 @@ def get_worker_context(
 	for exp in experiences:
 		if exp.status == "completed":
 			lines.append(f"- [{exp.title}] succeeded (reward={exp.reward:.2f}): {exp.summary}")
+			if exp.discoveries:
+				try:
+					discoveries = json.loads(exp.discoveries)
+					if discoveries:
+						lines.append(f"  Insights: {', '.join(discoveries[:2])}")
+				except (json.JSONDecodeError, TypeError):
+					pass
 			if exp.concerns:
 				try:
 					concerns = json.loads(exp.concerns)

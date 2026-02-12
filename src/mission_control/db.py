@@ -1316,6 +1316,16 @@ class Database:
 		).fetchall()
 		return [self._row_to_experience(r) for r in rows]
 
+	def get_top_experiences(self, limit: int = 10) -> list[Experience]:
+		"""Get the top-rewarded experiences, prioritizing those with discoveries."""
+		rows = self.conn.execute(
+			"""SELECT * FROM experiences
+			WHERE status = 'completed' AND discoveries != '' AND discoveries != '[]'
+			ORDER BY reward DESC LIMIT ?""",
+			(limit,),
+		).fetchall()
+		return [self._row_to_experience(r) for r in rows]
+
 	@staticmethod
 	def _row_to_experience(row: sqlite3.Row) -> Experience:
 		return Experience(
