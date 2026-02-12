@@ -81,7 +81,12 @@ class RoundController:
 			objective=self.config.target.objective,
 			status="running",
 		)
-		self.db.insert_mission(mission)
+		try:
+			self.db.insert_mission(mission)
+		except Exception as exc:
+			logger.error("Failed to insert mission: %s", exc, exc_info=True)
+			result.stopped_reason = "db_error"
+			return result
 		result.mission_id = mission.id
 
 		try:
@@ -112,7 +117,10 @@ class RoundController:
 				# Update mission
 				mission.total_rounds = round_number
 				mission.final_score = round_result.score
-				self.db.update_mission(mission)
+				try:
+					self.db.update_mission(mission)
+				except Exception as exc:
+					logger.error("Failed to update mission after round %d: %s", round_number, exc, exc_info=True)
 
 				if round_result.objective_met:
 					result.stopped_reason = "objective_met"
@@ -139,7 +147,10 @@ class RoundController:
 			mission.finished_at = _now_iso()
 			mission.stopped_reason = result.stopped_reason
 			mission.final_score = result.round_scores[-1] if result.round_scores else 0.0
-			self.db.update_mission(mission)
+			try:
+				self.db.update_mission(mission)
+			except Exception as exc:
+				logger.error("Failed to update mission in finally block: %s", exc, exc_info=True)
 
 			if self._backend:
 				await self._backend.cleanup()
@@ -207,7 +218,11 @@ class RoundController:
 			status="planning",
 		)
 		rnd.snapshot_hash = await self._green_branch.get_green_hash()
-		self.db.insert_round(rnd)
+		try:
+			self.db.insert_round(rnd)
+		except Exception as exc:
+			logger.error("Failed to insert round %d: %s", round_number, exc, exc_info=True)
+			raise RuntimeError(f"Database error inserting round: {exc}") from exc
 
 		result = RoundResult(round_id=rnd.id, number=round_number)
 
@@ -224,31 +239,53 @@ class RoundController:
 			feedback_context=planner_context,
 		)
 		plan.round_id = rnd.id
-		self.db.insert_plan(plan)
+		try:
+			self.db.insert_plan(plan)
+		except Exception as exc:
+			logger.error("Failed to insert plan for round %d: %s", round_number, exc, exc_info=True)
+			raise RuntimeError(f"Database error inserting plan: {exc}") from exc
 		rnd.plan_id = plan.id
 
 		# Persist plan tree
-		self._persist_plan_tree(root_node, plan)
+		try:
+			self._persist_plan_tree(root_node, plan)
+		except Exception as exc:
+			logger.error("Failed to persist plan tree for round %d: %s", round_number, exc, exc_info=True)
+			raise RuntimeError(f"Database error persisting plan tree: {exc}") from exc
 
 		result.total_units = plan.total_units
 		rnd.total_units = plan.total_units
 		rnd.status = "executing"
-		self.db.update_round(rnd)
+		try:
+			self.db.update_round(rnd)
+		except Exception as exc:
+			logger.error("Failed to update round %d to executing: %s", round_number, exc, exc_info=True)
 
 		if plan.total_units == 0:
 			rnd.status = "completed"
 			rnd.finished_at = _now_iso()
-			self.db.update_round(rnd)
+			try:
+				self.db.update_round(rnd)
+			except Exception as exc:
+				logger.error("Failed to update empty round %d to completed: %s", round_number, exc, exc_info=True)
 			return result
 
 		# Capture pre-round snapshot for feedback
-		snapshot_before = self.db.get_latest_snapshot()
+		try:
+			snapshot_before = self.db.get_latest_snapshot()
+		except Exception as exc:
+			logger.error("Failed to get snapshot before round %d: %s", round_number, exc, exc_info=True)
+			snapshot_before = None
 
 		# 2. Execute all leaf work units
 		await self._execute_units(plan, rnd)
 
 		# 3. Collect handoffs
-		handoffs = self.db.get_handoffs_for_round(rnd.id)
+		try:
+			handoffs = self.db.get_handoffs_for_round(rnd.id)
+		except Exception as exc:
+			logger.error("Failed to get handoffs for round %d: %s", round_number, exc, exc_info=True)
+			handoffs = []
 		all_discoveries: list[str] = []
 		for h in handoffs:
 			if h.discoveries:
@@ -259,7 +296,10 @@ class RoundController:
 
 		# 4. Fixup: try to promote mc/working to mc/green
 		rnd.status = "evaluating"
-		self.db.update_round(rnd)
+		try:
+			self.db.update_round(rnd)
+		except Exception as exc:
+			logger.error("Failed to update round %d to evaluating: %s", round_number, exc, exc_info=True)
 
 		fixup_result = await self._green_branch.run_fixup()
 		logger.info(
@@ -279,8 +319,16 @@ class RoundController:
 		# 6. Record feedback
 		rnd.objective_score = evaluation.score
 		rnd.objective_met = evaluation.met
-		snapshot_after = self.db.get_latest_snapshot()
-		prev_rounds = self.db.get_rounds_for_mission(mission.id)
+		try:
+			snapshot_after = self.db.get_latest_snapshot()
+		except Exception as exc:
+			logger.error("Failed to get snapshot after round %d: %s", round_number, exc, exc_info=True)
+			snapshot_after = None
+		try:
+			prev_rounds = self.db.get_rounds_for_mission(mission.id)
+		except Exception as exc:
+			logger.error("Failed to get previous rounds for mission: %s", exc, exc_info=True)
+			prev_rounds = []
 		# Get score from previous round (exclude current)
 		prev_score = 0.0
 		for pr in reversed(prev_rounds):
@@ -310,10 +358,18 @@ class RoundController:
 		rnd.finished_at = _now_iso()
 
 		# Count completed/failed from plan
-		units = self.db.get_work_units_for_plan(plan.id)
-		rnd.completed_units = sum(1 for u in units if u.status == "completed")
-		rnd.failed_units = sum(1 for u in units if u.status == "failed")
-		self.db.update_round(rnd)
+		try:
+			units = self.db.get_work_units_for_plan(plan.id)
+			rnd.completed_units = sum(1 for u in units if u.status == "completed")
+			rnd.failed_units = sum(1 for u in units if u.status == "failed")
+		except Exception as exc:
+			logger.error("Failed to get work units for plan: %s", exc, exc_info=True)
+			rnd.completed_units = 0
+			rnd.failed_units = 0
+		try:
+			self.db.update_round(rnd)
+		except Exception as exc:
+			logger.error("Failed to finalize round %d: %s", round_number, exc, exc_info=True)
 
 		result.score = evaluation.score
 		result.objective_met = evaluation.met
@@ -516,18 +572,34 @@ class RoundController:
 
 	def _persist_plan_tree(self, node: PlanNode, plan: Plan) -> None:
 		"""Persist the in-memory plan tree to the database."""
-		self.db.insert_plan_node(node)
+		try:
+			self.db.insert_plan_node(node)
+		except Exception as exc:
+			logger.error("Failed to insert plan node %s: %s", node.id, exc, exc_info=True)
+			raise
 
 		# Persist forced leaf units
 		if hasattr(node, "_forced_unit"):
 			wu = node._forced_unit
-			self.db.insert_work_unit(wu)
+			try:
+				self.db.insert_work_unit(wu)
+			except Exception as exc:
+				logger.error("Failed to insert forced work unit %s: %s", wu.id, exc, exc_info=True)
+				raise
 
 		# Persist child leaves
 		if hasattr(node, "_child_leaves"):
 			for leaf, wu in node._child_leaves:
-				self.db.insert_plan_node(leaf)
-				self.db.insert_work_unit(wu)
+				try:
+					self.db.insert_plan_node(leaf)
+				except Exception as exc:
+					logger.error("Failed to insert child plan node %s: %s", leaf.id, exc, exc_info=True)
+					raise
+				try:
+					self.db.insert_work_unit(wu)
+				except Exception as exc:
+					logger.error("Failed to insert child work unit %s: %s", wu.id, exc, exc_info=True)
+					raise
 
 		# Recurse into subdivided children
 		if hasattr(node, "_subdivided_children"):
