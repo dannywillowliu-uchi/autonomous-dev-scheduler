@@ -471,7 +471,7 @@ class Database:
 						(d.id, d.session_id, d.decision, d.rationale, d.timestamp),
 					)
 			self.conn.commit()
-		except Exception:
+		except sqlite3.Error:
 			self.conn.rollback()
 			raise
 

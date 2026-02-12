@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 
 import pytest
 
@@ -134,7 +135,7 @@ class TestBulkPersist:
 		# Create a snapshot with the same ID to trigger a unique constraint violation
 		after = Snapshot(id="snap-b", test_total=5, test_passed=5, test_failed=0)
 
-		with pytest.raises(Exception):
+		with pytest.raises(sqlite3.IntegrityError):
 			db.persist_session_result(session, before, after)
 
 		# Session should NOT have been persisted due to rollback

@@ -351,3 +351,28 @@ class TestRebaseOntoBase:
 		assert git_calls[1] == ("checkout", mr.branch_name)
 		# Then rebase
 		assert git_calls[2][0] == "rebase"
+
+	async def test_rebase_failure_returns_to_base_branch(self) -> None:
+		"""On rebase failure, workspace should be on base branch after abort."""
+		db, mr, unit, worker = _db_with_mr()
+		config = _config()
+		queue = MergeQueue(config, db, "/tmp/merge-workspace")
+
+		git_calls: list[tuple[str, ...]] = []
+
+		async def mock_run_git(*args: str) -> bool:
+			git_calls.append(args)
+			if args[0] == "rebase" and args[1] != "--abort":
+				return False
+			return True
+
+		queue._run_git = mock_run_git  # type: ignore[assignment]
+
+		result = await queue._rebase_onto_base(mr)
+
+		assert result is False
+		# Should have: fetch, checkout branch, rebase (fail), abort, checkout base
+		abort_calls = [c for c in git_calls if c == ("rebase", "--abort")]
+		assert len(abort_calls) == 1
+		# Last call should checkout the base branch
+		assert git_calls[-1] == ("checkout", config.target.branch)

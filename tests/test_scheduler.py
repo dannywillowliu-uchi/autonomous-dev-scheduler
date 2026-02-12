@@ -176,8 +176,6 @@ class TestScheduler:
 			call_count += 1
 			return Snapshot(test_total=10, test_passed=10, test_failed=0)
 
-		original_discover = None
-
 		def mock_discover(before, cfg, recent, previous):
 			captured_previous.append(previous)
 			return []  # no work -> stop

@@ -171,7 +171,7 @@ class TestCreatePlanTimeout:
 			),
 			scheduler=SchedulerConfig(),
 		)
-		snapshot = Snapshot(commit_hash="abc123")
+		snapshot = Snapshot()
 		db = Database(":memory:")
 
 		# Mock the claude subprocess to timeout
