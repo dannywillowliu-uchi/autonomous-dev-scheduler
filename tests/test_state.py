@@ -129,3 +129,27 @@ class TestCompareSnapshots:
 		delta = compare_snapshots(before, after)
 		assert delta.regressed is True
 		assert delta.improved is False
+
+
+class TestRunCommandTimeout:
+	async def test_timeout_kills_subprocess(self) -> None:
+		"""Timed-out subprocesses should be killed, not left as zombies."""
+		from unittest.mock import AsyncMock, MagicMock, patch
+
+		from mission_control.state import _run_command
+
+		mock_proc = AsyncMock()
+		mock_proc.kill = MagicMock()  # kill() is synchronous
+		mock_proc.wait = AsyncMock()
+
+		import asyncio
+
+		with patch("mission_control.state.asyncio.create_subprocess_shell", return_value=mock_proc):
+			with patch("mission_control.state.asyncio.wait_for", side_effect=asyncio.TimeoutError):
+				result = await _run_command("sleep 999", "/tmp", timeout=1)
+
+		assert result["returncode"] == -1
+		assert "timed out" in result["output"]
+		# Verify process was killed
+		mock_proc.kill.assert_called_once()
+		mock_proc.wait.assert_called_once()

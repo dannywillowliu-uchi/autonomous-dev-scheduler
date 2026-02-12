@@ -20,9 +20,8 @@ def _find_balanced(text: str, open_char: str, close_char: str) -> str | None:
 		if escape:
 			escape = False
 			continue
-		if ch == "\\":
-			if in_string:
-				escape = True
+		if ch == "\\" and in_string:
+			escape = True
 			continue
 		if ch == '"':
 			in_string = not in_string

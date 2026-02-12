@@ -110,6 +110,8 @@ class MergeQueue:
 		await self._run_git("remote", "add", remote_name, worker.workspace_path)
 		# Fetch the branch
 		result = await self._run_git("fetch", remote_name, mr.branch_name)
+		# Clean up remote to prevent accumulation
+		await self._run_git("remote", "remove", remote_name)
 		return result
 
 	async def _rebase_onto_base(self, mr: MergeRequest) -> bool:

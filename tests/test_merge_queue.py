@@ -249,3 +249,30 @@ class TestMergeQueue:
 		updated_unit = db.get_work_unit("unit1")
 		assert updated_unit is not None
 		assert updated_unit.status == "completed"
+
+
+class TestFetchWorkerBranchRemoteCleanup:
+	async def test_remote_removed_after_fetch(self) -> None:
+		"""_fetch_worker_branch should remove the git remote after fetching."""
+		db, mr, unit, worker = _db_with_mr()
+		config = _config()
+		queue = MergeQueue(config, db, "/tmp/merge-workspace")
+
+		git_calls: list[tuple[str, ...]] = []
+
+		async def mock_run_git(*args: str) -> bool:
+			git_calls.append(args)
+			return True
+
+		queue._run_git = mock_run_git  # type: ignore[assignment]
+
+		result = await queue._fetch_worker_branch(mr)
+
+		assert result is True
+		# Verify remote was added then removed
+		remote_add_calls = [c for c in git_calls if c[0] == "remote" and c[1] == "add"]
+		remote_remove_calls = [c for c in git_calls if c[0] == "remote" and c[1] == "remove"]
+		assert len(remote_add_calls) == 1
+		assert len(remote_remove_calls) == 1
+		# Same remote name used for add and remove
+		assert remote_add_calls[0][2] == remote_remove_calls[0][2]

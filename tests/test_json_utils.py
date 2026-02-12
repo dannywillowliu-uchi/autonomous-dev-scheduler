@@ -130,3 +130,19 @@ class TestFindBalanced:
 	def test_array_balanced(self) -> None:
 		text = '[[1, 2], [3, 4]]'
 		assert _find_balanced(text, "[", "]") == text
+
+	def test_backslash_outside_string_does_not_affect_braces(self) -> None:
+		"""Backslashes outside JSON strings should not skip the next character."""
+		text = 'Path is C:\\projects\\{my-app}\n{"type": "leaves"}'
+		result = _find_balanced(text, "{", "}")
+		# Should find {my-app} first (the first balanced pair), not skip braces
+		assert result is not None
+
+	def test_backslash_in_prose_before_json(self) -> None:
+		"""Backslashes in prose before JSON should not break extraction."""
+		text = 'Fix C:\\users\\code:\n{"status": "ok"}'
+		result = _find_balanced(text, "{", "}")
+		# Should successfully find a balanced JSON object
+		assert result is not None
+		parsed = json.loads(result)
+		assert parsed["status"] == "ok"

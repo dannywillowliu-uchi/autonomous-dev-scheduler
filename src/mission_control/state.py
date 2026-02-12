@@ -75,6 +75,11 @@ async def _run_command(cmd: str, cwd: str, timeout: int = 300) -> dict[str, Any]
 			"returncode": proc.returncode,
 		}
 	except asyncio.TimeoutError:
+		try:
+			proc.kill()
+			await proc.wait()
+		except ProcessLookupError:
+			pass
 		return {"output": f"Command timed out after {timeout}s", "returncode": -1}
 	except FileNotFoundError:
 		return {"output": f"Command not found: {cmd}", "returncode": -1}
