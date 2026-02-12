@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shlex
 
 from mission_control.backends.base import WorkerBackend, WorkerHandle
 from mission_control.config import SSHHostConfig
@@ -21,6 +22,8 @@ class SSHBackend(WorkerBackend):
 		self._hosts = hosts
 		self._worker_count: dict[str, int] = {h.hostname: 0 for h in hosts}
 		self._processes: dict[str, asyncio.subprocess.Process] = {}
+		self._stdout_bufs: dict[str, bytes] = {}
+		self._stdout_collected: set[str] = set()
 
 	def _select_host(self) -> SSHHostConfig:
 		"""Pick the host with fewest active workers."""
@@ -77,13 +80,15 @@ class SSHBackend(WorkerBackend):
 		if not host_info.get("user"):
 			ssh_target = host_info["hostname"]
 
-		remote_cmd = f"cd {remote_path} && {' '.join(command)}"
+		quoted_parts = [shlex.quote(c) for c in command]
+		remote_cmd = f"cd {shlex.quote(remote_path)} && {' '.join(quoted_parts)}"
 		proc = await asyncio.create_subprocess_exec(
 			"ssh", ssh_target, remote_cmd,
 			stdout=asyncio.subprocess.PIPE,
 			stderr=asyncio.subprocess.STDOUT,
 		)
 		self._processes[worker_id] = proc
+		self._stdout_bufs[worker_id] = b""
 
 		return WorkerHandle(
 			worker_id=worker_id,
@@ -105,9 +110,13 @@ class SSHBackend(WorkerBackend):
 		if proc is None:
 			return ""
 		if proc.returncode is not None and proc.stdout:
-			out = await proc.stdout.read()
-			return out.decode(errors="replace")
-		return ""
+			if handle.worker_id not in self._stdout_collected:
+				remaining = await proc.stdout.read()
+				self._stdout_bufs[handle.worker_id] = (
+					self._stdout_bufs.get(handle.worker_id, b"") + remaining
+				)
+				self._stdout_collected.add(handle.worker_id)
+		return self._stdout_bufs.get(handle.worker_id, b"").decode(errors="replace")
 
 	async def kill(self, handle: WorkerHandle) -> None:
 		proc = self._processes.get(handle.worker_id)
@@ -164,4 +173,6 @@ class SSHBackend(WorkerBackend):
 				proc.kill()
 				await proc.wait()
 		self._processes.clear()
+		self._stdout_bufs.clear()
+		self._stdout_collected.clear()
 		self._worker_count = {h.hostname: 0 for h in self._hosts}

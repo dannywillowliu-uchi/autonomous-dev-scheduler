@@ -398,6 +398,57 @@ class TestSSHBackend:
 			await backend.provision_workspace("w1", "bad-repo", "main")
 
 	@patch("mission_control.backends.ssh.asyncio.create_subprocess_exec")
+	async def test_spawn_quotes_command(
+		self, mock_exec: AsyncMock, backend: SSHBackend,
+	) -> None:
+		"""spawn uses shlex.quote to prevent shell injection."""
+		mock_proc = AsyncMock()
+		mock_proc.pid = 999
+		mock_proc.returncode = None
+		mock_exec.return_value = mock_proc
+
+		workspace = '/tmp/mc-worker-w1::{"hostname":"host-a","user":"deploy"}'
+		# Command contains shell metacharacters
+		cmd = ["claude", "--prompt", 'fix $(rm -rf /); echo "pwned"']
+		handle = await backend.spawn("w1", workspace, cmd, timeout=60)
+
+		assert handle.worker_id == "w1"
+		mock_exec.assert_awaited_once()
+		call_args = mock_exec.call_args[0]
+		# The remote command (third arg to ssh) should have quoted parts
+		remote_cmd = call_args[2]
+		# The dangerous metacharacters should be quoted/escaped
+		assert "$(rm -rf /)" not in remote_cmd or "'" in remote_cmd
+		# Verify shlex quoting is present
+		import shlex
+		assert shlex.quote('fix $(rm -rf /); echo "pwned"') in remote_cmd
+
+	@patch("mission_control.backends.ssh.asyncio.create_subprocess_exec")
+	async def test_get_output_consistent_on_repeated_calls(
+		self, mock_exec: AsyncMock, backend: SSHBackend,
+	) -> None:
+		"""get_output returns same data on repeated calls (output is buffered)."""
+		mock_proc = AsyncMock()
+		mock_proc.pid = 888
+		mock_proc.returncode = 0
+		mock_stdout = AsyncMock()
+		mock_stdout.read = AsyncMock(return_value=b"test output data")
+		mock_proc.stdout = mock_stdout
+		mock_exec.return_value = mock_proc
+
+		workspace = '/tmp/mc-worker-w2::{"hostname":"host-a","user":"deploy"}'
+		handle = await backend.spawn("w2", workspace, ["echo", "hello"], timeout=60)
+
+		# First call reads from stream
+		result1 = await backend.get_output(handle)
+		assert result1 == "test output data"
+
+		# Second call should return same data (not empty)
+		mock_stdout.read = AsyncMock(return_value=b"")  # stream exhausted
+		result2 = await backend.get_output(handle)
+		assert result2 == "test output data"
+
+	@patch("mission_control.backends.ssh.asyncio.create_subprocess_exec")
 	async def test_spawn(self, mock_exec: AsyncMock, backend: SSHBackend) -> None:
 		"""spawn ssh-es into the remote host and runs the command."""
 		mock_proc = AsyncMock()
