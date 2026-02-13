@@ -139,6 +139,16 @@ class SSHHostConfig:
 
 
 @dataclass
+class PricingConfig:
+	"""Token pricing for cost estimation ($/MTok)."""
+
+	input_per_million: float = 3.0  # Sonnet default
+	output_per_million: float = 15.0
+	cache_write_per_million: float = 3.75
+	cache_read_per_million: float = 0.30
+
+
+@dataclass
 class BackendConfig:
 	"""Worker backend settings."""
 
@@ -157,6 +167,7 @@ class MissionConfig:
 	planner: PlannerConfig = field(default_factory=PlannerConfig)
 	green_branch: GreenBranchConfig = field(default_factory=GreenBranchConfig)
 	backend: BackendConfig = field(default_factory=BackendConfig)
+	pricing: PricingConfig = field(default_factory=PricingConfig)
 
 
 def _build_verification(data: dict[str, Any]) -> VerificationConfig:
@@ -282,6 +293,14 @@ def _build_green_branch(data: dict[str, Any]) -> GreenBranchConfig:
 	return gc
 
 
+def _build_pricing(data: dict[str, Any]) -> PricingConfig:
+	pc = PricingConfig()
+	for key in ("input_per_million", "output_per_million", "cache_write_per_million", "cache_read_per_million"):
+		if key in data:
+			setattr(pc, key, float(data[key]))
+	return pc
+
+
 def _build_backend(data: dict[str, Any]) -> BackendConfig:
 	bc = BackendConfig()
 	if "type" in data:
@@ -348,4 +367,6 @@ def load_config(path: str | Path) -> MissionConfig:
 		mc.green_branch = _build_green_branch(data["green_branch"])
 	if "backend" in data:
 		mc.backend = _build_backend(data["backend"])
+	if "pricing" in data:
+		mc.pricing = _build_pricing(data["pricing"])
 	return mc

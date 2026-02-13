@@ -42,9 +42,9 @@ function initProjectCharts(projectName) {
 
 	const scoreCtx = document.getElementById(`chart-score-${projectName}`);
 	const testsCtx = document.getElementById(`chart-tests-${projectName}`);
-	const costCtx = document.getElementById(`chart-cost-${projectName}`);
+	const tokensCtx = document.getElementById(`chart-tokens-${projectName}`);
 
-	if (!scoreCtx || !testsCtx || !costCtx) return;
+	if (!scoreCtx || !testsCtx || !tokensCtx) return;
 
 	projectCharts[projectName] = {
 		score: new Chart(scoreCtx, {
@@ -81,17 +81,23 @@ function initProjectCharts(projectName) {
 				},
 			},
 		}),
-		cost: new Chart(costCtx, {
+		tokens: new Chart(tokensCtx, {
 			type: "bar",
 			data: {
 				labels: [],
-				datasets: [{
-					label: "Cost ($)",
-					data: [],
-					backgroundColor: CHART_COLORS.warning,
-				}],
+				datasets: [
+					{ label: "Input Tokens (K)", data: [], backgroundColor: CHART_COLORS.accent },
+					{ label: "Output Tokens (K)", data: [], backgroundColor: CHART_COLORS.warning },
+				],
 			},
-			options: COMMON_OPTIONS,
+			options: {
+				...COMMON_OPTIONS,
+				scales: {
+					...COMMON_OPTIONS.scales,
+					x: { ...COMMON_OPTIONS.scales.x, stacked: true },
+					y: { ...COMMON_OPTIONS.scales.y, stacked: true },
+				},
+			},
 		}),
 	};
 
@@ -105,15 +111,15 @@ async function updateProjectCharts(projectName) {
 
 	try {
 		const base = `/project/${projectName}/api`;
-		const [scoreRes, testsRes, costRes] = await Promise.all([
+		const [scoreRes, testsRes, tokensRes] = await Promise.all([
 			fetch(`${base}/score-history`),
 			fetch(`${base}/test-trend`),
-			fetch(`${base}/cost-per-round`),
+			fetch(`${base}/token-usage`),
 		]);
 
 		const scoreData = await scoreRes.json();
 		const testsData = await testsRes.json();
-		const costData = await costRes.json();
+		const tokensData = await tokensRes.json();
 
 		if (charts.score) {
 			charts.score.data.labels = scoreData.labels;
@@ -128,10 +134,12 @@ async function updateProjectCharts(projectName) {
 			charts.tests.update("none");
 		}
 
-		if (charts.cost) {
-			charts.cost.data.labels = costData.labels;
-			charts.cost.data.datasets[0].data = costData.data;
-			charts.cost.update("none");
+		if (charts.tokens) {
+			charts.tokens.data.labels = tokensData.labels;
+			// Convert to K for readability
+			charts.tokens.data.datasets[0].data = (tokensData.input || []).map(v => Math.round(v / 1000));
+			charts.tokens.data.datasets[1].data = (tokensData.output || []).map(v => Math.round(v / 1000));
+			charts.tokens.update("none");
 		}
 	} catch (err) {
 		console.error(`Chart update failed for ${projectName}:`, err);
@@ -141,14 +149,14 @@ async function updateProjectCharts(projectName) {
 // Legacy support: init charts for single-project view
 let chartScore = null;
 let chartTests = null;
-let chartCost = null;
+let chartTokens = null;
 
 function initCharts() {
 	const scoreCtx = document.getElementById("chart-score");
 	const testsCtx = document.getElementById("chart-tests");
-	const costCtx = document.getElementById("chart-cost");
+	const tokensCtx = document.getElementById("chart-tokens");
 
-	if (!scoreCtx || !testsCtx || !costCtx) return;
+	if (!scoreCtx || !testsCtx || !tokensCtx) return;
 
 	chartScore = new Chart(scoreCtx, {
 		type: "line",
@@ -186,31 +194,37 @@ function initCharts() {
 		},
 	});
 
-	chartCost = new Chart(costCtx, {
+	chartTokens = new Chart(tokensCtx, {
 		type: "bar",
 		data: {
 			labels: [],
-			datasets: [{
-				label: "Cost ($)",
-				data: [],
-				backgroundColor: CHART_COLORS.warning,
-			}],
+			datasets: [
+				{ label: "Input Tokens (K)", data: [], backgroundColor: CHART_COLORS.accent },
+				{ label: "Output Tokens (K)", data: [], backgroundColor: CHART_COLORS.warning },
+			],
 		},
-		options: COMMON_OPTIONS,
+		options: {
+			...COMMON_OPTIONS,
+			scales: {
+				...COMMON_OPTIONS.scales,
+				x: { ...COMMON_OPTIONS.scales.x, stacked: true },
+				y: { ...COMMON_OPTIONS.scales.y, stacked: true },
+			},
+		},
 	});
 }
 
 async function updateCharts() {
 	try {
-		const [scoreRes, testsRes, costRes] = await Promise.all([
+		const [scoreRes, testsRes, tokensRes] = await Promise.all([
 			fetch("/api/score-history"),
 			fetch("/api/test-trend"),
-			fetch("/api/cost-per-round"),
+			fetch("/api/token-usage"),
 		]);
 
 		const scoreData = await scoreRes.json();
 		const testsData = await testsRes.json();
-		const costData = await costRes.json();
+		const tokensData = await tokensRes.json();
 
 		if (chartScore) {
 			chartScore.data.labels = scoreData.labels;
@@ -225,10 +239,11 @@ async function updateCharts() {
 			chartTests.update("none");
 		}
 
-		if (chartCost) {
-			chartCost.data.labels = costData.labels;
-			chartCost.data.datasets[0].data = costData.data;
-			chartCost.update("none");
+		if (chartTokens) {
+			chartTokens.data.labels = tokensData.labels;
+			chartTokens.data.datasets[0].data = (tokensData.input || []).map(v => Math.round(v / 1000));
+			chartTokens.data.datasets[1].data = (tokensData.output || []).map(v => Math.round(v / 1000));
+			chartTokens.update("none");
 		}
 	} catch (err) {
 		console.error("Chart update failed:", err);

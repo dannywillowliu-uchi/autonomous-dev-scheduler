@@ -39,6 +39,8 @@ class WorkerInfo:
 	units_completed: int = 0
 	units_failed: int = 0
 	total_cost_usd: float = 0.0
+	input_tokens: int = 0
+	output_tokens: int = 0
 	backend_type: str = "local"
 
 
@@ -72,6 +74,8 @@ class DashboardSnapshot:
 	test_trend: list[tuple[int, int, int]] = field(default_factory=list)
 	completion_rates: list[tuple[int, float]] = field(default_factory=list)
 	cost_per_round: list[tuple[int, float]] = field(default_factory=list)
+	# Token usage per epoch: (epoch_number, input_tokens, output_tokens)
+	token_usage: list[tuple[int, int, int]] = field(default_factory=list)
 	# Recent events
 	recent_events: list[DashboardEvent] = field(default_factory=list)
 
@@ -212,12 +216,18 @@ class DashboardProvider:
 			for ref in reflections
 		]
 
-		# Workers
+		# Workers -- use DB entries if present, else derive from running work units
 		all_workers = db.get_all_workers()
-		snap.workers = _build_worker_infos(db, all_workers)
-		snap.workers_active = sum(1 for w in all_workers if w.status == "working")
-		snap.workers_idle = sum(1 for w in all_workers if w.status == "idle")
-		snap.workers_dead = sum(1 for w in all_workers if w.status == "dead")
+		if all_workers:
+			snap.workers = _build_worker_infos(db, all_workers)
+			snap.workers_active = sum(1 for w in all_workers if w.status == "working")
+			snap.workers_idle = sum(1 for w in all_workers if w.status == "idle")
+			snap.workers_dead = sum(1 for w in all_workers if w.status == "dead")
+		else:
+			# Derive "workers" from running work units (continuous mode)
+			snap.workers, snap.workers_active = _derive_workers_from_units(db, mission.id)
+			snap.workers_idle = 0
+			snap.workers_dead = 0
 
 		# Work units for current round
 		current_round = snap.current_round
@@ -238,6 +248,16 @@ class DashboardProvider:
 			# Recent events from work units + merge requests
 			snap.recent_events = _build_events(units, merge_requests)
 
+		# Token usage per epoch
+		try:
+			epoch_tokens = db.get_token_usage_by_epoch(mission.id)
+			snap.token_usage = [
+				(t["epoch"], t["input_tokens"], t["output_tokens"])
+				for t in epoch_tokens
+			]
+		except Exception:
+			pass
+
 		# Cost
 		if current_round:
 			snap.round_cost = current_round.cost_usd
@@ -257,6 +277,44 @@ def _round_status_to_phase(status: str) -> str:
 		"failed": "idle",
 	}
 	return mapping.get(status, "idle")
+
+
+def _derive_workers_from_units(db: Database, mission_id: str) -> tuple[list[WorkerInfo], int]:
+	"""Derive worker-like entries from running work units (continuous mode).
+
+	Returns (worker_infos, active_count).
+	"""
+	try:
+		# Get all units for this mission's epochs
+		epochs = db.get_epochs_for_mission(mission_id)
+		running: list[WorkUnit] = []
+		for epoch in epochs:
+			events = db.get_unit_events_for_epoch(epoch.id)
+			dispatched_ids = {e.work_unit_id for e in events if e.event_type == "dispatched"}
+			done_ids = {
+				e.work_unit_id for e in events
+				if e.event_type in ("completed", "failed", "merged", "rejected")
+			}
+			active_ids = dispatched_ids - done_ids
+			for uid in active_ids:
+				unit = db.get_work_unit(uid)
+				if unit and unit.status in ("running", "claimed"):
+					running.append(unit)
+	except Exception:
+		return [], 0
+
+	infos = [
+		WorkerInfo(
+			id=u.id[:12],
+			status="working",
+			current_unit_title=u.title,
+			total_cost_usd=u.cost_usd,
+			input_tokens=u.input_tokens,
+			output_tokens=u.output_tokens,
+		)
+		for u in running
+	]
+	return infos, len(infos)
 
 
 def _build_worker_infos(db: Database, workers: list[Worker]) -> list[WorkerInfo]:
