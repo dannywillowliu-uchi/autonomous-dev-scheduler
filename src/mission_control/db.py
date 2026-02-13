@@ -350,6 +350,7 @@ class Database:
 	def _create_tables(self) -> None:
 		self.conn.executescript(SCHEMA_SQL)
 		self._migrate_epoch_columns()
+		self._migrate_token_columns()
 
 	def _migrate_epoch_columns(self) -> None:
 		"""Add epoch_id columns to existing tables (idempotent)."""
@@ -359,6 +360,21 @@ class Database:
 			("reflections", "epoch_id", "TEXT"),
 			("rewards", "epoch_id", "TEXT"),
 			("experiences", "epoch_id", "TEXT"),
+		]
+		for table, column, col_type in migrations:
+			try:
+				self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")  # noqa: S608
+			except sqlite3.OperationalError:
+				pass  # Column already exists
+
+	def _migrate_token_columns(self) -> None:
+		"""Add token tracking columns to existing tables (idempotent)."""
+		migrations = [
+			("work_units", "input_tokens", "INTEGER DEFAULT 0"),
+			("work_units", "output_tokens", "INTEGER DEFAULT 0"),
+			("work_units", "cost_usd", "REAL DEFAULT 0.0"),
+			("unit_events", "input_tokens", "INTEGER DEFAULT 0"),
+			("unit_events", "output_tokens", "INTEGER DEFAULT 0"),
 		]
 		for table, column, col_type in migrations:
 			try:
@@ -674,8 +690,9 @@ class Database:
 			 depends_on, branch_name,
 			 claimed_at, heartbeat_at, started_at, finished_at,
 			 exit_code, commit_hash, output_summary, attempt, max_attempts,
-			 timeout, verification_command)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+			 timeout, verification_command,
+			 epoch_id, input_tokens, output_tokens, cost_usd)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
 			(
 				unit.id, unit.plan_id, unit.title, unit.description,
 				unit.files_hint, unit.verification_hint, unit.priority,
@@ -685,6 +702,7 @@ class Database:
 				unit.finished_at, unit.exit_code, unit.commit_hash,
 				unit.output_summary, unit.attempt, unit.max_attempts,
 				unit.timeout, unit.verification_command,
+				unit.epoch_id, unit.input_tokens, unit.output_tokens, unit.cost_usd,
 			),
 		)
 		self.conn.commit()
@@ -698,7 +716,8 @@ class Database:
 			depends_on=?, branch_name=?, claimed_at=?, heartbeat_at=?,
 			started_at=?, finished_at=?, exit_code=?, commit_hash=?,
 			output_summary=?, attempt=?, max_attempts=?,
-			timeout=?, verification_command=?
+			timeout=?, verification_command=?,
+			epoch_id=?, input_tokens=?, output_tokens=?, cost_usd=?
 			WHERE id=?""",
 			(
 				unit.plan_id, unit.title, unit.description, unit.files_hint,
@@ -708,7 +727,9 @@ class Database:
 				unit.claimed_at, unit.heartbeat_at, unit.started_at,
 				unit.finished_at, unit.exit_code, unit.commit_hash,
 				unit.output_summary, unit.attempt, unit.max_attempts,
-				unit.timeout, unit.verification_command, unit.id,
+				unit.timeout, unit.verification_command,
+				unit.epoch_id, unit.input_tokens, unit.output_tokens, unit.cost_usd,
+				unit.id,
 			),
 		)
 		self.conn.commit()
@@ -806,6 +827,7 @@ class Database:
 
 	@staticmethod
 	def _row_to_work_unit(row: sqlite3.Row) -> WorkUnit:
+		keys = row.keys()
 		return WorkUnit(
 			id=row["id"],
 			plan_id=row["plan_id"],
@@ -832,6 +854,9 @@ class Database:
 			max_attempts=row["max_attempts"],
 			timeout=row["timeout"],
 			verification_command=row["verification_command"],
+			input_tokens=row["input_tokens"] if "input_tokens" in keys else 0,
+			output_tokens=row["output_tokens"] if "output_tokens" in keys else 0,
+			cost_usd=row["cost_usd"] if "cost_usd" in keys else 0.0,
 		)
 
 	# -- Workers --
@@ -1534,12 +1559,14 @@ class Database:
 		self.conn.execute(
 			"""INSERT INTO unit_events
 			(id, mission_id, epoch_id, work_unit_id, event_type,
-			 timestamp, score_after, details)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+			 timestamp, score_after, details,
+			 input_tokens, output_tokens)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
 			(
 				event.id, event.mission_id, event.epoch_id,
 				event.work_unit_id, event.event_type,
 				event.timestamp, event.score_after, event.details,
+				event.input_tokens, event.output_tokens,
 			),
 		)
 		self.conn.commit()
@@ -1558,8 +1585,31 @@ class Database:
 		).fetchall()
 		return [self._row_to_unit_event(r) for r in rows]
 
+	def get_token_usage_by_epoch(self, mission_id: str) -> list[dict[str, object]]:
+		"""Aggregate token usage per epoch for charting."""
+		rows = self.conn.execute(
+			"""SELECT e.number AS epoch_number,
+				COALESCE(SUM(wu.input_tokens), 0) AS input_tokens,
+				COALESCE(SUM(wu.output_tokens), 0) AS output_tokens
+			FROM epochs e
+			LEFT JOIN work_units wu ON wu.epoch_id = e.id
+			WHERE e.mission_id = ?
+			GROUP BY e.id, e.number
+			ORDER BY e.number ASC""",
+			(mission_id,),
+		).fetchall()
+		return [
+			{
+				"epoch": int(r["epoch_number"]),
+				"input_tokens": int(r["input_tokens"]),
+				"output_tokens": int(r["output_tokens"]),
+			}
+			for r in rows
+		]
+
 	@staticmethod
 	def _row_to_unit_event(row: sqlite3.Row) -> UnitEvent:
+		keys = row.keys()
 		return UnitEvent(
 			id=row["id"],
 			mission_id=row["mission_id"],
@@ -1569,4 +1619,6 @@ class Database:
 			timestamp=row["timestamp"],
 			score_after=row["score_after"],
 			details=row["details"],
+			input_tokens=row["input_tokens"] if "input_tokens" in keys else 0,
+			output_tokens=row["output_tokens"] if "output_tokens" in keys else 0,
 		)

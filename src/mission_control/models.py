@@ -147,6 +147,9 @@ class WorkUnit:
 	timeout: int | None = None  # per-unit timeout override (seconds)
 	verification_command: str | None = None  # per-unit verification override
 	epoch_id: str | None = None  # continuous mode epoch
+	input_tokens: int = 0
+	output_tokens: int = 0
+	cost_usd: float = 0.0
 
 
 @dataclass
@@ -382,3 +385,5 @@ class UnitEvent:
 	timestamp: str = field(default_factory=_now_iso)
 	score_after: float = 0.0
 	details: str = ""  # JSON blob for extra info
+	input_tokens: int = 0
+	output_tokens: int = 0

@@ -3,14 +3,14 @@
 	<section class="card span-full"
 		hx-get="/project/{{ project_name }}/partials/mission-header"
 		hx-trigger="load, every 2s"
-		hx-swap="innerHTML">
+		hx-swap="morph:innerHTML">
 	</section>
 
 	<!-- Live status banner -->
 	<section class="card span-full"
 		hx-get="/project/{{ project_name }}/partials/live-status"
 		hx-trigger="load, every 2s"
-		hx-swap="innerHTML">
+		hx-swap="morph:innerHTML">
 	</section>
 
 	{% if mode == 'continuous' %}
@@ -19,7 +19,7 @@
 		<h2>Continuous Status</h2>
 		<div hx-get="/project/{{ project_name }}/partials/continuous-status"
 			hx-trigger="load, every 2s"
-			hx-swap="innerHTML">
+			hx-swap="morph:innerHTML">
 		</div>
 	</section>
 
@@ -27,7 +27,7 @@
 		<h2>Work Units</h2>
 		<div hx-get="/project/{{ project_name }}/partials/work-units"
 			hx-trigger="load, every 2s"
-			hx-swap="innerHTML">
+			hx-swap="morph:innerHTML">
 		</div>
 	</section>
 
@@ -35,7 +35,7 @@
 		<h2>Event Timeline</h2>
 		<div hx-get="/project/{{ project_name }}/partials/event-timeline"
 			hx-trigger="load, every 3s"
-			hx-swap="innerHTML">
+			hx-swap="morph:innerHTML">
 		</div>
 	</section>
 	{% else %}
@@ -44,7 +44,7 @@
 		<h2>Workers</h2>
 		<div hx-get="/project/{{ project_name }}/partials/worker-pool"
 			hx-trigger="load, every 2s"
-			hx-swap="innerHTML">
+			hx-swap="morph:innerHTML">
 		</div>
 	</section>
 
@@ -52,7 +52,7 @@
 		<h2>Work Units</h2>
 		<div hx-get="/project/{{ project_name }}/partials/work-units"
 			hx-trigger="load, every 2s"
-			hx-swap="innerHTML">
+			hx-swap="morph:innerHTML">
 		</div>
 	</section>
 
@@ -60,7 +60,7 @@
 		<h2>Merge Queue</h2>
 		<div hx-get="/project/{{ project_name }}/partials/merge-queue"
 			hx-trigger="load, every 2s"
-			hx-swap="innerHTML">
+			hx-swap="morph:innerHTML">
 		</div>
 	</section>
 
@@ -68,7 +68,7 @@
 		<h2>Round Timeline</h2>
 		<div hx-get="/project/{{ project_name }}/partials/round-timeline"
 			hx-trigger="load, every 5s"
-			hx-swap="innerHTML">
+			hx-swap="morph:innerHTML">
 		</div>
 	</section>
 	{% endif %}
@@ -77,7 +77,7 @@
 		<h2>Discoveries</h2>
 		<div hx-get="/project/{{ project_name }}/partials/discoveries-feed"
 			hx-trigger="load, every 5s"
-			hx-swap="innerHTML">
+			hx-swap="morph:innerHTML">
 		</div>
 	</section>
 
@@ -93,8 +93,8 @@
 	</section>
 
 	<section class="card">
-		<h2>Cost / Round</h2>
-		<canvas id="chart-cost-{{ project_name }}"></canvas>
+		<h2>Token Usage</h2>
+		<canvas id="chart-tokens-{{ project_name }}"></canvas>
 	</section>
 
 	<!-- Live log tail -->
@@ -102,7 +102,7 @@
 		<h2>Live Log</h2>
 		<div hx-get="/project/{{ project_name }}/partials/log-tail"
 			hx-trigger="load, every 3s"
-			hx-swap="innerHTML">
+			hx-swap="morph:innerHTML">
 		</div>
 	</section>
 
@@ -111,7 +111,7 @@
 		<h2>Activity Log</h2>
 		<div hx-get="/project/{{ project_name }}/partials/activity-log"
 			hx-trigger="load, every 2s"
-			hx-swap="innerHTML">
+			hx-swap="morph:innerHTML">
 		</div>
 	</section>
 </main>

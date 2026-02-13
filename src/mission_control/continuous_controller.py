@@ -32,6 +32,7 @@ from mission_control.models import (
 	_now_iso,
 )
 from mission_control.session import parse_mc_result
+from mission_control.token_parser import compute_token_cost, parse_stream_json
 from mission_control.worker import render_mission_worker_prompt
 
 logger = logging.getLogger(__name__)
@@ -359,6 +360,8 @@ class ContinuousController:
 								work_unit_id=unit.id,
 								event_type="merged",
 								score_after=self._current_score,
+								input_tokens=unit.input_tokens,
+								output_tokens=unit.output_tokens,
 							))
 						except Exception:
 							pass
@@ -441,6 +444,9 @@ class ContinuousController:
 			if handoff and self._planner:
 				self._planner.ingest_handoff(handoff)
 
+			# Accumulate cost
+			mission.total_cost_usd += unit.cost_usd
+
 			# Update mission score
 			mission.final_score = self._current_score
 			try:
@@ -513,7 +519,7 @@ class ContinuousController:
 			budget = self.config.scheduler.budget.max_per_session_usd
 			cmd = [
 				"claude", "-p",
-				"--output-format", "text",
+				"--output-format", "stream-json",
 				"--permission-mode", "bypassPermissions",
 				"--model", self.config.scheduler.model,
 				"--max-budget-usd", str(budget),
@@ -567,9 +573,20 @@ class ContinuousController:
 
 			output = await self._backend.get_output(handle)
 
-			# Parse result
+			# Parse result -- try stream-json first, fall back to plain text
 			handoff = None
-			mc_result = parse_mc_result(output)
+			stream_result = parse_stream_json(output)
+			mc_result = stream_result.mc_result
+			if mc_result is None:
+				mc_result = parse_mc_result(output)
+
+			# Store token usage
+			unit.input_tokens = stream_result.usage.input_tokens
+			unit.output_tokens = stream_result.usage.output_tokens
+			unit.cost_usd = compute_token_cost(
+				stream_result.usage, self.config.pricing,
+			)
+
 			if mc_result:
 				unit_status = str(mc_result.get("status", "completed"))
 				unit.output_summary = str(mc_result.get("summary", ""))

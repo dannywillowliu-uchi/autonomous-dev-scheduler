@@ -5,8 +5,7 @@
 			<th>ID</th>
 			<th>Status</th>
 			<th>Current Task</th>
-			<th>Done</th>
-			<th>Failed</th>
+			<th>Tokens</th>
 			<th>Cost</th>
 		</tr>
 	</thead>
@@ -26,8 +25,10 @@
 				{% endif %}
 			</td>
 			<td>{{ w.current_unit_title or '-' }}</td>
-			<td>{{ w.units_completed }}</td>
-			<td>{{ w.units_failed }}</td>
+			<td>
+				{%- set total_k = ((w.input_tokens + w.output_tokens) / 1000)|round(1) -%}
+				{{ total_k }}K
+			</td>
 			<td>${{ '%.2f'|format(w.total_cost_usd) }}</td>
 		</tr>
 		{% endfor %}
@@ -39,5 +40,5 @@
 	<span class="dot dot-red" title="{{ tooltip('dead') }}"></span> {{ snap.workers_dead }} {{ label('dead').lower() }}
 </div>
 {% else %}
-<p class="muted">No workers registered</p>
+<p class="muted">No active workers</p>
 {% endif %}

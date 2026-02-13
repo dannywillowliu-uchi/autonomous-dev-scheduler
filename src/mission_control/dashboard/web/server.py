@@ -439,6 +439,23 @@ def create_app(db_path: str | None = None, registry: ProjectRegistry | None = No
 		data = [c for _, c in snap.cost_per_round]
 		return JSONResponse({"labels": labels, "data": data})
 
+	@app.get("/project/{name}/api/token-usage")
+	async def project_token_usage(name: str):
+		"""Token usage per epoch/round for charting."""
+		assert _state is not None
+		provider = _state.get_provider(name)
+		snap = provider.get_snapshot() if provider else None
+		if not snap or not snap.token_usage:
+			return JSONResponse({"labels": [], "input": [], "output": []})
+		labels = [f"E{e}" for e, _, _ in snap.token_usage]
+		input_tokens = [i for _, i, _ in snap.token_usage]
+		output_tokens = [o for _, _, o in snap.token_usage]
+		return JSONResponse({
+			"labels": labels,
+			"input": input_tokens,
+			"output": output_tokens,
+		})
+
 	# -- Legacy single-project partials (backwards compat) --
 
 	@app.get("/partials/mission-header", response_class=HTMLResponse)
@@ -499,6 +516,20 @@ def create_app(db_path: str | None = None, registry: ProjectRegistry | None = No
 		labels = [f"R{r}" for r, _ in snap.cost_per_round]
 		data = [c for _, c in snap.cost_per_round]
 		return JSONResponse({"labels": labels, "data": data})
+
+	@app.get("/api/token-usage")
+	async def legacy_token_usage():
+		snap = _get_first_provider_snap()
+		if not snap or not snap.token_usage:
+			return JSONResponse({"labels": [], "input": [], "output": []})
+		labels = [f"E{e}" for e, _, _ in snap.token_usage]
+		input_tokens = [i for _, i, _ in snap.token_usage]
+		output_tokens = [o for _, _, o in snap.token_usage]
+		return JSONResponse({
+			"labels": labels,
+			"input": input_tokens,
+			"output": output_tokens,
+		})
 
 	# -- Launch wizard --
 
