@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -59,6 +61,20 @@ class TestShouldStop:
 	def test_score_below_threshold(self) -> None:
 		ctrl = ContinuousController(_config(), _db())
 		ctrl._current_score = 0.89
+		assert ctrl._should_stop(Mission(id="m1")) == ""
+
+	def test_wall_time_exceeded(self) -> None:
+		config = _config()
+		config.continuous.max_wall_time_seconds = 10
+		ctrl = ContinuousController(config, _db())
+		ctrl._start_time = time.monotonic() - 20  # 20s elapsed, limit is 10s
+		assert ctrl._should_stop(Mission(id="m1")) == "wall_time_exceeded"
+
+	def test_wall_time_not_exceeded(self) -> None:
+		config = _config()
+		config.continuous.max_wall_time_seconds = 100
+		ctrl = ContinuousController(config, _db())
+		ctrl._start_time = time.monotonic() - 10  # 10s elapsed, limit is 100s
 		assert ctrl._should_stop(Mission(id="m1")) == ""
 
 	def test_signal_stopped(self) -> None:
@@ -406,3 +422,126 @@ class TestContinuousMissionResult:
 		assert r.objective_met is False
 		assert r.total_units_dispatched == 0
 		assert r.unit_scores == []
+
+
+class TestExecuteSingleUnit:
+	@pytest.mark.asyncio
+	async def test_provision_failure_queues_failed_completion(self) -> None:
+		"""When workspace provisioning fails, a failed completion is queued."""
+		db = _db()
+		db.insert_mission(Mission(id="m1", objective="test"))
+		plan = Plan(id="p1", objective="test")
+		db.insert_plan(plan)
+		epoch = Epoch(id="ep1", mission_id="m1", number=1)
+		db.insert_epoch(epoch)
+
+		config = _config()
+		config.target.path = "/tmp/test"
+		ctrl = ContinuousController(config, db)
+
+		mock_backend = AsyncMock()
+		mock_backend.provision_workspace.side_effect = RuntimeError("Pool exhausted")
+		ctrl._backend = mock_backend
+
+		async def mock_locked_call(method: str, *args: object) -> None:
+			getattr(db, method)(*args)
+		db.locked_call = mock_locked_call  # type: ignore[attr-defined]
+
+		unit = WorkUnit(id="wu1", plan_id="p1", title="Task")
+		db.insert_work_unit(unit)
+		semaphore = asyncio.Semaphore(1)
+
+		await ctrl._execute_single_unit(unit, epoch, Mission(id="m1"), semaphore)
+
+		assert not ctrl._completion_queue.empty()
+		completion = ctrl._completion_queue.get_nowait()
+		assert completion.unit.status == "failed"
+		assert "Pool exhausted" in completion.unit.output_summary
+
+
+class TestEndToEnd:
+	@pytest.mark.asyncio
+	async def test_units_flow_dispatch_to_completion(self) -> None:
+		"""Integration: dispatch loop feeds units, completion processor scores and stops."""
+		db = _db()
+		config = _config()
+		config.target.path = "/tmp/test"
+		config.target.name = "test"
+		config.continuous.max_wall_time_seconds = 30
+		ctrl = ContinuousController(config, db)
+
+		executed_ids: list[str] = []
+
+		async def mock_execute(
+			unit: WorkUnit, epoch: Epoch, mission: Mission,
+			semaphore: asyncio.Semaphore,
+		) -> None:
+			executed_ids.append(unit.id)
+			unit.status = "completed"
+			unit.finished_at = "2025-01-01T00:00:00"
+			await ctrl._completion_queue.put(
+				WorkerCompletion(
+					unit=unit, handoff=None,
+					workspace="/tmp/ws", epoch=epoch,
+				),
+			)
+			semaphore.release()
+
+		# Mock planner: returns 2 units per call
+		call_count = 0
+
+		async def mock_get_next(
+			mission: Mission, max_units: int = 3, feedback_context: str = "",
+		) -> tuple[Plan, list[WorkUnit], Epoch]:
+			nonlocal call_count
+			call_count += 1
+			plan = Plan(id=f"p{call_count}", objective="test")
+			epoch = Epoch(
+				id=f"ep{call_count}", mission_id=mission.id,
+				number=call_count,
+			)
+			units = [
+				WorkUnit(
+					id=f"wu-{call_count}-{i}", plan_id=plan.id,
+					title=f"Task {call_count}.{i}",
+				)
+				for i in range(2)
+			]
+			return plan, units, epoch
+
+		mock_planner = MagicMock()
+		mock_planner.get_next_units = AsyncMock(side_effect=mock_get_next)
+		mock_planner.ingest_handoff = MagicMock()
+		mock_planner.backlog_size = 0
+
+		mock_gbm = MagicMock()
+		mock_gbm.verify_and_merge_unit = AsyncMock()
+
+		async def mock_init() -> None:
+			ctrl._planner = mock_planner
+			ctrl._green_branch = mock_gbm
+			ctrl._backend = AsyncMock()
+
+		# Scores escalate: 0.5, 0.7, 0.95 (met) -- stops on 3rd unit
+		score_iter = iter([0.5, 0.7, 0.95, 0.95, 0.95])
+
+		def mock_score(**kwargs: object) -> object:
+			from mission_control.evaluator import ObjectiveEvaluation
+			s = next(score_iter, 0.95)
+			return ObjectiveEvaluation(score=s, met=(s >= 0.9), reasoning="test")
+
+		with (
+			patch.object(ctrl, "_init_components", mock_init),
+			patch.object(ctrl, "_execute_single_unit", side_effect=mock_execute),
+			patch(
+				"mission_control.continuous_controller.compute_running_score",
+				side_effect=mock_score,
+			),
+		):
+			result = await ctrl.run()
+
+		assert result.objective_met is True
+		assert result.stopped_reason == "objective_met"
+		assert len(executed_ids) >= 2
+		assert result.total_units_merged >= 2
+		assert result.final_score >= 0.9
