@@ -271,13 +271,16 @@ def _build_backend(data: dict[str, Any]) -> BackendConfig:
 	return bc
 
 
+_STRIP_ENV_KEYS = {"ANTHROPIC_API_KEY", "CLAUDECODE"}
+
+
 def claude_subprocess_env() -> dict[str, str]:
 	"""Build a clean environment for claude subprocess calls.
 
-	Strips ANTHROPIC_API_KEY so the subprocess uses the host Claude Code's
-	OAuth auth (e.g. Claude Max) instead of a potentially stale API key.
+	Strips ANTHROPIC_API_KEY (forces OAuth/Max auth instead of stale API key)
+	and CLAUDECODE (prevents 'nested session' detection that blocks spawning).
 	"""
-	return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+	return {k: v for k, v in os.environ.items() if k not in _STRIP_ENV_KEYS}
 
 
 def load_config(path: str | Path) -> MissionConfig:
