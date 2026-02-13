@@ -308,6 +308,19 @@ class Reward:
 
 
 @dataclass
+class Signal:
+	"""Cross-process signal for controlling a running mission."""
+
+	id: str = field(default_factory=_new_id)
+	mission_id: str = ""
+	signal_type: str = ""  # stop/retry_unit/adjust
+	payload: str = ""  # JSON: unit_id for retry, params for adjust
+	status: str = "pending"  # pending/acknowledged/expired
+	created_at: str = field(default_factory=_now_iso)
+	acknowledged_at: str | None = None
+
+
+@dataclass
 class Experience:
 	"""Successful approach indexed by task keywords for retrieval."""
 

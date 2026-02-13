@@ -68,6 +68,22 @@ def build_parser() -> argparse.ArgumentParser:
 	web.add_argument("--config", default=DEFAULT_CONFIG, help="Config file path")
 	web.add_argument("--port", type=int, default=8080, help="Port to serve on")
 
+	# mc register
+	reg = sub.add_parser("register", help="Register a project in the central registry")
+	reg.add_argument("--config", default=DEFAULT_CONFIG, help="Config file path")
+	reg.add_argument("--name", default=None, help="Project alias (defaults to target.name)")
+	reg.add_argument("--description", default="", help="Project description")
+
+	# mc unregister
+	unreg = sub.add_parser("unregister", help="Remove a project from the registry")
+	unreg.add_argument("name", help="Project name to unregister")
+
+	# mc projects
+	sub.add_parser("projects", help="List all registered projects")
+
+	# mc mcp
+	sub.add_parser("mcp", help="Start the MCP server (stdio)")
+
 	return parser
 
 
@@ -358,6 +374,87 @@ def cmd_web(args: argparse.Namespace) -> int:
 	return 0
 
 
+def cmd_register(args: argparse.Namespace) -> int:
+	"""Register a project in the central registry."""
+	from mission_control.registry import ProjectRegistry
+
+	config = load_config(args.config)
+	name = args.name or config.target.name
+
+	registry = ProjectRegistry()
+	try:
+		db_path = str(_get_db_path(args.config))
+		project = registry.register(
+			name=name,
+			config_path=str(Path(args.config).resolve()),
+			db_path=db_path,
+			description=args.description,
+		)
+		print(f"Registered '{project.name}' -> {project.config_path}")
+		return 0
+	except ValueError as e:
+		print(f"Error: {e}")
+		return 1
+	finally:
+		registry.close()
+
+
+def cmd_unregister(args: argparse.Namespace) -> int:
+	"""Remove a project from the registry."""
+	from mission_control.registry import ProjectRegistry
+
+	registry = ProjectRegistry()
+	try:
+		if registry.unregister(args.name):
+			print(f"Unregistered '{args.name}'")
+			return 0
+		else:
+			print(f"Project '{args.name}' not found")
+			return 1
+	finally:
+		registry.close()
+
+
+def cmd_projects(args: argparse.Namespace) -> int:
+	"""List all registered projects with status."""
+	from mission_control.registry import ProjectRegistry
+
+	registry = ProjectRegistry()
+	try:
+		projects = registry.list_projects()
+		if not projects:
+			print("No projects registered. Use 'mc register' to add one.")
+			return 0
+
+		for p in projects:
+			status = registry.get_project_status(p.name)
+			mission_info = ""
+			if status and status.mission_status != "idle":
+				mission_info = (
+					f" | {status.mission_status}"
+					f" | score={status.mission_score:.1f}"
+					f" | rounds={status.mission_rounds}"
+					f" | ${status.mission_cost:.2f}"
+				)
+			pid_info = f" (PID {p.active_pid})" if p.active_pid else ""
+			print(f"  {p.name}{pid_info}: {p.config_path}{mission_info}")
+		return 0
+	finally:
+		registry.close()
+
+
+def cmd_mcp(args: argparse.Namespace) -> int:
+	"""Start the MCP server."""
+	try:
+		from mission_control.mcp_server import run_mcp_server
+	except ImportError:
+		print("MCP dependencies not installed. Run: pip install -e '.[mcp]'")
+		return 1
+
+	run_mcp_server()
+	return 0
+
+
 COMMANDS = {
 	"start": cmd_start,
 	"status": cmd_status,
@@ -368,6 +465,10 @@ COMMANDS = {
 	"init": cmd_init,
 	"dashboard": cmd_dashboard,
 	"web": cmd_web,
+	"register": cmd_register,
+	"unregister": cmd_unregister,
+	"projects": cmd_projects,
+	"mcp": cmd_mcp,
 }
 
 
