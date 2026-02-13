@@ -83,6 +83,7 @@ class ContinuousController:
 		self._active_tasks: set[asyncio.Task[None]] = set()
 		self._current_score: float = 0.0
 		self._units_since_improvement: int = 0
+		self._start_time: float = 0.0
 		self._total_dispatched: int = 0
 		self._total_merged: int = 0
 		self._total_failed: int = 0
@@ -90,7 +91,7 @@ class ContinuousController:
 	async def run(self) -> ContinuousMissionResult:
 		"""Run the continuous mission loop until objective met or stopping condition."""
 		result = ContinuousMissionResult(objective=self.config.target.objective)
-		start_time = time.monotonic()
+		self._start_time = time.monotonic()
 
 		mission = Mission(
 			objective=self.config.target.objective,
@@ -167,7 +168,7 @@ class ContinuousController:
 			if self._backend:
 				await self._backend.cleanup()
 
-			result.wall_time_seconds = time.monotonic() - start_time
+			result.wall_time_seconds = time.monotonic() - self._start_time
 			result.final_score = self._current_score
 			result.total_units_dispatched = self._total_dispatched
 			result.total_units_merged = self._total_merged
@@ -716,11 +717,13 @@ class ContinuousController:
 		if signal_reason:
 			return signal_reason
 
-		# Wall time limit
 		cont = self.config.continuous
-		# Note: wall time is checked against start_time in run(),
-		# but we also check the mission started_at here
-		# for a rough check (precise check is in run())
+
+		# Wall time limit
+		if self._start_time > 0:
+			elapsed = time.monotonic() - self._start_time
+			if elapsed >= cont.max_wall_time_seconds:
+				return "wall_time_exceeded"
 
 		# Stall detection
 		if self._units_since_improvement >= cont.stall_threshold_units:
