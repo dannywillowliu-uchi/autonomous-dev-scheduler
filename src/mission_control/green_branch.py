@@ -38,21 +38,36 @@ class GreenBranchManager:
 
 		If reset_on_init is True (default), existing branches are reset to the
 		latest base branch HEAD to prevent divergence across missions.
+
+		Branches are also created in the source repo so that worker clones
+		(which clone from origin = source repo) can check them out.
 		"""
 		self.workspace = workspace
 		base = self.config.target.branch
 		gb = self.config.green_branch
+		source_repo = self.config.target.path
 
-		# Ensure we're on the base branch first
+		# Ensure branches exist in SOURCE repo first (worker clones need them)
+		for branch in (gb.working_branch, gb.green_branch):
+			ok, _ = await self._run_git_in(source_repo, "rev-parse", "--verify", branch)
+			if not ok:
+				logger.info("Creating branch %s in source repo from %s", branch, base)
+				await self._run_git_in(source_repo, "branch", branch, base)
+			elif gb.reset_on_init:
+				logger.info("Resetting branch %s in source repo to %s", branch, base)
+				await self._run_git_in(
+					source_repo, "update-ref", f"refs/heads/{branch}", base,
+				)
+
+		# Now set up workspace clone
+		await self._run_git("fetch", "origin")
 		await self._run_git("checkout", base)
 
 		for branch in (gb.working_branch, gb.green_branch):
 			ok, _ = await self._run_git("rev-parse", "--verify", branch)
 			if not ok:
-				logger.info("Creating branch %s from %s", branch, base)
-				await self._run_git("branch", branch, base)
+				await self._run_git("branch", branch, f"origin/{branch}")
 			elif gb.reset_on_init:
-				logger.info("Resetting branch %s to %s", branch, base)
 				await self._run_git("update-ref", f"refs/heads/{branch}", base)
 
 	async def merge_to_working(self, worker_workspace: str, branch_name: str) -> bool:
