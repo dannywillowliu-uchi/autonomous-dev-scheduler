@@ -19,6 +19,7 @@ from mission_control.models import (
 	Reward,
 	Round,
 	Session,
+	Signal,
 	Snapshot,
 	TaskRecord,
 	Worker,
@@ -282,6 +283,19 @@ CREATE TABLE IF NOT EXISTS experiences (
 );
 
 CREATE INDEX IF NOT EXISTS idx_experiences_reward ON experiences(reward DESC);
+
+CREATE TABLE IF NOT EXISTS signals (
+	id TEXT PRIMARY KEY,
+	mission_id TEXT NOT NULL,
+	signal_type TEXT NOT NULL,
+	payload TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL DEFAULT 'pending',
+	created_at TEXT NOT NULL,
+	acknowledged_at TEXT,
+	FOREIGN KEY (mission_id) REFERENCES missions(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_signals_mission ON signals(mission_id, status);
 """
 
 
@@ -1342,4 +1356,61 @@ class Database:
 			discoveries=row["discoveries"],
 			concerns=row["concerns"],
 			reward=row["reward"],
+		)
+
+	# -- Signals --
+
+	def insert_signal(self, signal: Signal) -> None:
+		self.conn.execute(
+			"""INSERT INTO signals
+			(id, mission_id, signal_type, payload, status, created_at, acknowledged_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)""",
+			(
+				signal.id, signal.mission_id, signal.signal_type,
+				signal.payload, signal.status, signal.created_at,
+				signal.acknowledged_at,
+			),
+		)
+		self.conn.commit()
+
+	def get_pending_signals(self, mission_id: str) -> list[Signal]:
+		"""Get all pending signals for a mission."""
+		rows = self.conn.execute(
+			"SELECT * FROM signals WHERE mission_id=? AND status='pending' ORDER BY created_at ASC",
+			(mission_id,),
+		).fetchall()
+		return [self._row_to_signal(r) for r in rows]
+
+	def acknowledge_signal(self, signal_id: str) -> None:
+		"""Mark a signal as acknowledged."""
+		from mission_control.models import _now_iso
+		self.conn.execute(
+			"UPDATE signals SET status='acknowledged', acknowledged_at=? WHERE id=?",
+			(_now_iso(), signal_id),
+		)
+		self.conn.commit()
+
+	def expire_stale_signals(self, timeout_minutes: int = 10) -> int:
+		"""Expire unacknowledged signals older than timeout. Returns count expired."""
+		from mission_control.models import _now_iso
+		now = _now_iso()
+		cursor = self.conn.execute(
+			"""UPDATE signals SET status='expired'
+			WHERE status='pending'
+			AND (julianday(?) - julianday(created_at)) * 1440 > ?""",
+			(now, timeout_minutes),
+		)
+		self.conn.commit()
+		return cursor.rowcount
+
+	@staticmethod
+	def _row_to_signal(row: sqlite3.Row) -> Signal:
+		return Signal(
+			id=row["id"],
+			mission_id=row["mission_id"],
+			signal_type=row["signal_type"],
+			payload=row["payload"],
+			status=row["status"],
+			created_at=row["created_at"],
+			acknowledged_at=row["acknowledged_at"],
 		)

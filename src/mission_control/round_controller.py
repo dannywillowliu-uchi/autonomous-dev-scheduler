@@ -21,6 +21,7 @@ from mission_control.models import (
 	Plan,
 	PlanNode,
 	Round,
+	Signal,
 	WorkUnit,
 	_now_iso,
 )
@@ -486,6 +487,15 @@ class RoundController:
 					status = await self._backend.check_status(handle)
 					if status != "running":
 						break
+					# Check signals during execution for responsive stop
+					if not self.running:
+						await self._backend.kill(handle)
+						unit.attempt += 1
+						unit.status = "failed"
+						unit.output_summary = "Stopped by signal"
+						unit.finished_at = _now_iso()
+						await self.db.locked_call("update_work_unit", unit)
+						return
 					await self._backend.get_output(handle)
 					await asyncio.sleep(monitor_interval)
 				else:
@@ -622,6 +632,11 @@ class RoundController:
 		if not self.running:
 			return "user_stopped"
 
+		# Check DB signals (from web UI / MCP)
+		signal_reason = self._check_signals(mission.id)
+		if signal_reason:
+			return signal_reason
+
 		if mission.total_rounds > self.config.rounds.max_rounds:
 			return "max_rounds"
 
@@ -633,6 +648,59 @@ class RoundController:
 				return "stalled"
 
 		return ""
+
+	def _check_signals(self, mission_id: str) -> str:
+		"""Check for pending signals from web/MCP. Returns stop reason or empty."""
+		try:
+			signals = self.db.get_pending_signals(mission_id)
+		except Exception as exc:
+			logger.error("Failed to check signals: %s", exc)
+			return ""
+
+		for signal in signals:
+			if signal.signal_type == "stop":
+				self.db.acknowledge_signal(signal.id)
+				self.running = False
+				return "signal_stopped"
+			elif signal.signal_type == "retry_unit":
+				self._handle_retry_signal(signal)
+			elif signal.signal_type == "adjust":
+				self._handle_adjust_signal(signal)
+		return ""
+
+	def _handle_retry_signal(self, signal: Signal) -> None:
+		"""Reset a failed work unit to pending for retry."""
+		try:
+			unit_id = signal.payload.strip()
+			if unit_id:
+				unit = self.db.get_work_unit(unit_id)
+				if unit and unit.status == "failed" and unit.attempt < unit.max_attempts:
+					unit.status = "pending"
+					unit.worker_id = None
+					unit.claimed_at = None
+					unit.heartbeat_at = None
+					unit.started_at = None
+					unit.finished_at = None
+					self.db.update_work_unit(unit)
+					logger.info("Retrying work unit %s (attempt %d)", unit_id, unit.attempt + 1)
+			self.db.acknowledge_signal(signal.id)
+		except Exception as exc:
+			logger.error("Failed to handle retry signal: %s", exc)
+
+	def _handle_adjust_signal(self, signal: Signal) -> None:
+		"""Adjust runtime parameters from signal payload (JSON)."""
+		try:
+			import json as _json
+			params = _json.loads(signal.payload) if signal.payload else {}
+			if "max_rounds" in params:
+				self.config.rounds.max_rounds = int(params["max_rounds"])
+				logger.info("Adjusted max_rounds to %d", self.config.rounds.max_rounds)
+			if "num_workers" in params:
+				self.config.scheduler.parallel.num_workers = int(params["num_workers"])
+				logger.info("Adjusted num_workers to %d", self.config.scheduler.parallel.num_workers)
+			self.db.acknowledge_signal(signal.id)
+		except Exception as exc:
+			logger.error("Failed to handle adjust signal: %s", exc)
 
 	def stop(self) -> None:
 		self.running = False
