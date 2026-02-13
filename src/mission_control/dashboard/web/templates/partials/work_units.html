@@ -6,11 +6,11 @@
 	<span class="progress-label">{{ '%.0f'|format(snap.completion_pct) }}%</span>
 </div>
 <div class="unit-counts">
-	<span class="count">{{ snap.units_total }} total</span>
-	<span class="count pending">{{ snap.units_pending }} pending</span>
-	<span class="count running">{{ snap.units_running }} running</span>
-	<span class="count completed">{{ snap.units_completed }} done</span>
-	<span class="count failed">{{ snap.units_failed }} failed</span>
+	<span class="count" title="{{ tooltip('units_total') }}">{{ snap.units_total }} total</span>
+	<span class="count pending" title="{{ tooltip('pending') }}">{{ snap.units_pending }} {{ label('pending').lower() }}</span>
+	<span class="count running" title="{{ tooltip('running') }}">{{ snap.units_running }} {{ label('running').lower() }}</span>
+	<span class="count completed" title="{{ tooltip('completed') }}">{{ snap.units_completed }} {{ label('completed').lower() }}</span>
+	<span class="count failed" title="{{ tooltip('failed') }}">{{ snap.units_failed }} {{ label('failed').lower() }}</span>
 </div>
 {% if units %}
 <ul class="unit-list">
@@ -25,7 +25,7 @@
 			style="cursor:pointer">
 			{{ u.title[:60] }}
 		</span>
-		<span class="badge badge-{{ u.status }}">{{ u.status }}</span>
+		<span class="badge badge-{{ u.status }}" title="{{ tooltip(u.status) }}">{{ label(u.status) }}</span>
 		{% if u.status == 'failed' and project_name %}
 		<button class="btn btn-small btn-retry"
 			hx-post="/project/{{ project_name }}/retry/{{ u.id }}"

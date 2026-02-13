@@ -22,6 +22,93 @@ _HERE = Path(__file__).resolve().parent
 _TEMPLATES_DIR = _HERE / "templates"
 _STATIC_DIR = _HERE / "static"
 
+# -- Business-language mappings for Jinja2 templates --
+
+_LABELS: dict[str, str] = {
+	# Worker statuses
+	"idle": "Available",
+	"working": "Active",
+	"dead": "Offline",
+	# Work unit statuses
+	"pending": "Queued",
+	"claimed": "Assigned",
+	"running": "In Progress",
+	"completed": "Done",
+	"failed": "Failed",
+	"blocked": "Blocked",
+	# Round statuses
+	"planning": "Planning",
+	"executing": "Running",
+	"evaluating": "Evaluating",
+	# Round detail / plan terms
+	"Reflection Metrics": "Round Results",
+	"Plan Structure": "Execution Plan",
+	"Worker Handoffs": "Agent Reports",
+	"scope": "Task Scope",
+	"strategy": "Approach",
+	"Tests Before": "Tests (Start)",
+	"Tests After": "Tests (End)",
+	"Tests Delta": "Test Change",
+	"Lint Delta": "Lint Change",
+	"Score": "Quality Score",
+	"Score Delta": "Score Change",
+	"Plan Depth": "Plan Complexity",
+	"Fixup": "Auto-Fix",
+	# Merge queue
+	"pending merges": "awaiting integration",
+	"Merge Queue": "Integration Queue",
+}
+
+_TOOLTIPS: dict[str, str] = {
+	# Worker statuses
+	"idle": "Worker is ready and waiting for a task assignment",
+	"working": "Worker is actively executing an assigned task",
+	"dead": "Worker process has stopped or become unresponsive",
+	# Work unit statuses
+	"pending": "Task is created but not yet assigned to any worker",
+	"claimed": "Task has been assigned to a worker but execution hasn't started",
+	"running": "Task is currently being executed by a worker",
+	"completed": "Task finished successfully and its output was accepted",
+	"failed": "Task encountered an error and could not complete",
+	"blocked": "Task cannot proceed because it depends on another unfinished task",
+	# Work unit counts
+	"units_total": "Total number of tasks planned for this round",
+	"units_pending": "Tasks waiting to be picked up by a worker",
+	"units_running": "Tasks currently being worked on",
+	"units_completed": "Tasks that finished successfully",
+	"units_failed": "Tasks that encountered errors",
+	# Round statuses
+	"planning": "AI is decomposing the objective into actionable tasks",
+	"executing": "Workers are actively executing planned tasks",
+	"evaluating": "Assessing results against the objective to score progress",
+	# Round detail metrics
+	"Tests Before": "Number of passing tests at the start of this round",
+	"Tests After": "Number of passing tests at the end of this round",
+	"Tests Delta": "Net change in passing tests during this round",
+	"Lint Delta": "Net change in linting issues (negative is better)",
+	"Score": "Objective quality score assigned by the evaluator (0-100)",
+	"Score Delta": "Change in quality score compared to the previous round",
+	"Plan Depth": "How many levels deep the task decomposition tree goes",
+	"Fixup": "Whether auto-fix was needed to pass verification before merge",
+	# Merge queue
+	"pending merges": "Completed tasks waiting to be merged into the main branch",
+	"Merge Queue": "Queue of branches waiting to be integrated into the green branch",
+	# Round timeline
+	"round_score": "Quality score assigned by the evaluator after this round",
+	"round_units": "Tasks completed vs total tasks planned",
+	"round_cost": "API cost incurred during this round",
+}
+
+
+def label(key: str) -> str:
+	"""Map an internal status or term to business-friendly language."""
+	return _LABELS.get(key, key)
+
+
+def tooltip(key: str) -> str:
+	"""Return an explanatory tooltip for a status or metric."""
+	return _TOOLTIPS.get(key, "")
+
 
 class DashboardState:
 	"""Shared state for the dashboard app."""
@@ -108,6 +195,8 @@ def create_app(db_path: str | None = None, registry: ProjectRegistry | None = No
 	app = FastAPI(title="Mission Control Dashboard", lifespan=lifespan)
 
 	templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+	templates.env.globals["label"] = label
+	templates.env.globals["tooltip"] = tooltip
 
 	app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
