@@ -422,27 +422,38 @@ class TestInitializeResetOnInit:
 		db = Database(":memory:")
 		mgr = GreenBranchManager(config, db)
 
-		git_calls: list[tuple[str, ...]] = []
+		source_calls: list[tuple[str, tuple[str, ...]]] = []
+		workspace_calls: list[tuple[str, ...]] = []
 
-		async def mock_run_git(*args: str) -> tuple[bool, str]:
-			git_calls.append(args)
-			# rev-parse succeeds (branches exist)
+		async def mock_run_git_in(cwd: str, *args: str) -> tuple[bool, str]:
+			source_calls.append((cwd, args))
 			if args[0] == "rev-parse":
 				return True, "abc123"
 			return True, ""
 
-		with patch.object(mgr, "_run_git", side_effect=mock_run_git):
+		async def mock_run_git(*args: str) -> tuple[bool, str]:
+			workspace_calls.append(args)
+			if args[0] == "rev-parse":
+				return True, "abc123"
+			return True, ""
+
+		with patch.object(mgr, "_run_git_in", side_effect=mock_run_git_in), \
+			patch.object(mgr, "_run_git", side_effect=mock_run_git):
 			await mgr.initialize("/tmp/workspace")
 
-		# Should call update-ref for both branches
-		update_ref_calls = [c for c in git_calls if c[0] == "update-ref"]
-		assert len(update_ref_calls) == 2
-		assert update_ref_calls[0] == ("update-ref", "refs/heads/mc/working", "main")
-		assert update_ref_calls[1] == ("update-ref", "refs/heads/mc/green", "main")
+		# Source repo: should call update-ref for both branches
+		src_update_refs = [c[1] for c in source_calls if c[1][0] == "update-ref"]
+		assert len(src_update_refs) == 2
+		assert src_update_refs[0] == ("update-ref", "refs/heads/mc/working", "main")
+		assert src_update_refs[1] == ("update-ref", "refs/heads/mc/green", "main")
+
+		# Workspace: should also call update-ref for both branches
+		ws_update_refs = [c for c in workspace_calls if c[0] == "update-ref"]
+		assert len(ws_update_refs) == 2
 
 		# Should NOT call branch (branches already exist)
-		branch_create_calls = [c for c in git_calls if c[0] == "branch"]
-		assert len(branch_create_calls) == 0
+		src_branch_calls = [c[1] for c in source_calls if c[1][0] == "branch"]
+		assert len(src_branch_calls) == 0
 
 	async def test_reset_on_init_false_preserves_branches(self) -> None:
 		"""When reset_on_init is False, existing branches are not touched."""
@@ -451,20 +462,30 @@ class TestInitializeResetOnInit:
 		db = Database(":memory:")
 		mgr = GreenBranchManager(config, db)
 
-		git_calls: list[tuple[str, ...]] = []
+		source_calls: list[tuple[str, tuple[str, ...]]] = []
+		workspace_calls: list[tuple[str, ...]] = []
 
-		async def mock_run_git(*args: str) -> tuple[bool, str]:
-			git_calls.append(args)
+		async def mock_run_git_in(cwd: str, *args: str) -> tuple[bool, str]:
+			source_calls.append((cwd, args))
 			if args[0] == "rev-parse":
 				return True, "abc123"
 			return True, ""
 
-		with patch.object(mgr, "_run_git", side_effect=mock_run_git):
+		async def mock_run_git(*args: str) -> tuple[bool, str]:
+			workspace_calls.append(args)
+			if args[0] == "rev-parse":
+				return True, "abc123"
+			return True, ""
+
+		with patch.object(mgr, "_run_git_in", side_effect=mock_run_git_in), \
+			patch.object(mgr, "_run_git", side_effect=mock_run_git):
 			await mgr.initialize("/tmp/workspace")
 
-		# No update-ref calls
-		update_ref_calls = [c for c in git_calls if c[0] == "update-ref"]
-		assert len(update_ref_calls) == 0
+		# No update-ref calls in source or workspace
+		src_update_refs = [c[1] for c in source_calls if c[1][0] == "update-ref"]
+		assert len(src_update_refs) == 0
+		ws_update_refs = [c for c in workspace_calls if c[0] == "update-ref"]
+		assert len(ws_update_refs) == 0
 
 	async def test_new_branches_created_regardless_of_setting(self) -> None:
 		"""New branches are created even when reset_on_init is True."""
@@ -473,20 +494,31 @@ class TestInitializeResetOnInit:
 		db = Database(":memory:")
 		mgr = GreenBranchManager(config, db)
 
-		git_calls: list[tuple[str, ...]] = []
+		source_calls: list[tuple[str, tuple[str, ...]]] = []
+		workspace_calls: list[tuple[str, ...]] = []
 
-		async def mock_run_git(*args: str) -> tuple[bool, str]:
-			git_calls.append(args)
-			# rev-parse fails (branches don't exist)
+		async def mock_run_git_in(cwd: str, *args: str) -> tuple[bool, str]:
+			source_calls.append((cwd, args))
 			if args[0] == "rev-parse":
 				return False, ""
 			return True, ""
 
-		with patch.object(mgr, "_run_git", side_effect=mock_run_git):
+		async def mock_run_git(*args: str) -> tuple[bool, str]:
+			workspace_calls.append(args)
+			if args[0] == "rev-parse":
+				return False, ""
+			return True, ""
+
+		with patch.object(mgr, "_run_git_in", side_effect=mock_run_git_in), \
+			patch.object(mgr, "_run_git", side_effect=mock_run_git):
 			await mgr.initialize("/tmp/workspace")
 
-		# Should create branches, not update-ref
-		branch_create_calls = [c for c in git_calls if c[0] == "branch"]
-		update_ref_calls = [c for c in git_calls if c[0] == "update-ref"]
-		assert len(branch_create_calls) == 2
-		assert len(update_ref_calls) == 0
+		# Source repo: should create branches, not update-ref
+		src_branch_calls = [c[1] for c in source_calls if c[1][0] == "branch"]
+		src_update_refs = [c[1] for c in source_calls if c[1][0] == "update-ref"]
+		assert len(src_branch_calls) == 2
+		assert len(src_update_refs) == 0
+
+		# Workspace: should also create branches from origin
+		ws_branch_calls = [c for c in workspace_calls if c[0] == "branch"]
+		assert len(ws_branch_calls) == 2
