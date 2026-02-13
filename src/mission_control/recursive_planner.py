@@ -224,6 +224,7 @@ IMPORTANT: The PLAN_RESULT line must be the LAST line of your output. Put all re
 				stdout=asyncio.subprocess.PIPE,
 				stderr=asyncio.subprocess.PIPE,
 				env=claude_subprocess_env(),
+				cwd=str(self.config.target.resolved_path),
 			)
 			stdout, stderr = await asyncio.wait_for(
 				proc.communicate(input=prompt.encode()),
