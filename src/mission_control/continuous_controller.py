@@ -6,19 +6,14 @@ import asyncio
 import json
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from mission_control.backends import LocalBackend, SSHBackend, WorkerBackend
 from mission_control.config import MissionConfig
 from mission_control.continuous_planner import ContinuousPlanner
 from mission_control.db import Database
-from mission_control.evaluator import compute_running_score
-from mission_control.feedback import (
-	get_continuous_planner_context,
-	get_worker_context,
-	record_unit_outcome,
-)
+from mission_control.feedback import get_continuous_planner_context, get_worker_context
 from mission_control.green_branch import GreenBranchManager
 from mission_control.models import (
 	Epoch,
@@ -54,14 +49,12 @@ class ContinuousMissionResult:
 
 	mission_id: str = ""
 	objective: str = ""
-	final_score: float = 0.0
 	objective_met: bool = False
 	total_units_dispatched: int = 0
 	total_units_merged: int = 0
 	total_units_failed: int = 0
 	wall_time_seconds: float = 0.0
 	stopped_reason: str = ""
-	unit_scores: list[float] = field(default_factory=list)
 
 
 class ContinuousController:
@@ -82,8 +75,6 @@ class ContinuousController:
 		self._planner: ContinuousPlanner | None = None
 		self._completion_queue: asyncio.Queue[WorkerCompletion] = asyncio.Queue()
 		self._active_tasks: set[asyncio.Task[None]] = set()
-		self._current_score: float = 0.0
-		self._units_since_improvement: int = 0
 		self._start_time: float = 0.0
 		self._total_dispatched: int = 0
 		self._total_merged: int = 0
@@ -158,7 +149,6 @@ class ContinuousController:
 			mission.status = "completed" if result.objective_met else "stopped"
 			mission.finished_at = _now_iso()
 			mission.stopped_reason = result.stopped_reason
-			mission.final_score = self._current_score
 			try:
 				self.db.update_mission(mission)
 			except Exception as exc:
@@ -170,7 +160,6 @@ class ContinuousController:
 				await self._backend.cleanup()
 
 			result.wall_time_seconds = time.monotonic() - self._start_time
-			result.final_score = self._current_score
 			result.total_units_dispatched = self._total_dispatched
 			result.total_units_merged = self._total_merged
 			result.total_units_failed = self._total_failed
@@ -335,9 +324,7 @@ class ContinuousController:
 			epoch = completion.epoch
 			workspace = completion.workspace
 
-			prev_score = self._current_score
-
-			# Verify and merge if the unit completed with commits
+			# Merge if the unit completed with commits
 			merged = False
 			if unit.status == "completed" and unit.commit_hash:
 				try:
@@ -359,7 +346,6 @@ class ContinuousController:
 								epoch_id=epoch.id,
 								work_unit_id=unit.id,
 								event_type="merged",
-								score_after=self._current_score,
 								input_tokens=unit.input_tokens,
 								output_tokens=unit.output_tokens,
 							))
@@ -382,6 +368,17 @@ class ContinuousController:
 							))
 						except Exception:
 							pass
+
+						# Append merge failure to handoff concerns
+						if handoff:
+							try:
+								concerns = json.loads(handoff.concerns or "[]")
+							except (json.JSONDecodeError, TypeError):
+								concerns = []
+							concerns.append(
+								f"Merge failed: {merge_result.failure_output[:200]}",
+							)
+							handoff.concerns = json.dumps(concerns)
 				except Exception as exc:
 					logger.error(
 						"merge_unit failed for %s: %s",
@@ -395,51 +392,6 @@ class ContinuousController:
 			else:
 				self._total_failed += 1
 
-			# Get snapshots for scoring
-			try:
-				snapshot_after = self.db.get_latest_snapshot()
-			except Exception:
-				snapshot_after = None
-			try:
-				snapshot_before = self.db.get_latest_snapshot()
-			except Exception:
-				snapshot_before = None
-
-			# Compute running score
-			score_eval = compute_running_score(
-				snapshot_before=snapshot_before,
-				snapshot_after=snapshot_after,
-				prev_score=prev_score,
-				unit_merged=merged,
-			)
-			self._current_score = score_eval.score
-			result.unit_scores.append(score_eval.score)
-
-			# Track stall
-			epsilon = self.config.continuous.stall_score_epsilon
-			if abs(self._current_score - prev_score) < epsilon:
-				self._units_since_improvement += 1
-			else:
-				self._units_since_improvement = 0
-
-			# Record per-unit feedback
-			try:
-				record_unit_outcome(
-					db=self.db,
-					mission_id=mission.id,
-					epoch=epoch,
-					unit=unit,
-					handoff=handoff,
-					snapshot_before=snapshot_before,
-					snapshot_after=snapshot_after,
-					prev_score=prev_score,
-					current_score=self._current_score,
-				)
-			except Exception as exc:
-				logger.error(
-					"Failed to record unit outcome: %s", exc, exc_info=True,
-				)
-
 			# Feed handoff to planner for adaptive replanning
 			if handoff and self._planner:
 				self._planner.ingest_handoff(handoff)
@@ -447,20 +399,10 @@ class ContinuousController:
 			# Accumulate cost
 			mission.total_cost_usd += unit.cost_usd
 
-			# Update mission score
-			mission.final_score = self._current_score
 			try:
 				self.db.update_mission(mission)
 			except Exception:
 				pass
-
-			# Check if objective met
-			if score_eval.met:
-				logger.info("Objective met! Score: %.2f", self._current_score)
-				result.objective_met = True
-				result.stopped_reason = "objective_met"
-				self.running = False
-				break
 
 	async def _execute_single_unit(
 		self,
@@ -741,14 +683,6 @@ class ContinuousController:
 			elapsed = time.monotonic() - self._start_time
 			if elapsed >= cont.max_wall_time_seconds:
 				return "wall_time_exceeded"
-
-		# Stall detection
-		if self._units_since_improvement >= cont.stall_threshold_units:
-			return "stalled"
-
-		# Score met
-		if self._current_score >= 0.9:
-			return "objective_met"
 
 		return ""
 
