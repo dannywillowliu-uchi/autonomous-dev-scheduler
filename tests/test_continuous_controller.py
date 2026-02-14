@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -41,26 +42,6 @@ class TestShouldStop:
 
 	def test_no_stop_condition(self) -> None:
 		ctrl = ContinuousController(_config(), _db())
-		assert ctrl._should_stop(Mission(id="m1")) == ""
-
-	def test_stall_detection(self) -> None:
-		ctrl = ContinuousController(_config(), _db())
-		ctrl._units_since_improvement = 5  # equals threshold
-		assert ctrl._should_stop(Mission(id="m1")) == "stalled"
-
-	def test_stall_below_threshold(self) -> None:
-		ctrl = ContinuousController(_config(), _db())
-		ctrl._units_since_improvement = 4
-		assert ctrl._should_stop(Mission(id="m1")) == ""
-
-	def test_objective_met(self) -> None:
-		ctrl = ContinuousController(_config(), _db())
-		ctrl._current_score = 0.95
-		assert ctrl._should_stop(Mission(id="m1")) == "objective_met"
-
-	def test_score_below_threshold(self) -> None:
-		ctrl = ContinuousController(_config(), _db())
-		ctrl._current_score = 0.89
 		assert ctrl._should_stop(Mission(id="m1")) == ""
 
 	def test_wall_time_exceeded(self) -> None:
@@ -205,7 +186,6 @@ class TestProcessCompletions:
 
 		await ctrl._process_completions(Mission(id="m1"), result)
 
-		assert len(result.unit_scores) == 1
 		assert ctrl._total_merged == 1
 		mock_gbm.merge_unit.assert_called_once()
 
@@ -311,55 +291,25 @@ class TestProcessCompletions:
 		assert ctrl._total_failed == 1
 
 	@pytest.mark.asyncio
-	async def test_stall_tracking(self) -> None:
-		"""Units with no score improvement should increment stall counter."""
+	async def test_merge_failure_appends_to_handoff_concerns(self) -> None:
+		"""When merge fails and handoff exists, failure is appended to concerns."""
 		db = _db()
 		db.insert_mission(Mission(id="m1", objective="test"))
-		config = _config()
-		config.continuous.stall_score_epsilon = 1.0  # very large: any change is within epsilon
-		ctrl = ContinuousController(config, db)
-		result = ContinuousMissionResult(mission_id="m1")
-		ctrl._green_branch = MagicMock()
-
-		epoch = Epoch(id="ep1", mission_id="m1", number=1)
-		db.insert_epoch(epoch)
-		plan = Plan(id="p1", objective="test")
-		db.insert_plan(plan)
-
-		unit = WorkUnit(
-			id="wu1", plan_id="p1", title="Task",
-			status="completed", commit_hash=None,
-		)
-		db.insert_work_unit(unit)
-
-		completion = WorkerCompletion(
-			unit=unit, handoff=None, workspace="/tmp/ws", epoch=epoch,
-		)
-		ctrl._completion_queue.put_nowait(completion)
-		ctrl.running = False
-
-		await ctrl._process_completions(Mission(id="m1"), result)
-
-		# Score change should be within epsilon (1.0) -> stall incremented
-		assert ctrl._units_since_improvement >= 1
-
-	@pytest.mark.asyncio
-	async def test_objective_met_stops(self) -> None:
-		"""When score >= 0.9, processor should set objective_met and stop."""
-		db = _db()
-		db.insert_mission(Mission(id="m1", objective="test"))
-		config = _config()
-		ctrl = ContinuousController(config, db)
-		ctrl._current_score = 0.89  # close to threshold
+		ctrl = ContinuousController(_config(), db)
 		result = ContinuousMissionResult(mission_id="m1")
 
 		mock_gbm = MagicMock()
 		mock_gbm.merge_unit = AsyncMock(
 			return_value=UnitMergeResult(
-				merged=True, rebase_ok=True, verification_passed=True,
+				merged=False, rebase_ok=False,
+				failure_output="Merge conflict in main.py",
 			),
 		)
 		ctrl._green_branch = mock_gbm
+
+		mock_planner = MagicMock()
+		mock_planner.ingest_handoff = MagicMock()
+		ctrl._planner = mock_planner
 
 		epoch = Epoch(id="ep1", mission_id="m1", number=1)
 		db.insert_epoch(epoch)
@@ -373,25 +323,25 @@ class TestProcessCompletions:
 		)
 		db.insert_work_unit(unit)
 
-		# Patch compute_running_score to return high score
-		with patch(
-			"mission_control.continuous_controller.compute_running_score",
-		) as mock_score:
-			from mission_control.evaluator import ObjectiveEvaluation
-			mock_score.return_value = ObjectiveEvaluation(
-				score=0.95, met=True, reasoning="test",
-			)
+		handoff = Handoff(
+			work_unit_id="wu1", round_id="", epoch_id="ep1",
+			status="completed", summary="Done", concerns="[]",
+		)
 
-			completion = WorkerCompletion(
-				unit=unit, handoff=None, workspace="/tmp/ws", epoch=epoch,
-			)
-			ctrl._completion_queue.put_nowait(completion)
+		completion = WorkerCompletion(
+			unit=unit, handoff=handoff, workspace="/tmp/ws", epoch=epoch,
+		)
+		ctrl._completion_queue.put_nowait(completion)
+		ctrl.running = False
 
-			await ctrl._process_completions(Mission(id="m1"), result)
+		await ctrl._process_completions(Mission(id="m1"), result)
 
-			assert result.objective_met is True
-			assert result.stopped_reason == "objective_met"
-			assert not ctrl.running
+		# Handoff concerns should contain merge failure info
+		concerns = json.loads(handoff.concerns)
+		assert len(concerns) == 1
+		assert "Merge failed" in concerns[0]
+		# Planner should still get the handoff
+		mock_planner.ingest_handoff.assert_called_once_with(handoff)
 
 
 class TestStop:
@@ -418,10 +368,8 @@ class TestContinuousMissionResult:
 	def test_defaults(self) -> None:
 		r = ContinuousMissionResult()
 		assert r.mission_id == ""
-		assert r.final_score == 0.0
 		assert r.objective_met is False
 		assert r.total_units_dispatched == 0
-		assert r.unit_scores == []
 
 
 class TestExecuteSingleUnit:
@@ -462,12 +410,12 @@ class TestExecuteSingleUnit:
 class TestEndToEnd:
 	@pytest.mark.asyncio
 	async def test_units_flow_dispatch_to_completion(self) -> None:
-		"""Integration: dispatch loop feeds units, completion processor scores and stops."""
+		"""Integration: dispatch loop feeds units, completion processor merges them."""
 		db = _db()
 		config = _config()
 		config.target.path = "/tmp/test"
 		config.target.name = "test"
-		config.continuous.max_wall_time_seconds = 30
+		config.continuous.max_wall_time_seconds = 5
 		ctrl = ContinuousController(config, db)
 
 		executed_ids: list[str] = []
@@ -487,7 +435,7 @@ class TestEndToEnd:
 			)
 			semaphore.release()
 
-		# Mock planner: returns 2 units per call
+		# Mock planner: returns 2 units first call, then empty (mission done)
 		call_count = 0
 
 		async def mock_get_next(
@@ -500,13 +448,16 @@ class TestEndToEnd:
 				id=f"ep{call_count}", mission_id=mission.id,
 				number=call_count,
 			)
-			units = [
-				WorkUnit(
-					id=f"wu-{call_count}-{i}", plan_id=plan.id,
-					title=f"Task {call_count}.{i}",
-				)
-				for i in range(2)
-			]
+			if call_count == 1:
+				units = [
+					WorkUnit(
+						id=f"wu-{call_count}-{i}", plan_id=plan.id,
+						title=f"Task {call_count}.{i}",
+					)
+					for i in range(2)
+				]
+			else:
+				units = []
 			return plan, units, epoch
 
 		mock_planner = MagicMock()
@@ -522,26 +473,11 @@ class TestEndToEnd:
 			ctrl._green_branch = mock_gbm
 			ctrl._backend = AsyncMock()
 
-		# Scores escalate: 0.5, 0.7, 0.95 (met) -- stops on 3rd unit
-		score_iter = iter([0.5, 0.7, 0.95, 0.95, 0.95])
-
-		def mock_score(**kwargs: object) -> object:
-			from mission_control.evaluator import ObjectiveEvaluation
-			s = next(score_iter, 0.95)
-			return ObjectiveEvaluation(score=s, met=(s >= 0.9), reasoning="test")
-
 		with (
 			patch.object(ctrl, "_init_components", mock_init),
 			patch.object(ctrl, "_execute_single_unit", side_effect=mock_execute),
-			patch(
-				"mission_control.continuous_controller.compute_running_score",
-				side_effect=mock_score,
-			),
 		):
 			result = await ctrl.run()
 
-		assert result.objective_met is True
-		assert result.stopped_reason == "objective_met"
 		assert len(executed_ids) >= 2
 		assert result.total_units_merged >= 2
-		assert result.final_score >= 0.9
