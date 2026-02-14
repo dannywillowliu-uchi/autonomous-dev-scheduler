@@ -199,6 +199,8 @@ class RecursivePlanner:
 - Max {max_children} children per subdivision
 - NEVER let sibling leaves touch the same file. Merge them or add depends_on_indices.
 - If Past Round Performance lists already-modified files, do NOT target those files again.
+- If the objective has been fully achieved based on prior discoveries and handoff summaries, return EMPTY units:
+  PLAN_RESULT:{{"type":"leaves","units":[]}}
 
 ## Output Format
 You may explain your reasoning, but you MUST end your response with a PLAN_RESULT line.

@@ -480,4 +480,6 @@ class TestEndToEnd:
 			result = await ctrl.run()
 
 		assert len(executed_ids) >= 2
-		assert result.total_units_merged >= 2
+		assert result.objective_met is True
+		assert result.stopped_reason == "planner_completed"
+		assert result.total_units_dispatched >= 2

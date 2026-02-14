@@ -73,6 +73,14 @@ class ContinuousPlanner:
 			plan, units, epoch = await self._replan(
 				mission, max_units, feedback_context,
 			)
+			# Empty replan + empty backlog = objective complete
+			if not units and not self._backlog:
+				return plan, [], epoch
+			# If replan returned nothing but backlog has items, serve from backlog
+			if not units and self._backlog:
+				serve_count = min(max_units, len(self._backlog))
+				units = self._backlog[:serve_count]
+				self._backlog = self._backlog[serve_count:]
 			return plan, units, epoch
 
 		# Serve from existing backlog
