@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from mission_control.db import Database
 from mission_control.feedback import (
 	_extract_keywords,
+	_get_completed_files,
 	compute_reward,
 	get_planner_context,
 	get_worker_context,
@@ -297,6 +300,98 @@ class TestGetPlannerContext:
 		assert "Key insights from successful past work:" in ctx
 		assert "Database has existing migration framework" in ctx
 		assert "Use async for better performance" in ctx
+
+
+	def test_includes_completed_files(self, db: Database) -> None:
+		"""Planner context includes files already modified by completed handoffs."""
+		mission = Mission(id="m1", objective="test")
+		db.insert_mission(mission)
+
+		rnd = Round(id="r1", mission_id="m1", number=1, plan_id="p1")
+		db.insert_round(rnd)
+
+		plan = Plan(id="p1", objective="test", total_units=1)
+		db.insert_plan(plan)
+
+		wu = WorkUnit(id="wu1", plan_id="p1", title="Task 1", status="completed")
+		db.insert_work_unit(wu)
+
+		h = Handoff(
+			id="h1", work_unit_id="wu1", round_id="r1", status="completed",
+			summary="Done", files_changed='["src/app.tsx", "src/utils.ts"]',
+		)
+		db.insert_handoff(h)
+
+		# Need a reflection for get_planner_context to return anything
+		ref = Reflection(
+			id="ref1", mission_id="m1", round_id="r1", round_number=1,
+			objective_score=0.5, completion_rate=1.0, plan_strategy="leaves",
+			fixup_promoted=True, fixup_attempts=1,
+		)
+		db.insert_reflection(ref)
+
+		ctx = get_planner_context(db, "m1")
+		assert "Files already modified" in ctx
+		assert "src/app.tsx" in ctx
+		assert "src/utils.ts" in ctx
+		assert "Do NOT create units that re-modify" in ctx
+
+	def test_includes_conflict_files(self, db: Database) -> None:
+		"""Planner context includes files that caused merge conflicts."""
+		mission = Mission(id="m1", objective="test")
+		db.insert_mission(mission)
+
+		rnd = Round(id="r1", mission_id="m1", number=1, plan_id="p1")
+		db.insert_round(rnd)
+
+		plan = Plan(id="p1", objective="test", total_units=1)
+		db.insert_plan(plan)
+
+		wu = WorkUnit(
+			id="wu1", plan_id="p1", title="Task 1", status="failed",
+			output_summary="Merge conflict: conflicting changes in shared files",
+			files_hint="src/shared.ts, src/labels.ts",
+		)
+		db.insert_work_unit(wu)
+
+		ref = Reflection(
+			id="ref1", mission_id="m1", round_id="r1", round_number=1,
+			objective_score=0.3, completion_rate=0.0, plan_strategy="leaves",
+			fixup_promoted=False, fixup_attempts=0,
+		)
+		db.insert_reflection(ref)
+
+		ctx = get_planner_context(db, "m1")
+		assert "Files that caused merge conflicts" in ctx
+		assert "src/shared.ts" in ctx
+		assert "src/labels.ts" in ctx
+		assert "AVOID these files" in ctx
+
+	def test_files_capped(self, db: Database) -> None:
+		"""Completed files are capped at 30."""
+		mission = Mission(id="m1", objective="test")
+		db.insert_mission(mission)
+
+		rnd = Round(id="r1", mission_id="m1", number=1)
+		db.insert_round(rnd)
+
+		# Create 40 unique files across multiple handoffs
+		all_files = [f"src/file_{i:03d}.py" for i in range(40)]
+		for batch_idx in range(4):
+			batch = all_files[batch_idx * 10:(batch_idx + 1) * 10]
+			plan = Plan(id=f"p{batch_idx}", objective="test", total_units=1)
+			db.insert_plan(plan)
+			wu = WorkUnit(id=f"wu{batch_idx}", plan_id=f"p{batch_idx}", title=f"Task {batch_idx}", status="completed")
+			db.insert_work_unit(wu)
+			h = Handoff(
+				id=f"h{batch_idx}", work_unit_id=f"wu{batch_idx}", round_id="r1",
+				status="completed", summary="Done",
+				files_changed=json.dumps(batch),
+			)
+			db.insert_handoff(h)
+
+		result = _get_completed_files(db, "m1")
+		assert len(result) == 30
 
 
 class TestGetWorkerContext:
