@@ -102,7 +102,7 @@ class ContinuousController:
 
 			# Two concurrent tasks
 			dispatch_task = asyncio.create_task(
-				self._dispatch_loop(mission),
+				self._dispatch_loop(mission, result),
 			)
 			processor_task = asyncio.create_task(
 				self._process_completions(mission, result),
@@ -206,7 +206,11 @@ class ContinuousController:
 		# Continuous planner (wraps RecursivePlanner)
 		self._planner = ContinuousPlanner(self.config, self.db)
 
-	async def _dispatch_loop(self, mission: Mission) -> None:
+	async def _dispatch_loop(
+		self,
+		mission: Mission,
+		result: ContinuousMissionResult,
+	) -> None:
 		"""Dispatch work units to free workers as they become available."""
 		assert self._planner is not None
 		assert self._backend is not None
@@ -225,8 +229,8 @@ class ContinuousController:
 			# Check stopping conditions before dispatching
 			reason = self._should_stop(mission)
 			if reason:
+				result.stopped_reason = reason
 				self.running = False
-				# Push a sentinel to unblock processor
 				break
 
 			# Build feedback context for the planner
@@ -245,9 +249,11 @@ class ContinuousController:
 				continue
 
 			if not units:
-				logger.info("Planner returned no units, waiting...")
-				await asyncio.sleep(5)
-				continue
+				logger.info("Planner returned no units -- objective complete")
+				result.objective_met = True
+				result.stopped_reason = "planner_completed"
+				self.running = False
+				break
 
 			# Persist plan and tree
 			try:
