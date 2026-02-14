@@ -241,6 +241,41 @@ def record_round_outcome(
 	return reward
 
 
+def _get_completed_files(db: Database, mission_id: str) -> list[str]:
+	"""Get files already modified by completed handoffs in this mission."""
+	rounds = db.get_rounds_for_mission(mission_id)
+	files: set[str] = set()
+	for rnd in rounds:
+		handoffs = db.get_handoffs_for_round(rnd.id)
+		for h in handoffs:
+			if h.status == "completed" and h.files_changed:
+				try:
+					changed = json.loads(h.files_changed)
+					if isinstance(changed, list):
+						files.update(changed)
+				except (json.JSONDecodeError, TypeError):
+					pass
+	return sorted(files)[:30]
+
+
+def _get_conflict_files(db: Database, mission_id: str) -> list[str]:
+	"""Get files that caused merge conflicts in this mission."""
+	rounds = db.get_rounds_for_mission(mission_id)
+	files: set[str] = set()
+	for rnd in rounds:
+		if not rnd.plan_id:
+			continue
+		units = db.get_work_units_for_plan(rnd.plan_id)
+		for u in units:
+			if u.status == "failed" and "merge conflict" in u.output_summary.lower():
+				if u.files_hint:
+					for f in u.files_hint.split(","):
+						f = f.strip()
+						if f:
+							files.add(f)
+	return sorted(files)[:15]
+
+
 def get_planner_context(
 	db: Database,
 	mission_id: str,
@@ -279,6 +314,22 @@ def get_planner_context(
 	lines.append(
 		f"Fixup promoted: {len(fixup_rounds)}/{len(reflections)} recent rounds"
 	)
+
+	# Files already modified in this mission
+	completed_files = _get_completed_files(db, mission_id)
+	if completed_files:
+		lines.append(f"\nFiles already modified this mission ({len(completed_files)}):")
+		for f in completed_files:
+			lines.append(f"  {f}")
+		lines.append("IMPORTANT: Do NOT create units that re-modify these files.")
+
+	# Files that caused merge conflicts
+	conflict_files = _get_conflict_files(db, mission_id)
+	if conflict_files:
+		lines.append(f"\nFiles that caused merge conflicts ({len(conflict_files)}):")
+		for f in conflict_files:
+			lines.append(f"  {f}")
+		lines.append("AVOID these files. Find different files to achieve the objective.")
 
 	# High-value discoveries from top-rewarded experiences
 	top_experiences = db.get_top_experiences(limit=10)

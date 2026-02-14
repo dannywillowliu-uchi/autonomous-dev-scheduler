@@ -198,6 +198,7 @@ class RecursivePlanner:
 - PRODUCE LEAVES when: scope is focused, 1-3 concrete tasks can handle it
 - Max {max_children} children per subdivision
 - NEVER let sibling leaves touch the same file. Merge them or add depends_on_indices.
+- If Past Round Performance lists already-modified files, do NOT target those files again.
 
 ## Output Format
 You may explain your reasoning, but you MUST end your response with a PLAN_RESULT line.
