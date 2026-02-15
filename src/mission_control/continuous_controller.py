@@ -212,7 +212,41 @@ class ContinuousController:
 					verification_passed=result.final_verification_passed,
 				)
 
+			# Post-mission re-discovery
+			if self.config.discovery.enabled and result.objective_met:
+				await self._run_post_mission_discovery()
+
 		return result
+
+	async def _run_post_mission_discovery(self) -> None:
+		"""Run discovery after a successful mission to find new improvements."""
+		try:
+			from mission_control.auto_discovery import DiscoveryEngine
+
+			engine = DiscoveryEngine(self.config, self.db)
+			disc_result, items = await engine.discover()
+			if items:
+				logger.info(
+					"Post-mission discovery found %d new items",
+					len(items),
+				)
+				if self._notifier:
+					summary_lines = [
+						f"- [{i.track}] {i.title} "
+						f"(priority: {i.priority_score:.1f})"
+						for i in items[:5]
+					]
+					await self._notifier.send(
+						"Post-mission discovery: "
+						f"{len(items)} new improvement items found.\n"
+						+ "\n".join(summary_lines)
+					)
+			else:
+				logger.info("Post-mission discovery found no new items")
+		except Exception as exc:
+			logger.error(
+				"Post-mission discovery failed: %s", exc, exc_info=True,
+			)
 
 	async def _init_components(self) -> None:
 		"""Initialize backend, green branch manager, and continuous planner."""

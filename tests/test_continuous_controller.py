@@ -773,3 +773,70 @@ class TestRetry:
 		assert ctrl._total_merged == 0
 		assert unit.status == "pending"
 		assert "[Retry attempt 1]" in unit.description
+
+
+class TestPostMissionDiscovery:
+	@pytest.mark.asyncio
+	async def test_discovery_runs_on_success(self) -> None:
+		"""Post-mission discovery should run when objective met and discovery enabled."""
+		config = _config()
+		config.discovery.enabled = True
+		db = _db()
+		ctrl = ContinuousController(config, db)
+
+		mock_engine = MagicMock()
+		mock_engine.discover = AsyncMock(return_value=(MagicMock(item_count=2), [
+			MagicMock(track="quality", title="T1", priority_score=5.0),
+			MagicMock(track="feature", title="T2", priority_score=6.0),
+		]))
+
+		with patch(
+			"mission_control.auto_discovery.DiscoveryEngine",
+			return_value=mock_engine,
+		):
+			await ctrl._run_post_mission_discovery()
+
+		mock_engine.discover.assert_called_once()
+
+	@pytest.mark.asyncio
+	async def test_discovery_notifies_on_results(self) -> None:
+		"""Should send Telegram notification with discovery results."""
+		config = _config()
+		config.discovery.enabled = True
+		db = _db()
+		ctrl = ContinuousController(config, db)
+		ctrl._notifier = MagicMock()
+		ctrl._notifier.send = AsyncMock()
+
+		items = [
+			MagicMock(track="quality", title="Fix tests", priority_score=5.0),
+		]
+		mock_engine = MagicMock()
+		mock_engine.discover = AsyncMock(
+			return_value=(MagicMock(item_count=1), items),
+		)
+
+		with patch(
+			"mission_control.auto_discovery.DiscoveryEngine",
+			return_value=mock_engine,
+		):
+			await ctrl._run_post_mission_discovery()
+
+		ctrl._notifier.send.assert_called_once()
+		call_args = ctrl._notifier.send.call_args[0][0]
+		assert "1 new improvement" in call_args
+
+	@pytest.mark.asyncio
+	async def test_discovery_handles_errors(self) -> None:
+		"""Post-mission discovery failure should not raise."""
+		config = _config()
+		config.discovery.enabled = True
+		db = _db()
+		ctrl = ContinuousController(config, db)
+
+		with patch(
+			"mission_control.auto_discovery.DiscoveryEngine",
+			side_effect=RuntimeError("boom"),
+		):
+			# Should not raise
+			await ctrl._run_post_mission_discovery()
