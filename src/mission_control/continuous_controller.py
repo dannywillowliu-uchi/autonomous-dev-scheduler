@@ -14,6 +14,7 @@ from mission_control.backends import LocalBackend, SSHBackend, WorkerBackend
 from mission_control.config import ContinuousConfig, MissionConfig
 from mission_control.continuous_planner import ContinuousPlanner
 from mission_control.db import Database
+from mission_control.event_stream import EventStream
 from mission_control.feedback import get_worker_context
 from mission_control.green_branch import GreenBranchManager
 from mission_control.heartbeat import Heartbeat
@@ -91,6 +92,7 @@ class ContinuousController:
 		self._total_dispatched: int = 0
 		self._total_merged: int = 0
 		self._total_failed: int = 0
+		self._event_stream: EventStream | None = None
 
 	async def run(self) -> ContinuousMissionResult:
 		"""Run the continuous mission loop until objective met or stopping condition."""
@@ -111,6 +113,19 @@ class ContinuousController:
 
 		try:
 			await self._init_components()
+
+			# Initialize JSONL event stream
+			target_dir = Path(self.config.target.resolved_path)
+			self._event_stream = EventStream(target_dir / "events.jsonl")
+			self._event_stream.open()
+			self._event_stream.emit(
+				"mission_started",
+				mission_id=mission.id,
+				details={
+					"objective": self.config.target.objective,
+					"workers": self.config.scheduler.parallel.num_workers,
+				},
+			)
 
 			if self._notifier:
 				await self._notifier.send_mission_start(
@@ -214,6 +229,21 @@ class ContinuousController:
 					stopped_reason=result.stopped_reason,
 					verification_passed=result.final_verification_passed,
 				)
+
+			if self._event_stream:
+				self._event_stream.emit(
+					"mission_ended",
+					mission_id=mission.id,
+					details={
+						"status": mission.status,
+						"stopped_reason": result.stopped_reason,
+						"objective_met": result.objective_met,
+						"units_merged": result.total_units_merged,
+						"units_failed": result.total_units_failed,
+						"wall_time_seconds": result.wall_time_seconds,
+					},
+				)
+				self._event_stream.close()
 
 			# Post-mission re-discovery
 			if self.config.discovery.enabled and result.objective_met:
@@ -430,6 +460,14 @@ class ContinuousController:
 					))
 				except Exception:
 					pass
+				if self._event_stream:
+					self._event_stream.emit(
+						"dispatched",
+						mission_id=mission.id,
+						epoch_id=epoch.id,
+						unit_id=unit.id,
+						details={"title": unit.title, "files": unit.files_hint},
+					)
 
 				self._total_dispatched += 1
 
@@ -499,6 +537,13 @@ class ContinuousController:
 					))
 				except Exception:
 					pass
+				if self._event_stream:
+					self._event_stream.emit(
+						"research_completed",
+						mission_id=mission.id,
+						epoch_id=epoch.id,
+						unit_id=unit.id,
+					)
 
 				if handoff and self._planner:
 					self._planner.ingest_handoff(handoff)
@@ -542,6 +587,16 @@ class ContinuousController:
 							))
 						except Exception:
 							pass
+						if self._event_stream:
+							self._event_stream.emit(
+								"merged",
+								mission_id=mission.id,
+								epoch_id=epoch.id,
+								unit_id=unit.id,
+								input_tokens=unit.input_tokens,
+								output_tokens=unit.output_tokens,
+								cost_usd=unit.cost_usd,
+							)
 					else:
 						logger.warning(
 							"Unit %s failed merge: %s",
@@ -562,6 +617,17 @@ class ContinuousController:
 							))
 						except Exception:
 							pass
+						if self._event_stream:
+							self._event_stream.emit(
+								"merge_failed",
+								mission_id=mission.id,
+								epoch_id=epoch.id,
+								unit_id=unit.id,
+								details={
+									"failure_output": merge_result.failure_output[:500],
+									"failure_stage": merge_result.failure_stage,
+								},
+							)
 
 						# Append merge failure to handoff concerns
 						if handoff:
@@ -592,6 +658,14 @@ class ContinuousController:
 								))
 							except Exception:
 								pass
+							if self._event_stream:
+								self._event_stream.emit(
+									"rejected",
+									mission_id=mission.id,
+									epoch_id=epoch.id,
+									unit_id=unit.id,
+									details={"failure_output": merge_result.failure_output[:500]},
+								)
 
 							# Notify merge conflict via Telegram
 							if self._notifier:
@@ -617,6 +691,17 @@ class ContinuousController:
 						))
 					except Exception:
 						pass
+					if self._event_stream:
+						self._event_stream.emit(
+							"merge_failed",
+							mission_id=mission.id,
+							epoch_id=epoch.id,
+							unit_id=unit.id,
+							details={
+								"failure_output": str(exc)[:500],
+								"failure_stage": "exception",
+							},
+						)
 					failure_reason = str(exc)[:300]
 					if unit.attempt < unit.max_attempts:
 						self._schedule_retry(unit, epoch, mission, failure_reason, cont)
@@ -698,6 +783,14 @@ class ContinuousController:
 			))
 		except Exception:
 			pass
+		if self._event_stream:
+			self._event_stream.emit(
+				"retry_queued",
+				mission_id=mission.id,
+				epoch_id=epoch.id,
+				unit_id=unit.id,
+				details={"delay": delay, "failure_reason": failure_reason[:300]},
+			)
 
 		logger.info(
 			"Retrying unit %s (attempt %d/%d) after %.0fs delay",
@@ -847,6 +940,15 @@ class ContinuousController:
 				await self.db.locked_call("insert_worker", worker)
 			except Exception:
 				logger.debug("Worker record insert failed for %s", unit.id)
+			if self._event_stream:
+				self._event_stream.emit(
+					"worker_started",
+					mission_id=mission.id,
+					epoch_id=epoch.id,
+					unit_id=unit.id,
+					worker_id=unit.id,
+					details={"pid": handle.pid, "workspace": workspace},
+				)
 
 			# Wait for completion
 			poll_deadline = int(
@@ -1059,6 +1161,18 @@ class ContinuousController:
 					await self.db.locked_call("update_worker", worker)
 				except Exception:
 					pass
+			if self._event_stream and worker is not None:
+				self._event_stream.emit(
+					"worker_stopped",
+					mission_id=mission.id,
+					epoch_id=epoch.id,
+					unit_id=unit.id,
+					worker_id=unit.id,
+					details={"status": worker.status},
+					input_tokens=unit.input_tokens,
+					output_tokens=unit.output_tokens,
+					cost_usd=unit.cost_usd,
+				)
 			if workspace:
 				await self._backend.release_workspace(workspace)
 			semaphore.release()
