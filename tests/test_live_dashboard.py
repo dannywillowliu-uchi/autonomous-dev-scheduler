@@ -7,9 +7,15 @@ import sqlite3
 
 from fastapi.testclient import TestClient
 
-from mission_control.dashboard.live import LiveDashboard, _serialize_event, _serialize_mission, _serialize_unit
+from mission_control.dashboard.live import (
+	LiveDashboard,
+	_serialize_event,
+	_serialize_mission,
+	_serialize_unit,
+	_serialize_worker,
+)
 from mission_control.db import Database
-from mission_control.models import Epoch, Mission, Plan, UnitEvent, WorkUnit
+from mission_control.models import Epoch, Mission, Plan, UnitEvent, Worker, WorkUnit
 
 
 def _setup_db(*, check_same_thread: bool = True) -> Database:
@@ -307,3 +313,76 @@ class TestDBQueries:
 		db = _setup_db()
 		units = db.get_work_units_for_mission("nonexistent")
 		assert units == []
+
+
+class TestWorkerVisibility:
+	def _setup_with_workers(self, *, check_same_thread: bool = True) -> Database:
+		db = _setup_db(check_same_thread=check_same_thread)
+		w1 = Worker(
+			id="wu1", workspace_path="/tmp/ws/wu1", status="working",
+			current_unit_id="wu1", pid=1234, backend_type="local",
+			backend_metadata='{"output_excerpt": "Running tests..."}',
+		)
+		w2 = Worker(
+			id="wu2", workspace_path="/tmp/ws/wu2", status="idle",
+			units_completed=1, backend_type="local",
+		)
+		db.insert_worker(w1)
+		db.insert_worker(w2)
+		return db
+
+	def test_snapshot_includes_workers(self) -> None:
+		db = self._setup_with_workers()
+		dashboard = LiveDashboard.__new__(LiveDashboard)
+		dashboard.db = db
+
+		snapshot = dashboard._build_snapshot()
+		assert "workers" in snapshot
+		assert len(snapshot["workers"]) == 2
+
+	def test_snapshot_no_mission_has_empty_workers(self) -> None:
+		db = Database(":memory:")
+		dashboard = LiveDashboard.__new__(LiveDashboard)
+		dashboard.db = db
+
+		snapshot = dashboard._build_snapshot()
+		assert snapshot["workers"] == []
+
+	def test_serialize_worker_extracts_output_excerpt(self) -> None:
+		w = Worker(
+			id="w1", workspace_path="/tmp/ws",
+			backend_metadata='{"output_excerpt": "hello world"}',
+		)
+		result = _serialize_worker(w)
+		assert result["output_excerpt"] == "hello world"
+		assert result["workspace_path"] == "/tmp/ws"
+
+	def test_serialize_worker_empty_metadata(self) -> None:
+		w = Worker(id="w1")
+		result = _serialize_worker(w)
+		assert result["output_excerpt"] == ""
+
+	def test_serialize_worker_invalid_json_metadata(self) -> None:
+		w = Worker(id="w1", backend_metadata="not-json")
+		result = _serialize_worker(w)
+		assert result["output_excerpt"] == ""
+
+	def test_api_workers_endpoint(self) -> None:
+		db = self._setup_with_workers(check_same_thread=False)
+		dashboard = LiveDashboard.__new__(LiveDashboard)
+		dashboard.db = db
+		dashboard._connections = set()
+		dashboard._broadcast_task = None
+		from fastapi import FastAPI
+		dashboard.app = FastAPI()
+		dashboard._setup_routes()
+
+		client = TestClient(dashboard.app)
+		resp = client.get("/api/workers")
+		assert resp.status_code == 200
+		data = resp.json()
+		assert len(data) == 2
+		working = [w for w in data if w["status"] == "working"]
+		assert len(working) == 1
+		assert working[0]["pid"] == 1234
+		assert working[0]["output_excerpt"] == "Running tests..."
