@@ -144,13 +144,16 @@ class SSHBackend(WorkerBackend):
 					hostname=host_info["hostname"], user=host_info.get("user", "")
 				)
 			)
-			cleanup = await asyncio.create_subprocess_exec(
-				"ssh", ssh_target,
-				f"pkill -f {shlex.quote('mc-worker-' + handle.worker_id)} || true",
-				stdout=asyncio.subprocess.PIPE,
-				stderr=asyncio.subprocess.STDOUT,
-			)
-			await cleanup.communicate()
+			try:
+				cleanup = await asyncio.create_subprocess_exec(
+					"ssh", ssh_target,
+					f"pkill -f {shlex.quote('mc-worker-' + handle.worker_id)} || true",
+					stdout=asyncio.subprocess.PIPE,
+					stderr=asyncio.subprocess.STDOUT,
+				)
+				await asyncio.wait_for(cleanup.communicate(), timeout=30)
+			except asyncio.TimeoutError:
+				logger.warning("SSH pkill timed out for worker %s on %s", handle.worker_id, ssh_target)
 
 	async def release_workspace(self, workspace_path: str) -> None:
 		# workspace_path here is the raw remote path (not the packed form)
@@ -169,12 +172,15 @@ class SSHBackend(WorkerBackend):
 					hostname=host_info["hostname"], user=host_info.get("user", "")
 				)
 			)
-			proc = await asyncio.create_subprocess_exec(
-				"ssh", ssh_target, f"rm -rf {shlex.quote(remote_path)}",
-				stdout=asyncio.subprocess.PIPE,
-				stderr=asyncio.subprocess.STDOUT,
-			)
-			await proc.communicate()
+			try:
+				proc = await asyncio.create_subprocess_exec(
+					"ssh", ssh_target, f"rm -rf {shlex.quote(remote_path)}",
+					stdout=asyncio.subprocess.PIPE,
+					stderr=asyncio.subprocess.STDOUT,
+				)
+				await asyncio.wait_for(proc.communicate(), timeout=30)
+			except asyncio.TimeoutError:
+				logger.warning("SSH rm -rf timed out for workspace %s on %s", remote_path, ssh_target)
 			self._worker_count[host_info["hostname"]] = max(
 				0, self._worker_count.get(host_info["hostname"], 1) - 1
 			)
