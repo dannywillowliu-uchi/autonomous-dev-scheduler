@@ -969,3 +969,102 @@ class TestSSHBackend:
 
 		out2 = await backend.get_output(handle2)
 		assert out2 == "output-2"
+
+	@patch("mission_control.backends.ssh.asyncio.create_subprocess_exec")
+	async def test_kill_ssh_timeout_logs_warning(
+		self, mock_exec: AsyncMock, backend: SSHBackend, caplog: pytest.LogCaptureFixture,
+	) -> None:
+		"""kill logs a warning and continues when SSH pkill hangs past timeout."""
+		mock_proc = MagicMock()
+		mock_proc.returncode = None
+		mock_proc.kill = MagicMock()
+		mock_proc.wait = AsyncMock()
+		backend._processes["w1"] = mock_proc
+
+		# SSH cleanup process that hangs forever
+		mock_cleanup = AsyncMock()
+		mock_cleanup.communicate = AsyncMock(side_effect=asyncio.Future)
+		mock_exec.return_value = mock_cleanup
+
+		metadata = json.dumps({"hostname": "host-a", "user": "deploy"})
+		handle = WorkerHandle(
+			worker_id="w1",
+			workspace_path="/tmp/mc-worker-w1",
+			backend_metadata=metadata,
+		)
+
+		with patch("mission_control.backends.ssh.asyncio.wait_for", side_effect=asyncio.TimeoutError):
+			with caplog.at_level(logging.WARNING, logger="mission_control.backends.ssh"):
+				await backend.kill(handle)
+
+		# Local process was still killed
+		mock_proc.kill.assert_called_once()
+		mock_proc.wait.assert_awaited_once()
+		# Warning was logged about the timeout
+		assert any("SSH pkill timed out" in msg for msg in caplog.messages)
+
+	@patch("mission_control.backends.ssh.asyncio.create_subprocess_exec")
+	async def test_release_workspace_timeout_logs_warning(
+		self, mock_exec: AsyncMock, backend: SSHBackend, caplog: pytest.LogCaptureFixture,
+	) -> None:
+		"""release_workspace logs a warning and continues when SSH rm -rf hangs."""
+		mock_proc = AsyncMock()
+		mock_proc.communicate = AsyncMock(side_effect=asyncio.Future)
+		mock_exec.return_value = mock_proc
+
+		backend._worker_count["host-a"] = 1
+		metadata = json.dumps({"hostname": "host-a", "user": "deploy"})
+		workspace_path = f"/tmp/mc-worker-w1::{metadata}"
+
+		with patch("mission_control.backends.ssh.asyncio.wait_for", side_effect=asyncio.TimeoutError):
+			with caplog.at_level(logging.WARNING, logger="mission_control.backends.ssh"):
+				await backend.release_workspace(workspace_path)
+
+		assert any("SSH rm -rf timed out" in msg for msg in caplog.messages)
+		# Worker count still decremented (best-effort cleanup continues)
+		assert backend._worker_count["host-a"] == 0
+
+	async def test_kill_no_metadata_skips_remote(self, backend: SSHBackend) -> None:
+		"""kill works when backend_metadata is empty -- only kills local process."""
+		mock_proc = MagicMock()
+		mock_proc.returncode = None
+		mock_proc.kill = MagicMock()
+		mock_proc.wait = AsyncMock()
+		backend._processes["w1"] = mock_proc
+
+		handle = WorkerHandle(
+			worker_id="w1",
+			workspace_path="/tmp/mc-worker-w1",
+			backend_metadata="",
+		)
+
+		# Should not raise -- just kills local process, skips SSH
+		await backend.kill(handle)
+
+		mock_proc.kill.assert_called_once()
+		mock_proc.wait.assert_awaited_once()
+
+	async def test_cleanup_kills_with_timeout(self, backend: SSHBackend) -> None:
+		"""cleanup handles hanging processes gracefully."""
+		running = MagicMock()
+		running.returncode = None
+		running.kill = MagicMock()
+		# Simulate a process.wait() that completes normally
+		running.wait = AsyncMock()
+
+		finished = MagicMock()
+		finished.returncode = 0
+
+		backend._processes["w1"] = running
+		backend._processes["w2"] = finished
+		backend._stdout_bufs["w1"] = b"partial"
+		backend._worker_count["host-a"] = 2
+
+		await backend.cleanup()
+
+		running.kill.assert_called_once()
+		running.wait.assert_awaited_once()
+		assert backend._processes == {}
+		assert backend._stdout_bufs == {}
+		assert backend._stdout_collected == set()
+		assert backend._worker_count == {"host-a": 0, "host-b": 0}
