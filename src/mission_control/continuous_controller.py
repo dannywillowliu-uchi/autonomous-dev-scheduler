@@ -299,6 +299,8 @@ class ContinuousController:
 			interval=hb.interval,
 			idle_threshold=hb.idle_threshold,
 			notifier=self._notifier,
+			db=self.db,
+			enable_recovery=hb.enable_recovery,
 		)
 
 	async def _dispatch_loop(
@@ -328,6 +330,16 @@ class ContinuousController:
 				reason = await self._heartbeat.check(
 					self._total_merged, self._total_failed,
 				)
+			if reason == "heartbeat_recovered":
+				# Recovery was already attempted in check() -- kill stuck workers and allow one more cycle
+				for task in list(self._active_tasks):
+					task.cancel()
+				logger.warning(
+					"Heartbeat recovery: killed %d active tasks, allowing one more cycle",
+					len(self._active_tasks),
+				)
+				self._heartbeat._consecutive_idle = 0
+				continue
 			if reason:
 				result.stopped_reason = reason
 				self.running = False
