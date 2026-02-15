@@ -301,6 +301,21 @@ body {
 
 .worker-card.expanded .card-summary { display: block; }
 
+.output-excerpt {
+	font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+	font-size: 11px;
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 8px;
+	max-height: 120px;
+	overflow-y: auto;
+	white-space: pre-wrap;
+	word-break: break-all;
+	color: var(--text-muted);
+	margin-bottom: 6px;
+}
+
 .card-actions {
 	display: none;
 	margin-top: 8px;
@@ -822,7 +837,20 @@ function connect() {
 	};
 }
 
+let workersByUnit = {};
+
 function updateAll(snapshot) {
+	// Build worker lookup by current_unit_id
+	workersByUnit = {};
+	if (snapshot.workers) {
+		for (const w of snapshot.workers) {
+			if (w.current_unit_id) {
+				workersByUnit[w.current_unit_id] = w;
+			}
+			// Also index by worker ID (which equals unit ID in 1:1 mapping)
+			workersByUnit[w.id] = w;
+		}
+	}
 	updateHeader(snapshot.mission);
 	updatePlanTree(snapshot.plan_tree);
 	updateWorkerCards(snapshot.units);
@@ -876,12 +904,14 @@ function updatePlanTree(tree) {
 		const failed = children.filter(c => c.status === "failed").length;
 		const pct = total > 0 ? Math.round((merged / total) * 100) : 0;
 		const isCollapsed = collapsedEpochs.has(epoch.number);
+		const activeWorkers = children.filter(c => workersByUnit[c.id] && workersByUnit[c.id].status === "working").length;
 
 		html += `<div class="epoch-node${isCollapsed ? " collapsed" : ""}">`;
 		html += `<div class="epoch-header" onclick="toggleEpoch(${epoch.number})">`;
 		html += `<span class="toggle">&#9662;</span>`;
 		html += `<span>Epoch ${epoch.number}</span>`;
 		html += `<span style="color:var(--text-muted);font-size:11px;margin-left:auto">`;
+		if (activeWorkers) html += `<span style="color:var(--blue)">${activeWorkers}w</span> `;
 		if (merged) html += `<span style="color:var(--green)">${merged}m</span> `;
 		if (running) html += `<span style="color:var(--yellow)">${running}r</span> `;
 		if (failed) html += `<span style="color:var(--red)">${failed}f</span>`;
@@ -967,6 +997,7 @@ function updateWorkerCards(units) {
 		const elapsed = unit.started_at && unit.status === "running"
 			? formatElapsed(unit.started_at)
 			: "";
+		const worker = workersByUnit[unit.id];
 
 		html += `<div class="worker-card ${unit.status} ${expanded}" id="card-${unit.id}" onclick="toggleCard('${unit.id}')">`;
 		html += `<div class="card-header">`;
@@ -980,11 +1011,22 @@ function updateWorkerCards(units) {
 		if (unit.cost_usd > 0) html += ` | $${unit.cost_usd.toFixed(2)}`;
 		html += `</div>`;
 
+		if (worker) {
+			html += `<div class="card-meta">`;
+			if (worker.pid) html += `PID ${worker.pid}`;
+			if (worker.workspace_path) html += ` | ${escapeHtml(worker.workspace_path.split("/").slice(-2).join("/"))}`;
+			if (worker.last_heartbeat) html += ` | hb ${formatRelativeTime(worker.last_heartbeat)}`;
+			html += `</div>`;
+		}
+
 		if (unit.files_hint) {
 			html += `<div class="card-meta">files: ${escapeHtml(unit.files_hint.substring(0, 60))}</div>`;
 		}
 
 		html += `<div class="card-summary">`;
+		if (worker && worker.output_excerpt) {
+			html += `<pre class="output-excerpt">${escapeHtml(worker.output_excerpt)}</pre>`;
+		}
 		if (unit.output_summary) html += `<p>${escapeHtml(unit.output_summary)}</p>`;
 		if (unit.description) html += `<p style="margin-top:4px;color:var(--text-muted)">${escapeHtml(unit.description)}</p>`;
 		html += `</div>`;

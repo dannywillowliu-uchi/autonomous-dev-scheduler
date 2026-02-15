@@ -123,6 +123,11 @@ class LiveDashboard:
 				return []
 			return self._build_plan_tree(mission.id)
 
+		@self.app.get("/api/workers")
+		async def get_workers() -> list[dict[str, Any]]:
+			workers = self.db.get_all_workers()
+			return [_serialize_worker(w) for w in workers]
+
 	async def _broadcast_loop(self) -> None:
 		"""Poll DB every 1s, push snapshot to all connected clients."""
 		while True:
@@ -145,16 +150,18 @@ class LiveDashboard:
 		"""Build current mission state from DB."""
 		mission = self.db.get_active_mission() or self.db.get_latest_mission()
 		if mission is None:
-			return {"mission": None, "units": [], "events": [], "plan_tree": []}
+			return {"mission": None, "units": [], "events": [], "plan_tree": [], "workers": []}
 
 		units = self.db.get_work_units_for_mission(mission.id)
 		events = self.db.get_unit_events_for_mission(mission.id, limit=100)
+		workers = self.db.get_all_workers()
 
 		return {
 			"mission": _serialize_mission(mission),
 			"units": [_serialize_unit(u) for u in units],
 			"events": [_serialize_event(e) for e in events],
 			"plan_tree": self._build_plan_tree(mission.id),
+			"workers": [_serialize_worker(w) for w in workers],
 		}
 
 	def _build_plan_tree(self, mission_id: str) -> list[dict[str, Any]]:
@@ -231,4 +238,28 @@ def _serialize_event(e: Any) -> dict[str, Any]:
 		"event_type": e.event_type,
 		"timestamp": e.timestamp,
 		"details": e.details,
+	}
+
+
+def _serialize_worker(w: Any) -> dict[str, Any]:
+	output_excerpt = ""
+	if w.backend_metadata:
+		try:
+			meta = json.loads(w.backend_metadata)
+			output_excerpt = meta.get("output_excerpt", "")
+		except (json.JSONDecodeError, TypeError):
+			pass
+	return {
+		"id": w.id,
+		"workspace_path": w.workspace_path,
+		"status": w.status,
+		"current_unit_id": w.current_unit_id,
+		"pid": w.pid,
+		"started_at": w.started_at,
+		"last_heartbeat": w.last_heartbeat,
+		"units_completed": w.units_completed,
+		"units_failed": w.units_failed,
+		"total_cost_usd": w.total_cost_usd,
+		"backend_type": w.backend_type,
+		"output_excerpt": output_excerpt,
 	}
