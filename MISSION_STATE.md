@@ -11,6 +11,15 @@ Objective: Replace the LLM-based evaluator with deterministic objective signals,
 
 Each unit: implement the feature, add tests, ensure all existing tests pass. Read BACKLOG.md for the full spec (P1 entries).
 
+## Completed
+- [x] c8848f9f (2026-02-16T16:01:54.604392+00:00) -- Added fixup_candidates: int = 3 field to GreenBranchConfig, updated _build_green_branch() to parse i (files: src/mission_control/config.py, tests/test_config.py)
+
+## Files Modified
+src/mission_control/config.py, tests/test_config.py
+
 ## Remaining
 The planner should focus on what hasn't been done yet.
 Do NOT re-target files in the 'Files Modified' list unless fixing a failure.
+
+## Changelog
+- 2026-02-16T16:01:54.604392+00:00 | c8848f9f merged (commit: 0c48d4b) -- Added fixup_candidates: int = 3 field to GreenBranchConfig, updated _build_green
