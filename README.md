@@ -8,35 +8,35 @@ Point it at a repo with an objective and a verification command. It plans, execu
 
 ```
                     ┌─────────────────────────────────┐
-                    │         Round Controller         │
-                    │   (outer loop, N rounds max)     │
+                    │     Continuous Controller        │
+                    │  (epoch loop, wall-time budget)  │
                     └──────────────┬──────────────────┘
                                    │
            ┌───────────────────────┼───────────────────────┐
            ▼                       ▼                       ▼
     ┌─────────────┐      ┌──────────────┐       ┌──────────────┐
-    │   Planner   │      │   Workers    │       │   Fixup      │
-    │  (Opus,     │─────▶│  (parallel,  │──────▶│  (verify +   │
-    │  recursive  │      │  workspace   │       │  promote to  │
-    │  tree)      │      │  pool)       │       │  mc/green)   │
+    │   Planner   │      │   Workers    │       │  Green Branch │
+    │  (adaptive, │─────▶│  (parallel,  │──────▶│  (merge queue │
+    │  replan on  │      │  workspace   │       │  + verify +   │
+    │  stall)     │      │  pool)       │       │  promote)     │
     └─────────────┘      └──────────────┘       └──────┬───────┘
            ▲                                           │
            │              ┌──────────────┐             │
            └──────────────│   Feedback   │◀────────────┘
-                          │  (reflect,   │
-                          │  reward,     │
-                          │  experience) │
+                          │  (evaluate,  │
+                          │  reflect,    │
+                          │  strategize) │
                           └──────────────┘
 ```
 
-Each round:
-1. **Plan** -- Recursive planner decomposes the objective into a tree of work units, informed by feedback from prior rounds
+Each epoch:
+1. **Plan** -- Planner decomposes the objective into work units, replanning when progress stalls
 2. **Execute** -- Parallel Claude workers run in isolated workspace clones, each on its own feature branch
-3. **Merge** -- Workers' branches merge into `mc/working` via the green branch manager
-4. **Fixup** -- Verification runs on `mc/working`. If it fails, a fixup agent patches until tests pass, then promotes to `mc/green`
-5. **Evaluate** -- Score progress toward the objective
-6. **Feedback** -- Record reflections, compute rewards, extract experiences for future rounds
-7. **Push** -- Auto-push `mc/green` to `main` on origin (configurable)
+3. **Merge** -- Workers' branches queue into the merge queue and merge into `mc/working` via the green branch manager
+4. **Verify + Promote** -- Verification runs on `mc/working`; passing code promotes to `mc/green` with optional deploy
+5. **Evaluate** -- Score progress (test improvement, lint reduction, completion rate)
+6. **Feedback** -- Record reflections, compute rewards, feed experiences to next epoch
+7. **Strategize** -- Strategist proposes follow-up objectives from backlog; auto-chain missions
 
 ## Quick start
 
@@ -95,43 +95,60 @@ fixup_max_attempts = 3
 
 ```
 src/mission_control/
-├── cli.py                 # CLI entrypoint
-├── config.py              # TOML config loader
-├── models.py              # 14 dataclasses (Mission, Round, WorkUnit, Reflection, Reward, Experience, ...)
-├── db.py                  # SQLite with WAL mode, 15 tables
-├── round_controller.py    # Outer mission loop
-├── recursive_planner.py   # Tree decomposition of objectives
-├── worker.py              # Worker prompt template + subprocess management
-├── evaluator.py           # Objective scoring
-├── feedback.py            # RL-style feedback: reflections, rewards, experiences
-├── green_branch.py        # Green branch pattern (mc/working -> mc/green)
-├── memory.py              # Context loading for workers
-├── session.py             # Claude subprocess spawning + output parsing
+├── cli.py                   # CLI entrypoint (mission, init, discover, summary)
+├── config.py                # TOML config loader + validation
+├── models.py                # Dataclasses (Mission, WorkUnit, Epoch, Snapshot, ...)
+├── db.py                    # SQLite with WAL mode
+├── continuous_controller.py # Main epoch loop with pause/resume signals
+├── continuous_planner.py    # Adaptive planner with replan-on-stall
+├── recursive_planner.py     # Tree decomposition of objectives
+├── worker.py                # Worker prompt rendering + subprocess management
+├── evaluator.py             # Objective scoring (test/lint/completion metrics)
+├── feedback.py              # Reflections, rewards, experiences
+├── green_branch.py          # Green branch pattern (mc/working -> mc/green) + deploy
+├── merge_queue.py           # Ordered merge queue for worker branches
+├── memory.py                # Context loading for workers
+├── session.py               # Claude subprocess spawning + output parsing
+├── strategist.py            # Follow-up objective proposal + mission chaining
+├── auto_discovery.py        # Gap analysis -> research -> backlog pipeline
+├── priority.py              # Backlog priority scoring
+├── overlap.py               # Work unit overlap detection
+├── heartbeat.py             # Liveness monitoring + stale worker recovery
+├── notifier.py              # Telegram notifications with batching + retry
+├── token_parser.py          # Token usage tracking + cost estimation
+├── json_utils.py            # Robust JSON extraction from LLM output
+├── state.py                 # Mission state formatting
+├── dashboard/               # TUI + live web dashboard
 ├── backends/
-│   ├── base.py            # WorkerBackend ABC
-│   └── local.py           # Local subprocess backend with workspace pool
-└── workspace.py           # Git clone pool management
+│   ├── base.py              # WorkerBackend ABC
+│   ├── local.py             # Local subprocess backend with workspace pool
+│   └── ssh.py               # Remote SSH backend
+└── workspace.py             # Git clone pool management
 ```
 
 ## Key concepts
 
-**Green branch pattern**: Workers merge freely into `mc/working`. Nothing is verified at merge time. After all workers finish, the fixup agent runs verification on `mc/working`. If tests pass, it promotes (ff-merge) to `mc/green`. If not, the fixup agent patches until they do. Only verified code reaches `mc/green`.
+**Green branch pattern**: Workers merge into `mc/working` via a merge queue. After merging, verification runs on `mc/working`. Passing code promotes (ff-merge) to `mc/green`. Only verified code reaches `mc/green`. Optional deploy + health check after promotion.
 
-**Recursive planning**: The planner decomposes an objective into a tree of work units. At each node, it decides whether to subdivide further or emit leaf work units. Feedback from prior rounds influences decomposition strategy.
+**Continuous controller**: Runs in epochs with wall-time budgets. Supports pause/resume signals, heartbeat monitoring, and automatic stale worker recovery. Missions chain automatically via the strategist.
 
-**Feedback loop**: After each round, the system records:
-- **Reflections** -- Objective metrics (test deltas, completion rate, score progression)
+**Adaptive planning**: The planner decomposes objectives into work units and replans when progress stalls. Supports research units (no-commit exploration) and experiment mode for safe prototyping.
+
+**Feedback loop**: After each epoch, the system records:
+- **Reflections** -- Objective metrics (test deltas, lint reduction, completion rate)
 - **Rewards** -- Composite score from objective signals (no LLM self-evaluation)
-- **Experiences** -- Per-unit outcomes indexed by keywords for retrieval in future rounds
+- **Experiences** -- Per-unit outcomes indexed by keywords for retrieval in future epochs
 
-**Workspace pool**: Parallel workers each get an isolated git clone from a pre-warmed pool. Clones are recycled between rounds.
+**Auto-discovery**: Pipeline that analyzes the codebase for gaps, researches best practices, and populates the backlog with prioritized improvement items.
+
+**Workspace pool**: Parallel workers each get an isolated git clone from a pre-warmed pool. Clones are recycled between epochs.
 
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest -q              # 495+ tests
-.venv/bin/ruff check src/ tests/           # Lint
-.venv/bin/python -m mypy src/mission_control --ignore-missing-imports  # Types
+uv run pytest -q                           # 800+ tests
+uv run ruff check src/ tests/              # Lint
+uv run mypy src/mission_control --ignore-missing-imports  # Types
 ```
 
 ## Requirements
