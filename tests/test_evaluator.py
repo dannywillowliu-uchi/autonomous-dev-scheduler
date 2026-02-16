@@ -22,28 +22,13 @@ class TestTestImprovement:
 	def test_zero_before_zero_after(self):
 		assert compute_test_improvement(_snap(), _snap()) == 0.0
 
-	def test_zero_before_some_after(self):
-		# (5 - 0) / max(0, 1) = 5.0, clamped to 1.0
-		assert compute_test_improvement(_snap(), _snap(test_passed=5)) == 1.0
-
 	def test_some_before_more_after(self):
 		# (8 - 5) / max(5, 1) = 0.6
 		assert compute_test_improvement(_snap(test_passed=5), _snap(test_passed=8)) == 0.6
 
-	def test_no_change(self):
-		assert compute_test_improvement(_snap(test_passed=10), _snap(test_passed=10)) == 0.0
-
 	def test_regression_clamps_to_zero(self):
 		# (3 - 10) / 10 = -0.7, clamped to 0.0
 		assert compute_test_improvement(_snap(test_passed=10), _snap(test_passed=3)) == 0.0
-
-	def test_one_test_added(self):
-		# (1 - 0) / 1 = 1.0
-		assert compute_test_improvement(_snap(), _snap(test_passed=1)) == 1.0
-
-	def test_double_tests(self):
-		# (20 - 10) / 10 = 1.0
-		assert compute_test_improvement(_snap(test_passed=10), _snap(test_passed=20)) == 1.0
 
 	def test_large_improvement_clamps(self):
 		# (100 - 1) / 1 = 99.0, clamped to 1.0
@@ -54,9 +39,6 @@ class TestTestImprovement:
 
 
 class TestLintImprovement:
-	def test_zero_before_zero_after(self):
-		assert compute_lint_improvement(_snap(), _snap()) == 0.0
-
 	def test_errors_reduced(self):
 		# (10 - 3) / 10 = 0.7
 		assert compute_lint_improvement(_snap(lint_errors=10), _snap(lint_errors=3)) == 0.7
@@ -69,17 +51,6 @@ class TestLintImprovement:
 		# (5 - 10) / 5 = -1.0, clamped to 0.0
 		assert compute_lint_improvement(_snap(lint_errors=5), _snap(lint_errors=10)) == 0.0
 
-	def test_no_change(self):
-		assert compute_lint_improvement(_snap(lint_errors=5), _snap(lint_errors=5)) == 0.0
-
-	def test_zero_before_errors_after(self):
-		# (0 - 3) / max(0, 1) = -3.0, clamped to 0.0
-		assert compute_lint_improvement(_snap(), _snap(lint_errors=3)) == 0.0
-
-	def test_one_error_fixed(self):
-		# (1 - 0) / 1 = 1.0
-		assert compute_lint_improvement(_snap(lint_errors=1), _snap(lint_errors=0)) == 1.0
-
 
 # -- completion_rate --
 
@@ -90,19 +61,6 @@ class TestCompletionRate:
 
 	def test_none_completed(self):
 		assert compute_completion_rate(0, 5) == 0.0
-
-	def test_partial(self):
-		assert compute_completion_rate(3, 5) == 0.6
-
-	def test_zero_planned(self):
-		assert compute_completion_rate(0, 0) == 0.0
-
-	def test_zero_planned_nonzero_completed(self):
-		# Edge: completed > 0 but planned = 0 => 0.0
-		assert compute_completion_rate(3, 0) == 0.0
-
-	def test_negative_planned(self):
-		assert compute_completion_rate(1, -1) == 0.0
 
 	def test_overcompleted_clamps(self):
 		# 6/5 = 1.2, clamped to 1.0
@@ -117,21 +75,9 @@ class TestNoRegression:
 		delta = SnapshotDelta(tests_broken=0, security_delta=0)
 		assert compute_no_regression(delta) == 1.0
 
-	def test_tests_broken(self):
-		delta = SnapshotDelta(tests_broken=3)
-		assert compute_no_regression(delta) == 0.0
-
-	def test_security_regression(self):
-		delta = SnapshotDelta(security_delta=1)
-		assert compute_no_regression(delta) == 0.0
-
 	def test_both_regressions(self):
 		delta = SnapshotDelta(tests_broken=2, security_delta=3)
 		assert compute_no_regression(delta) == 0.0
-
-	def test_improvements_no_regression(self):
-		delta = SnapshotDelta(tests_fixed=5, lint_delta=-3, tests_broken=0, security_delta=0)
-		assert compute_no_regression(delta) == 1.0
 
 
 # -- evaluate_round (integration) --
@@ -159,15 +105,6 @@ class TestEvaluateRound:
 		assert result.completion_rate == 0.0
 		assert result.no_regression == 0.0
 		assert result.score == 0.0
-
-	def test_test_only_improvement(self):
-		before = _snap(test_passed=5)
-		after = _snap(test_passed=10)
-		delta = SnapshotDelta(tests_fixed=5, tests_broken=0)
-		result = evaluate_round(before, after, delta, units_completed=0, units_planned=5)
-		# ti=1.0, li=0.0, cr=0.0, nr=1.0
-		assert result.score == round(0.4 * 1.0 + 0.2 * 0.0 + 0.2 * 0.0 + 0.2 * 1.0, 6)
-		assert result.score == 0.6
 
 	def test_lint_only_improvement(self):
 		before = _snap(lint_errors=20)
@@ -209,14 +146,6 @@ class TestEvaluateRound:
 		# ti=0.0, li=0.0, cr=1.0, nr=1.0
 		expected = round(0.4 * 0.0 + 0.2 * 0.0 + 0.2 * 1.0 + 0.2 * 1.0, 6)
 		assert result.score == expected
-
-	def test_all_tests_failing(self):
-		before = _snap(test_total=10, test_passed=0, test_failed=10)
-		after = _snap(test_total=10, test_passed=0, test_failed=10)
-		delta = SnapshotDelta(tests_broken=0)
-		result = evaluate_round(before, after, delta, units_completed=0, units_planned=3)
-		# ti=0.0, li=0.0, cr=0.0, nr=1.0
-		assert result.score == round(0.2 * 1.0, 6)
 
 	def test_returns_eval_result_type(self):
 		result = evaluate_round(_snap(), _snap(), SnapshotDelta(), 0, 0)

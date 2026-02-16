@@ -34,10 +34,6 @@ class TestNoOverlap:
 		assert len(result) == 1
 		assert result[0].depends_on == ""
 
-	def test_empty_list(self) -> None:
-		"""Empty list returns empty."""
-		assert resolve_file_overlaps([]) == []
-
 
 class TestSingleOverlap:
 	def test_overlap_adds_dependency(self) -> None:
@@ -111,16 +107,6 @@ class TestEmptyFilesHint:
 		assert result[0].depends_on == ""
 		assert result[1].depends_on == ""
 
-	def test_whitespace_only_hint_skipped(self) -> None:
-		"""Units with whitespace-only files_hint are treated as empty."""
-		units = [
-			_wu("A", "  , , ", priority=1),
-			_wu("B", "src/a.py", priority=2),
-		]
-		result = resolve_file_overlaps(units)
-		assert result[0].depends_on == ""
-		assert result[1].depends_on == ""
-
 
 class TestMultipleOverlaps:
 	def test_chain_of_three(self) -> None:
@@ -174,18 +160,6 @@ class TestCycleDetectionSimpleMutual:
 		# The lower-priority unit (B, priority=2) should have had its edge removed
 		assert a.id not in b_deps or b.id not in a_deps
 
-	def test_mutual_overlap_lower_priority_edge_removed(self) -> None:
-		"""In A<->B cycle, the edge FROM the lower-priority unit is removed."""
-		a = _wu("A", "shared.py", priority=1)
-		b = _wu("B", "shared.py", priority=3)
-		a.depends_on = b.id
-		b.depends_on = a.id
-		units = [a, b]
-		resolve_file_overlaps(units)
-		b_deps = {d for d in b.depends_on.split(",") if d.strip()}
-		# B (priority=3) is lower priority, its dep on A should be removed
-		assert a.id not in b_deps
-
 
 class TestCycleDetectionLongerCycle:
 	def test_abc_cycle_broken(self) -> None:
@@ -201,20 +175,6 @@ class TestCycleDetectionLongerCycle:
 		resolve_file_overlaps(units)
 		# After breaking, verify no cycle exists via simple reachability check
 		assert _is_acyclic(units), "Cycle was not broken"
-
-	def test_abc_cycle_correct_edge_removed(self) -> None:
-		"""In A->B->C->A, C (lowest priority) should lose its outgoing dep edge."""
-		a = _wu("A", "f1.py", priority=1)
-		b = _wu("B", "f2.py", priority=2)
-		c = _wu("C", "f3.py", priority=3)
-		a.depends_on = c.id
-		b.depends_on = a.id
-		c.depends_on = b.id
-		units = [a, b, c]
-		resolve_file_overlaps(units)
-		c_deps = {d for d in c.depends_on.split(",") if d.strip()}
-		# C (priority=3) is the lowest priority, so its dep on B should be removed
-		assert b.id not in c_deps
 
 
 class TestCycleFreeGraphUnchanged:

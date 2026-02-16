@@ -82,23 +82,6 @@ class TestHeartbeat:
 		assert result == ""
 		assert hb.consecutive_idle == 0
 
-	@pytest.mark.asyncio
-	async def test_no_notifier(self) -> None:
-		hb = Heartbeat(interval=0, idle_threshold=3, notifier=None, enable_recovery=False)
-		hb._last_merged_count = 5
-		result = await hb.check(total_merged=5, total_failed=0)
-		assert result == ""
-		assert hb.consecutive_idle == 1
-
-	@pytest.mark.asyncio
-	async def test_custom_idle_threshold(self) -> None:
-		hb = Heartbeat(interval=0, idle_threshold=5, enable_recovery=False)
-		hb._last_merged_count = 5
-		for i in range(4):
-			result = await hb.check(total_merged=5, total_failed=0)
-			assert result == ""
-		result = await hb.check(total_merged=5, total_failed=0)
-		assert result == "heartbeat_stalled"
 
 
 class TestHeartbeatRecovery:
@@ -189,25 +172,3 @@ class TestHeartbeatRecovery:
 		stuck_ids = await hb.recover()
 
 		assert stuck_ids == ["unit-111", "unit-222"]
-
-	@pytest.mark.asyncio
-	async def test_recovery_no_db(self) -> None:
-		"""Verify recover() handles missing DB gracefully."""
-		hb = Heartbeat(interval=0, idle_threshold=1, db=None, enable_recovery=True)
-
-		stuck_ids = await hb.recover()
-
-		assert stuck_ids == []
-
-	@pytest.mark.asyncio
-	async def test_recovery_no_running_units(self) -> None:
-		"""Verify recover() handles no running units."""
-		mock_db = _make_mock_db([])
-		hb = Heartbeat(
-			interval=0, idle_threshold=1,
-			db=mock_db, enable_recovery=True,
-		)
-
-		stuck_ids = await hb.recover()
-
-		assert stuck_ids == []

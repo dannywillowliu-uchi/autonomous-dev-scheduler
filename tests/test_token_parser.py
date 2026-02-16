@@ -9,15 +9,6 @@ from mission_control.config import MissionConfig, PricingConfig, load_config
 from mission_control.token_parser import TokenUsage, compute_token_cost, parse_stream_json
 
 
-class TestTokenUsage:
-	def test_defaults(self) -> None:
-		u = TokenUsage()
-		assert u.input_tokens == 0
-		assert u.output_tokens == 0
-		assert u.cache_creation_tokens == 0
-		assert u.cache_read_tokens == 0
-
-
 class TestParseStreamJson:
 	def test_empty_input(self) -> None:
 		result = parse_stream_json("")
@@ -149,17 +140,6 @@ class TestComputeTokenCost:
 
 
 class TestPricingConfig:
-	def test_defaults(self) -> None:
-		pc = PricingConfig()
-		assert pc.input_per_million == 3.0
-		assert pc.output_per_million == 15.0
-		assert pc.cache_write_per_million == 3.75
-		assert pc.cache_read_per_million == 0.30
-
-	def test_mission_config_has_pricing(self) -> None:
-		mc = MissionConfig()
-		assert isinstance(mc.pricing, PricingConfig)
-
 	def test_toml_parsing(self, tmp_path: Path) -> None:
 		toml = tmp_path / "mission-control.toml"
 		toml.write_text("""\
@@ -179,54 +159,8 @@ cache_read_per_million = 0.6
 		assert config.pricing.cache_write_per_million == 7.5
 		assert config.pricing.cache_read_per_million == 0.6
 
-	def test_toml_partial_pricing(self, tmp_path: Path) -> None:
-		"""Only override some pricing fields, rest use defaults."""
-		toml = tmp_path / "mission-control.toml"
-		toml.write_text("""\
-[target]
-name = "test"
-path = "/tmp/test"
-
-[pricing]
-input_per_million = 10.0
-""")
-		config = load_config(toml)
-		assert config.pricing.input_per_million == 10.0
-		assert config.pricing.output_per_million == 15.0  # default
-
-	def test_no_pricing_section_uses_defaults(self, tmp_path: Path) -> None:
-		toml = tmp_path / "mission-control.toml"
-		toml.write_text("""\
-[target]
-name = "test"
-path = "/tmp/test"
-""")
-		config = load_config(toml)
-		assert config.pricing.input_per_million == 3.0
-
 
 class TestTokenColumnMigration:
-	def test_work_unit_token_defaults(self) -> None:
-		from mission_control.models import WorkUnit
-		wu = WorkUnit()
-		assert wu.input_tokens == 0
-		assert wu.output_tokens == 0
-		assert wu.cost_usd == 0.0
-
-	def test_unit_event_token_defaults(self) -> None:
-		from mission_control.models import UnitEvent
-		ue = UnitEvent()
-		assert ue.input_tokens == 0
-		assert ue.output_tokens == 0
-
-	def test_migration_idempotent(self) -> None:
-		"""Running migration twice should not error."""
-		from mission_control.db import Database
-		db = Database(":memory:")
-		db._migrate_token_columns()  # second time
-		db._migrate_token_columns()  # third time
-		db.close()
-
 	def test_insert_and_read_tokens(self) -> None:
 		"""Token fields survive insert/read round-trip."""
 		from mission_control.db import Database

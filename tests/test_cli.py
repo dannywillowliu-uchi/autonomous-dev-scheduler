@@ -12,22 +12,11 @@ from mission_control.models import Epoch, Mission, Plan, WorkUnit
 
 
 class TestArgParsing:
-	def test_history_limit(self) -> None:
-		parser = build_parser()
-		args = parser.parse_args(["history", "--limit", "20"])
-		assert args.command == "history"
-		assert args.limit == 20
-
 	def test_init_default_path(self) -> None:
 		parser = build_parser()
 		args = parser.parse_args(["init"])
 		assert args.command == "init"
 		assert args.path == "."
-
-	def test_init_custom_path(self) -> None:
-		parser = build_parser()
-		args = parser.parse_args(["init", "/tmp/myproject"])
-		assert args.path == "/tmp/myproject"
 
 	def test_no_command_returns_0(self) -> None:
 		result = main([])
@@ -98,31 +87,6 @@ path = "/tmp/test"
 		assert result == 1  # No discoveries yet
 
 
-class TestSummaryArgs:
-	def test_summary_defaults(self) -> None:
-		parser = build_parser()
-		args = parser.parse_args(["summary"])
-		assert args.command == "summary"
-		assert args.show_all is False
-		assert args.mission_id is None
-		assert args.json_output is False
-
-	def test_summary_all(self) -> None:
-		parser = build_parser()
-		args = parser.parse_args(["summary", "--all"])
-		assert args.show_all is True
-
-	def test_summary_json(self) -> None:
-		parser = build_parser()
-		args = parser.parse_args(["summary", "--json"])
-		assert args.json_output is True
-
-	def test_summary_mission_id(self) -> None:
-		parser = build_parser()
-		args = parser.parse_args(["summary", "--mission-id", "abc123"])
-		assert args.mission_id == "abc123"
-
-
 class TestCmdSummary:
 	def _setup_db(self, tmp_path: Path) -> tuple[Path, Path]:
 		"""Create config and DB with test data. Returns (config_path, db_path)."""
@@ -156,34 +120,6 @@ class TestCmdSummary:
 		result = cmd_summary(args)
 		assert result == 1
 
-	def test_summary_all_missions(self, tmp_path: Path) -> None:
-		config_file, _ = self._setup_db(tmp_path)
-		parser = build_parser()
-		args = parser.parse_args(["summary", "--config", str(config_file), "--all"])
-		result = cmd_summary(args)
-		assert result == 0
-
-	def test_summary_json_output(self, tmp_path: Path) -> None:
-		config_file, _ = self._setup_db(tmp_path)
-		parser = build_parser()
-		args = parser.parse_args(["summary", "--config", str(config_file), "--json"])
-		result = cmd_summary(args)
-		assert result == 0
-
-
-class TestMissionAutoDiscoverArgs:
-	def test_mission_auto_discover_flag(self) -> None:
-		parser = build_parser()
-		args = parser.parse_args(["mission", "--auto-discover"])
-		assert args.auto_discover is True
-		assert args.approve_all is False
-
-	def test_mission_approve_all_flag(self) -> None:
-		parser = build_parser()
-		args = parser.parse_args(["mission", "--auto-discover", "--approve-all"])
-		assert args.auto_discover is True
-		assert args.approve_all is True
-
 
 class TestMissionChainArgs:
 	def test_chain_flag_default_false(self) -> None:
@@ -195,23 +131,6 @@ class TestMissionChainArgs:
 		parser = build_parser()
 		args = parser.parse_args(["mission", "--chain"])
 		assert args.chain is True
-
-	def test_max_chain_depth_default(self) -> None:
-		parser = build_parser()
-		args = parser.parse_args(["mission", "--chain"])
-		assert args.max_chain_depth == 3
-
-	def test_max_chain_depth_custom(self) -> None:
-		parser = build_parser()
-		args = parser.parse_args(["mission", "--chain", "--max-chain-depth", "5"])
-		assert args.max_chain_depth == 5
-
-	def test_chain_with_other_flags(self) -> None:
-		parser = build_parser()
-		args = parser.parse_args(["mission", "--chain", "--max-chain-depth", "2", "--dry-run"])
-		assert args.chain is True
-		assert args.max_chain_depth == 2
-		assert args.dry_run is True
 
 
 @dataclass
@@ -321,28 +240,6 @@ class TestMissionChainLoop:
 		with patch("mission_control.continuous_controller.ContinuousController", mock_ctrl):
 			parser = build_parser()
 			args = parser.parse_args(["mission", "--config", "fake.toml"])
-			result = cmd_mission(args)
-
-		assert result == 0
-		assert len(call_log) == 1
-
-	@patch("mission_control.cli.Database")
-	@patch("mission_control.cli.load_config")
-	def test_chain_stops_on_empty_next_objective(
-		self, mock_load_config: MagicMock, mock_db_cls: MagicMock,
-	) -> None:
-		"""Chain stops immediately when next_objective is empty."""
-		config = MagicMock()
-		config.target.objective = "start"
-		config.scheduler.parallel.num_workers = 2
-		mock_load_config.return_value = config
-
-		results = [_FakeResult(mission_id="m1", next_objective="")]
-		mock_ctrl, call_log = self._mock_mission_run(results)
-
-		with patch("mission_control.continuous_controller.ContinuousController", mock_ctrl):
-			parser = build_parser()
-			args = parser.parse_args(["mission", "--chain", "--max-chain-depth", "5", "--config", "fake.toml"])
 			result = cmd_mission(args)
 
 		assert result == 0

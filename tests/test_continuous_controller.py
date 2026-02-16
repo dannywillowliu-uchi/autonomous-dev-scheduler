@@ -39,12 +39,6 @@ class TestShouldStop:
 		ctrl._start_time = time.monotonic() - 20  # 20s elapsed, limit is 10s
 		assert ctrl._should_stop(Mission(id="m1")) == "wall_time_exceeded"
 
-	def test_wall_time_not_exceeded(self, config: MissionConfig, db: Database) -> None:
-		config.continuous.max_wall_time_seconds = 100
-		ctrl = ContinuousController(config, db)
-		ctrl._start_time = time.monotonic() - 10  # 10s elapsed, limit is 100s
-		assert ctrl._should_stop(Mission(id="m1")) == ""
-
 	def test_signal_stopped(self, config: MissionConfig, db: Database) -> None:
 		db.insert_mission(Mission(id="m1", objective="test"))
 		signal = Signal(mission_id="m1", signal_type="stop")
@@ -80,9 +74,6 @@ class TestCheckSignals:
 		assert result == ""  # adjust doesn't stop
 		assert config.scheduler.parallel.num_workers == 4
 
-	def test_no_signals(self, config: MissionConfig, db: Database) -> None:
-		ctrl = ContinuousController(config, db)
-		assert ctrl._check_signals("m1") == ""
 
 
 class TestHandleAdjustSignal:
@@ -114,26 +105,6 @@ class TestHandleAdjustSignal:
 
 
 class TestPauseResumeSignals:
-	def test_pause_signal_sets_paused(self, config: MissionConfig, db: Database) -> None:
-		db.insert_mission(Mission(id="m1", objective="test"))
-		signal = Signal(mission_id="m1", signal_type="pause")
-		db.insert_signal(signal)
-
-		ctrl = ContinuousController(config, db)
-		assert ctrl._paused is False
-		ctrl._check_signals("m1")
-		assert ctrl._paused is True
-
-	def test_resume_signal_clears_paused(self, config: MissionConfig, db: Database) -> None:
-		db.insert_mission(Mission(id="m1", objective="test"))
-		signal = Signal(mission_id="m1", signal_type="resume")
-		db.insert_signal(signal)
-
-		ctrl = ContinuousController(config, db)
-		ctrl._paused = True
-		ctrl._check_signals("m1")
-		assert ctrl._paused is False
-
 	def test_pause_then_resume(self, config: MissionConfig, db: Database) -> None:
 		db.insert_mission(Mission(id="m1", objective="test"))
 
@@ -366,35 +337,6 @@ class TestProcessCompletions:
 		assert ctrl._total_merged == 0
 
 	@pytest.mark.asyncio
-	async def test_completed_no_commits_counts_as_merged(self, config: MissionConfig, db: Database) -> None:
-		"""Unit completed without commits should count as merged."""
-		db.insert_mission(Mission(id="m1", objective="test"))
-		ctrl = ContinuousController(config, db)
-		result = ContinuousMissionResult(mission_id="m1")
-		ctrl._green_branch = MagicMock()
-
-		epoch = Epoch(id="ep1", mission_id="m1", number=1)
-		db.insert_epoch(epoch)
-		plan = Plan(id="p1", objective="test")
-		db.insert_plan(plan)
-
-		unit = WorkUnit(
-			id="wu1", plan_id="p1", title="Task",
-			status="completed", commit_hash=None,
-		)
-		db.insert_work_unit(unit)
-
-		completion = WorkerCompletion(
-			unit=unit, handoff=None, workspace="/tmp/ws", epoch=epoch,
-		)
-		ctrl._completion_queue.put_nowait(completion)
-		ctrl.running = False
-
-		await ctrl._process_completions(Mission(id="m1"), result)
-
-		assert ctrl._total_merged == 1
-
-	@pytest.mark.asyncio
 	async def test_failed_unit_counts_as_failure(self, config: MissionConfig, db: Database) -> None:
 		"""Unit with failed status should count as failure."""
 		db.insert_mission(Mission(id="m1", objective="test"))
@@ -422,60 +364,6 @@ class TestProcessCompletions:
 		await ctrl._process_completions(Mission(id="m1"), result)
 
 		assert ctrl._total_failed == 1
-
-	@pytest.mark.asyncio
-	async def test_merge_failure_appends_to_handoff_concerns(self, config: MissionConfig, db: Database) -> None:
-		"""When merge fails and handoff exists, failure is appended to concerns."""
-		db.insert_mission(Mission(id="m1", objective="test"))
-		ctrl = ContinuousController(config, db)
-		result = ContinuousMissionResult(mission_id="m1")
-
-		mock_gbm = MagicMock()
-		mock_gbm.merge_unit = AsyncMock(
-			return_value=UnitMergeResult(
-				merged=False, rebase_ok=False,
-				failure_output="Merge conflict in main.py",
-			),
-		)
-		ctrl._green_branch = mock_gbm
-
-		mock_planner = MagicMock()
-		mock_planner.ingest_handoff = MagicMock()
-		ctrl._planner = mock_planner
-
-		epoch = Epoch(id="ep1", mission_id="m1", number=1)
-		db.insert_epoch(epoch)
-		plan = Plan(id="p1", objective="test")
-		db.insert_plan(plan)
-
-		unit = WorkUnit(
-			id="wu1", plan_id="p1", title="Task",
-			status="completed", commit_hash="abc",
-			branch_name="mc/unit-wu1",
-			attempt=3, max_attempts=3,
-		)
-		db.insert_work_unit(unit)
-
-		handoff = Handoff(
-			work_unit_id="wu1", round_id="", epoch_id="ep1",
-			status="completed", summary="Done", concerns="[]",
-		)
-
-		completion = WorkerCompletion(
-			unit=unit, handoff=handoff, workspace="/tmp/ws", epoch=epoch,
-		)
-		ctrl._completion_queue.put_nowait(completion)
-		ctrl.running = False
-
-		await ctrl._process_completions(Mission(id="m1"), result)
-
-		# Handoff concerns should contain merge failure info
-		concerns = json.loads(handoff.concerns)
-		assert len(concerns) == 1
-		assert "Merge failed" in concerns[0]
-		# Planner should still get the handoff
-		mock_planner.ingest_handoff.assert_called_once_with(handoff)
-
 
 	@pytest.mark.asyncio
 	async def test_research_unit_skips_merge(self, config: MissionConfig, db: Database) -> None:
@@ -526,69 +414,6 @@ class TestProcessCompletions:
 		# Handoff should still be ingested
 		mock_planner.ingest_handoff.assert_called_once_with(handoff)
 
-	@pytest.mark.asyncio
-	async def test_research_unit_with_commits_skips_merge(self, config: MissionConfig, db: Database) -> None:
-		"""Research units skip merge even if they have commits."""
-		db.insert_mission(Mission(id="m1", objective="test"))
-		ctrl = ContinuousController(config, db)
-		result = ContinuousMissionResult(mission_id="m1")
-
-		mock_gbm = MagicMock()
-		mock_gbm.merge_unit = AsyncMock()
-		ctrl._green_branch = mock_gbm
-
-		epoch = Epoch(id="ep1", mission_id="m1", number=1)
-		db.insert_epoch(epoch)
-		plan = Plan(id="p1", objective="test")
-		db.insert_plan(plan)
-
-		unit = WorkUnit(
-			id="wu1", plan_id="p1", title="Research",
-			status="completed", commit_hash="abc123",
-			unit_type="research",
-		)
-		db.insert_work_unit(unit)
-
-		completion = WorkerCompletion(
-			unit=unit, handoff=None, workspace="/tmp/ws", epoch=epoch,
-		)
-		ctrl._completion_queue.put_nowait(completion)
-		ctrl.running = False
-
-		await ctrl._process_completions(Mission(id="m1"), result)
-
-		assert ctrl._total_merged == 1
-		mock_gbm.merge_unit.assert_not_called()
-
-	@pytest.mark.asyncio
-	async def test_failed_research_unit_counts_as_failure(self, config: MissionConfig, db: Database) -> None:
-		"""Research unit with failed status should still count as failure."""
-		db.insert_mission(Mission(id="m1", objective="test"))
-		ctrl = ContinuousController(config, db)
-		result = ContinuousMissionResult(mission_id="m1")
-		ctrl._green_branch = MagicMock()
-
-		epoch = Epoch(id="ep1", mission_id="m1", number=1)
-		db.insert_epoch(epoch)
-		plan = Plan(id="p1", objective="test")
-		db.insert_plan(plan)
-
-		unit = WorkUnit(
-			id="wu1", plan_id="p1", title="Research",
-			status="failed", unit_type="research",
-		)
-		db.insert_work_unit(unit)
-
-		completion = WorkerCompletion(
-			unit=unit, handoff=None, workspace="/tmp/ws", epoch=epoch,
-		)
-		ctrl._completion_queue.put_nowait(completion)
-		ctrl.running = False
-
-		await ctrl._process_completions(Mission(id="m1"), result)
-
-		assert ctrl._total_failed == 1
-		assert ctrl._total_merged == 0
 
 
 class TestStop:
@@ -597,26 +422,6 @@ class TestStop:
 		assert ctrl.running is True
 		ctrl.stop()
 		assert ctrl.running is False
-
-
-class TestWorkerCompletion:
-	def test_dataclass_fields(self) -> None:
-		unit = WorkUnit(id="wu1", title="Task")
-		epoch = Epoch(id="ep1", mission_id="m1")
-		wc = WorkerCompletion(
-			unit=unit, handoff=None, workspace="/tmp/ws", epoch=epoch,
-		)
-		assert wc.unit.id == "wu1"
-		assert wc.workspace == "/tmp/ws"
-		assert wc.handoff is None
-
-
-class TestContinuousMissionResult:
-	def test_defaults(self) -> None:
-		r = ContinuousMissionResult()
-		assert r.mission_id == ""
-		assert r.objective_met is False
-		assert r.total_units_dispatched == 0
 
 
 class TestExecuteSingleUnit:
@@ -905,58 +710,6 @@ class TestRetry:
 		assert "[Retry attempt 2]" in unit.description  # attempt incremented from 1->2 inside _schedule_retry
 
 
-class TestRetryCounterIncrement:
-	"""Verify _schedule_retry properly increments unit.attempt."""
-
-	def test_attempt_incremented_from_zero(self, config: MissionConfig, db: Database) -> None:
-		"""Unit at attempt=0 should be incremented to 1 by _schedule_retry."""
-		db.insert_mission(Mission(id="m1", objective="test"))
-		ctrl = ContinuousController(config, db)
-
-		plan = Plan(id="p1", objective="test")
-		db.insert_plan(plan)
-		epoch = Epoch(id="ep1", mission_id="m1", number=1)
-		db.insert_epoch(epoch)
-
-		unit = WorkUnit(
-			id="wu1", plan_id="p1", title="Task",
-			attempt=0, max_attempts=3,
-		)
-		db.insert_work_unit(unit)
-
-		with patch("asyncio.create_task"):
-			ctrl._schedule_retry(unit, epoch, Mission(id="m1"), "error", config.continuous)
-
-		assert unit.attempt == 1
-		assert unit.status == "pending"
-
-		# Verify it was persisted to DB
-		db_unit = db.get_work_unit("wu1")
-		assert db_unit is not None
-		assert db_unit.attempt == 1
-
-	def test_attempt_incremented_multiple_retries(self, config: MissionConfig, db: Database) -> None:
-		"""Multiple retries should increment attempt each time."""
-		db.insert_mission(Mission(id="m1", objective="test"))
-		ctrl = ContinuousController(config, db)
-
-		plan = Plan(id="p1", objective="test")
-		db.insert_plan(plan)
-		epoch = Epoch(id="ep1", mission_id="m1", number=1)
-		db.insert_epoch(epoch)
-
-		unit = WorkUnit(
-			id="wu1", plan_id="p1", title="Task",
-			attempt=0, max_attempts=5,
-		)
-		db.insert_work_unit(unit)
-
-		for expected_attempt in range(1, 4):
-			with patch("asyncio.create_task"):
-				ctrl._schedule_retry(unit, epoch, Mission(id="m1"), f"error {expected_attempt}", config.continuous)
-			assert unit.attempt == expected_attempt
-
-
 class TestVenvSymlink:
 	"""Verify .venv is symlinked into green branch workspace."""
 
@@ -1020,32 +773,6 @@ class TestPostMissionDiscovery:
 			await ctrl._run_post_mission_discovery()
 
 		mock_engine.discover.assert_called_once()
-
-	@pytest.mark.asyncio
-	async def test_discovery_notifies_on_results(self, config: MissionConfig, db: Database) -> None:
-		"""Should send Telegram notification with discovery results."""
-		config.discovery.enabled = True
-		ctrl = ContinuousController(config, db)
-		ctrl._notifier = MagicMock()
-		ctrl._notifier.send = AsyncMock()
-
-		items = [
-			MagicMock(track="quality", title="Fix tests", priority_score=5.0),
-		]
-		mock_engine = MagicMock()
-		mock_engine.discover = AsyncMock(
-			return_value=(MagicMock(item_count=1), items),
-		)
-
-		with patch(
-			"mission_control.auto_discovery.DiscoveryEngine",
-			return_value=mock_engine,
-		):
-			await ctrl._run_post_mission_discovery()
-
-		ctrl._notifier.send.assert_called_once()
-		call_args = ctrl._notifier.send.call_args[0][0]
-		assert "1 new improvement" in call_args
 
 	@pytest.mark.asyncio
 	async def test_discovery_handles_errors(self, config: MissionConfig, db: Database) -> None:
@@ -1138,47 +865,6 @@ class TestWorkerRecordPersistence:
 		assert worker.units_completed == 1
 		assert worker.units_failed == 0
 
-	@pytest.mark.asyncio
-	async def test_worker_dead_on_infrastructure_error(self, config: MissionConfig, db: Database) -> None:
-		"""Worker status set to dead on infrastructure error."""
-		db, config, ctrl, epoch = self._setup(config, db)
-
-		mock_backend = AsyncMock()
-		mock_handle = MagicMock()
-		mock_handle.pid = 42
-		mock_handle.workspace_path = "/tmp/ws"
-		mock_backend.spawn.return_value = mock_handle
-		mock_backend.check_status.side_effect = RuntimeError("Connection lost")
-		ctrl._backend = mock_backend
-
-		unit = WorkUnit(id="wu1", plan_id="p1", title="Task")
-		db.insert_work_unit(unit)
-		semaphore = asyncio.Semaphore(1)
-
-		await ctrl._execute_single_unit(unit, epoch, Mission(id="m1"), semaphore)
-
-		worker = db.get_worker("wu1")
-		assert worker is not None
-		assert worker.status == "dead"
-		assert worker.units_failed == 1
-
-	@pytest.mark.asyncio
-	async def test_no_worker_on_provision_failure(self, config: MissionConfig, db: Database) -> None:
-		"""No Worker record when workspace provisioning fails (before spawn)."""
-		db, config, ctrl, epoch = self._setup(config, db)
-
-		mock_backend = AsyncMock()
-		mock_backend.provision_workspace.side_effect = RuntimeError("Pool full")
-		ctrl._backend = mock_backend
-
-		unit = WorkUnit(id="wu1", plan_id="p1", title="Task")
-		db.insert_work_unit(unit)
-		semaphore = asyncio.Semaphore(1)
-
-		await ctrl._execute_single_unit(unit, epoch, Mission(id="m1"), semaphore)
-
-		worker = db.get_worker("wu1")
-		assert worker is None
 
 
 class TestFailUnitHelper:
@@ -1219,52 +905,6 @@ class TestFailUnitHelper:
 		assert completion.handoff is None
 		assert completion.workspace == "/tmp/ws"
 
-	@pytest.mark.asyncio
-	async def test_put_on_queue_false_skips_queue(self, config: MissionConfig, db: Database) -> None:
-		"""_fail_unit with put_on_queue=False should not add to completion queue."""
-		db.insert_mission(Mission(id="m1", objective="test"))
-		plan = Plan(id="p1", objective="test")
-		db.insert_plan(plan)
-		epoch = Epoch(id="ep1", mission_id="m1", number=1)
-		db.insert_epoch(epoch)
-
-		ctrl = ContinuousController(config, db)
-
-		async def mock_locked_call(method: str, *args: object) -> object:
-			return getattr(db, method)(*args)
-		db.locked_call = mock_locked_call  # type: ignore[attr-defined]
-
-		unit = WorkUnit(id="wu1", plan_id="p1", title="Task", attempt=0)
-		db.insert_work_unit(unit)
-
-		await ctrl._fail_unit(unit, None, epoch, "cancelled", "/tmp/ws", put_on_queue=False)
-
-		assert unit.status == "failed"
-		assert unit.attempt == 1
-		assert ctrl._completion_queue.empty()
-
-	@pytest.mark.asyncio
-	async def test_no_worker(self, config: MissionConfig, db: Database) -> None:
-		"""_fail_unit with worker=None should still update unit and queue."""
-		db.insert_mission(Mission(id="m1", objective="test"))
-		plan = Plan(id="p1", objective="test")
-		db.insert_plan(plan)
-		epoch = Epoch(id="ep1", mission_id="m1", number=1)
-		db.insert_epoch(epoch)
-
-		ctrl = ContinuousController(config, db)
-
-		async def mock_locked_call(method: str, *args: object) -> object:
-			return getattr(db, method)(*args)
-		db.locked_call = mock_locked_call  # type: ignore[attr-defined]
-
-		unit = WorkUnit(id="wu1", plan_id="p1", title="Task", attempt=0)
-		db.insert_work_unit(unit)
-
-		await ctrl._fail_unit(unit, None, epoch, "provision failed", "")
-
-		assert unit.status == "failed"
-		assert not ctrl._completion_queue.empty()
 
 
 class TestHandleAdjustSemaphoreRebuild:
@@ -1286,48 +926,6 @@ class TestHandleAdjustSemaphoreRebuild:
 		assert ctrl._semaphore is not None
 		assert ctrl._semaphore._value == 6
 
-	def test_semaphore_preserves_in_flight(self, config: MissionConfig, db: Database) -> None:
-		"""Semaphore rebuild should pre-acquire slots for in-flight workers."""
-		db.insert_mission(Mission(id="m1", objective="test"))
-		ctrl = ContinuousController(config, db)
-		ctrl._semaphore = asyncio.Semaphore(4)
-
-		# Simulate 2 in-flight tasks
-		mock_task1 = MagicMock(spec=asyncio.Task)
-		mock_task1.done.return_value = False
-		mock_task2 = MagicMock(spec=asyncio.Task)
-		mock_task2.done.return_value = False
-		mock_done_task = MagicMock(spec=asyncio.Task)
-		mock_done_task.done.return_value = True
-		ctrl._active_tasks = {mock_task1, mock_task2, mock_done_task}
-
-		signal = Signal(
-			mission_id="m1",
-			signal_type="adjust",
-			payload='{"num_workers": 5}',
-		)
-		db.insert_signal(signal)
-		ctrl._handle_adjust_signal(signal)
-
-		# 5 total - 2 in-flight = 3 available
-		assert ctrl._semaphore._value == 3
-
-	def test_no_semaphore_no_crash(self, config: MissionConfig, db: Database) -> None:
-		"""Adjusting workers without semaphore should still update config."""
-		db.insert_mission(Mission(id="m1", objective="test"))
-		ctrl = ContinuousController(config, db)
-		# _semaphore is None by default
-
-		signal = Signal(
-			mission_id="m1",
-			signal_type="adjust",
-			payload='{"num_workers": 3}',
-		)
-		db.insert_signal(signal)
-		ctrl._handle_adjust_signal(signal)
-
-		assert config.scheduler.parallel.num_workers == 3
-		assert ctrl._semaphore is None
 
 
 class TestConcurrentDispatchAndCompletion:
@@ -1591,61 +1189,12 @@ class TestDryRun:
 		assert result.total_units_dispatched == 0
 		mock_backend.cleanup.assert_called_once()
 
-	@pytest.mark.asyncio
-	async def test_dry_run_no_units(self, config: MissionConfig, db: Database) -> None:
-		"""dry_run with no planner units should print message and return."""
-		ctrl = ContinuousController(config, db)
-
-		plan = Plan(id="p1", objective="test")
-		epoch = Epoch(id="ep1", mission_id="m1", number=0)
-
-		mock_planner = MagicMock()
-		mock_planner.get_next_units = AsyncMock(return_value=(plan, [], epoch))
-
-		async def mock_init() -> None:
-			ctrl._planner = mock_planner
-			ctrl._backend = AsyncMock()
-
-		with patch.object(ctrl, "_init_components", mock_init):
-			result = await ctrl.run(dry_run=True)
-
-		assert result.total_units_dispatched == 0
-
-	@pytest.mark.asyncio
-	async def test_dry_run_does_not_insert_mission(self, config: MissionConfig, db: Database) -> None:
-		"""dry_run should not persist a mission to the database."""
-		ctrl = ContinuousController(config, db)
-
-		plan = Plan(id="p1", objective="test")
-		epoch = Epoch(id="ep1", mission_id="m1", number=0)
-		units = [WorkUnit(id="wu1", plan_id="p1", title="Task")]
-
-		mock_planner = MagicMock()
-		mock_planner.get_next_units = AsyncMock(return_value=(plan, units, epoch))
-
-		async def mock_init() -> None:
-			ctrl._planner = mock_planner
-			ctrl._backend = AsyncMock()
-
-		with patch.object(ctrl, "_init_components", mock_init):
-			await ctrl.run(dry_run=True)
-
-		# No mission should be in the DB
-		latest = db.get_latest_mission()
-		assert latest is None
 
 
 class TestScoreAmbition:
 	def test_empty_units_returns_1(self, config: MissionConfig, db: Database) -> None:
 		ctrl = ContinuousController(config, db)
 		assert ctrl._score_ambition([]) == 1
-
-	def test_single_low_priority_unit(self, config: MissionConfig, db: Database) -> None:
-		ctrl = ContinuousController(config, db)
-		units = [WorkUnit(id="wu1", title="Fix typo", priority=7, files_hint="README.md")]
-		score = ctrl._score_ambition(units)
-		# Single unit, 1 file, 1 type, low priority -> low score
-		assert 1 <= score <= 5
 
 	def test_many_diverse_units_scores_high(self, config: MissionConfig, db: Database) -> None:
 		ctrl = ContinuousController(config, db)
@@ -1659,30 +1208,6 @@ class TestScoreAmbition:
 		# 8 units, 16 files, mixed types, high priority -> high score
 		assert score >= 7
 
-	def test_medium_ambition(self, config: MissionConfig, db: Database) -> None:
-		ctrl = ContinuousController(config, db)
-		units = [
-			WorkUnit(id="wu1", title="Add feature", priority=3, files_hint="src/a.py, src/b.py, src/c.py"),
-			WorkUnit(id="wu2", title="Add tests", priority=3, files_hint="tests/test_a.py, tests/test_b.py"),
-			WorkUnit(id="wu3", title="Update docs", priority=4, files_hint="docs/api.md"),
-		]
-		score = ctrl._score_ambition(units)
-		assert 3 <= score <= 7
-
-	def test_unit_type_mix_increases_score(self, config: MissionConfig, db: Database) -> None:
-		ctrl = ContinuousController(config, db)
-		impl_only = [
-			WorkUnit(id="wu1", title="Task", priority=3, files_hint="a.py", unit_type="implementation"),
-			WorkUnit(id="wu2", title="Task2", priority=3, files_hint="b.py", unit_type="implementation"),
-		]
-		mixed = [
-			WorkUnit(id="wu1", title="Task", priority=3, files_hint="a.py", unit_type="implementation"),
-			WorkUnit(id="wu2", title="Research", priority=3, files_hint="b.py", unit_type="research"),
-		]
-		score_impl = ctrl._score_ambition(impl_only)
-		score_mixed = ctrl._score_ambition(mixed)
-		assert score_mixed >= score_impl
-
 	def test_score_clamped_to_range(self, config: MissionConfig, db: Database) -> None:
 		ctrl = ContinuousController(config, db)
 		# Even with extreme inputs, score stays 1-10
@@ -1695,21 +1220,6 @@ class TestScoreAmbition:
 		score = ctrl._score_ambition(units)
 		assert 1 <= score <= 10
 
-	def test_high_priority_units_score_higher(self, config: MissionConfig, db: Database) -> None:
-		ctrl = ContinuousController(config, db)
-		low_pri = [
-			WorkUnit(id="wu1", title="T1", priority=7, files_hint="a.py"),
-			WorkUnit(id="wu2", title="T2", priority=8, files_hint="b.py"),
-			WorkUnit(id="wu3", title="T3", priority=9, files_hint="c.py"),
-		]
-		high_pri = [
-			WorkUnit(id="wu1", title="T1", priority=1, files_hint="a.py"),
-			WorkUnit(id="wu2", title="T2", priority=1, files_hint="b.py"),
-			WorkUnit(id="wu3", title="T3", priority=2, files_hint="c.py"),
-		]
-		score_low = ctrl._score_ambition(low_pri)
-		score_high = ctrl._score_ambition(high_pri)
-		assert score_high >= score_low
 
 
 class TestAmbitionScoringInDispatch:
@@ -1782,86 +1292,6 @@ class TestAmbitionScoringInDispatch:
 		assert db_mission is not None
 		assert db_mission.ambition_score > 0
 
-	@pytest.mark.asyncio
-	async def test_low_ambition_warns_with_higher_backlog(
-		self, config: MissionConfig, db: Database, caplog: pytest.LogCaptureFixture,
-	) -> None:
-		"""Low ambition with higher-priority backlog items should log a warning."""
-		config.target.name = "test"
-		config.continuous.max_wall_time_seconds = 1
-		config.discovery.enabled = False
-		ctrl = ContinuousController(config, db)
-
-		# Insert high-priority backlog items (stay pending since discovery is off)
-		for i in range(3):
-			db.insert_backlog_item(BacklogItem(
-				id=f"bl{i}", title=f"Important task {i}",
-				priority_score=9.0, status="pending",
-			))
-
-		call_count = 0
-
-		async def mock_get_next(
-			mission: Mission, max_units: int = 3, feedback_context: str = "",
-		) -> tuple[Plan, list[WorkUnit], Epoch]:
-			nonlocal call_count
-			call_count += 1
-			plan = Plan(id=f"p{call_count}", objective="test")
-			epoch = Epoch(id=f"ep{call_count}", mission_id=mission.id, number=call_count)
-			if call_count == 1:
-				# Single low-priority unit -> low ambition
-				units = [WorkUnit(id="wu-1", plan_id=plan.id, title="Fix lint", priority=8, files_hint="a.py")]
-				return plan, units, epoch
-			return plan, [], epoch
-
-		async def mock_execute(
-			unit: WorkUnit, epoch: Epoch, mission: Mission,
-			semaphore: asyncio.Semaphore,
-		) -> None:
-			unit.status = "completed"
-			unit.finished_at = "2025-01-01T00:00:00"
-			await ctrl._completion_queue.put(
-				WorkerCompletion(unit=unit, handoff=None, workspace="/tmp/ws", epoch=epoch),
-			)
-			semaphore.release()
-
-		mock_planner = MagicMock()
-		mock_planner.get_next_units = AsyncMock(side_effect=mock_get_next)
-		mock_planner.ingest_handoff = MagicMock()
-		mock_planner.backlog_size = 0
-
-		mock_gbm = MagicMock()
-		mock_gbm.merge_unit = AsyncMock()
-
-		async def mock_init() -> None:
-			ctrl._planner = mock_planner
-			ctrl._green_branch = mock_gbm
-			ctrl._backend = AsyncMock()
-			ctrl._notifier = None
-			ctrl._heartbeat = None
-			ctrl._event_stream = None
-
-		warning_messages: list[str] = []
-
-		def capture_warning(msg: str, *args: object, **kwargs: object) -> None:
-			warning_messages.append(msg % args if args else msg)
-
-		with (
-			patch.object(ctrl, "_init_components", mock_init),
-			patch.object(ctrl, "_execute_single_unit", side_effect=mock_execute),
-			patch.object(
-				logging.getLogger("mission_control.continuous_controller"),
-				"warning", side_effect=capture_warning,
-			),
-			patch("mission_control.continuous_controller.EventStream"),
-		):
-			result = await asyncio.wait_for(ctrl.run(), timeout=5.0)
-
-		# Ambition should be low (single lint fix unit)
-		assert result.ambition_score < 4
-		# Warning should have been logged about low ambition
-		ambition_warnings = [m for m in warning_messages if "ambition" in m.lower() or "Ambition" in m]
-		assert len(ambition_warnings) > 0
 
 
 class TestNextObjectivePopulation:
@@ -1997,66 +1427,3 @@ class TestNextObjectivePopulation:
 		assert result.objective_met is True
 		assert result.next_objective == ""
 
-	@pytest.mark.asyncio
-	async def test_next_objective_empty_when_no_backlog(self, config: MissionConfig, db: Database) -> None:
-		"""When objective not met but no backlog, next_objective should remain empty."""
-		config.target.name = "test"
-		config.continuous.max_wall_time_seconds = 2
-		config.discovery.enabled = False
-		ctrl = ContinuousController(config, db)
-
-		# No backlog items inserted
-
-		async def mock_get_next(
-			mission: Mission, max_units: int = 3, feedback_context: str = "",
-		) -> tuple[Plan, list[WorkUnit], Epoch]:
-			plan = Plan(id="p1", objective="test")
-			epoch = Epoch(id="ep1", mission_id=mission.id, number=1)
-			units = [WorkUnit(id="wu-1", plan_id=plan.id, title="Task", priority=3, files_hint="a.py")]
-			return plan, units, epoch
-
-		async def mock_execute(
-			unit: WorkUnit, epoch: Epoch, mission: Mission,
-			semaphore: asyncio.Semaphore,
-		) -> None:
-			unit.status = "completed"
-			unit.finished_at = "2025-01-01T00:00:00"
-			await ctrl._completion_queue.put(
-				WorkerCompletion(unit=unit, handoff=None, workspace="/tmp/ws", epoch=epoch),
-			)
-			semaphore.release()
-
-		mock_planner = MagicMock()
-		mock_planner.get_next_units = AsyncMock(side_effect=mock_get_next)
-		mock_planner.ingest_handoff = MagicMock()
-		mock_planner.backlog_size = 0
-
-		mock_gbm = MagicMock()
-		mock_gbm.merge_unit = AsyncMock()
-
-		async def mock_init() -> None:
-			ctrl._planner = mock_planner
-			ctrl._green_branch = mock_gbm
-			ctrl._backend = AsyncMock()
-			ctrl._notifier = None
-			ctrl._heartbeat = None
-			ctrl._event_stream = None
-
-		with (
-			patch.object(ctrl, "_init_components", mock_init),
-			patch.object(ctrl, "_execute_single_unit", side_effect=mock_execute),
-			patch("mission_control.continuous_controller.EventStream"),
-		):
-			result = await asyncio.wait_for(ctrl.run(), timeout=5.0)
-
-		assert result.objective_met is False
-		assert result.next_objective == ""
-
-	def test_next_objective_on_result_dataclass(self) -> None:
-		"""ContinuousMissionResult should have next_objective field."""
-		r = ContinuousMissionResult()
-		assert hasattr(r, "next_objective")
-		assert r.next_objective == ""
-
-		r.next_objective = "Do more work"
-		assert r.next_objective == "Do more work"

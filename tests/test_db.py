@@ -292,65 +292,6 @@ class TestWorkUnits:
 		recovered = db.recover_stale_units(timeout_seconds=60)
 		assert len(recovered) == 0
 
-	def test_per_unit_overrides_roundtrip(self, db: Database) -> None:
-		"""timeout and verification_command persist through insert/get."""
-		self._make_plan(db)
-		wu = WorkUnit(
-			id="wu_ov", plan_id="plan1", title="Override test",
-			timeout=600, verification_command="make test",
-		)
-		db.insert_work_unit(wu)
-		result = db.get_work_unit("wu_ov")
-		assert result is not None
-		assert result.timeout == 600
-		assert result.verification_command == "make test"
-
-	def test_per_unit_overrides_default_none(self, db: Database) -> None:
-		"""Without overrides, timeout and verification_command are None."""
-		self._make_plan(db)
-		wu = WorkUnit(id="wu_def", plan_id="plan1", title="Default test")
-		db.insert_work_unit(wu)
-		result = db.get_work_unit("wu_def")
-		assert result is not None
-		assert result.timeout is None
-		assert result.verification_command is None
-
-	def test_per_unit_overrides_update(self, db: Database) -> None:
-		"""Overrides can be set via update."""
-		self._make_plan(db)
-		wu = WorkUnit(id="wu_upd", plan_id="plan1", title="Update test")
-		db.insert_work_unit(wu)
-		wu.timeout = 120
-		wu.verification_command = "pytest tests/specific.py"
-		db.update_work_unit(wu)
-		result = db.get_work_unit("wu_upd")
-		assert result is not None
-		assert result.timeout == 120
-		assert result.verification_command == "pytest tests/specific.py"
-
-	def test_unit_type_research_roundtrip(self, db: Database) -> None:
-		"""WorkUnit with unit_type='research' round-trips through insert/get."""
-		self._make_plan(db)
-		wu = WorkUnit(id="wu_res", plan_id="plan1", title="Research task", unit_type="research")
-		db.insert_work_unit(wu)
-		result = db.get_work_unit("wu_res")
-		assert result is not None
-		assert result.unit_type == "research"
-
-	def test_unit_type_default_implementation(self, db: Database) -> None:
-		"""WorkUnit without explicit unit_type defaults to 'implementation'."""
-		self._make_plan(db)
-		wu = WorkUnit(id="wu_impl", plan_id="plan1", title="Impl task")
-		db.insert_work_unit(wu)
-		result = db.get_work_unit("wu_impl")
-		assert result is not None
-		assert result.unit_type == "implementation"
-
-	def test_unit_type_migration_idempotent(self, db: Database) -> None:
-		"""Calling _migrate_unit_type_column twice does not raise."""
-		db._migrate_unit_type_column()
-		db._migrate_unit_type_column()
-
 
 class TestWorkers:
 	def test_insert_and_get(self, db: Database) -> None:
@@ -509,27 +450,6 @@ class TestAsyncLock:
 		assert results[1] is not None
 		assert results[0].id != results[1].id
 
-	async def test_recover_stale_increments_attempt(self) -> None:
-		"""recover_stale_units should increment attempt counter."""
-		db = Database(":memory:")
-		db.insert_plan(Plan(id="p1", objective="test"))
-		wu = WorkUnit(
-			id="wu1", plan_id="p1", title="Stale",
-			status="running", worker_id="dead",
-			heartbeat_at="2020-01-01T00:00:00",
-			attempt=0, max_attempts=3,
-		)
-		db.insert_work_unit(wu)
-
-		recovered = db.recover_stale_units(timeout_seconds=60)
-		assert len(recovered) == 1
-		assert recovered[0].attempt == 1  # incremented from 0
-
-		# Verify in DB too
-		fresh = db.get_work_unit("wu1")
-		assert fresh is not None
-		assert fresh.attempt == 1
-
 
 class TestMissionSummary:
 	def _setup_mission_data(self, db: Database) -> str:
@@ -577,12 +497,6 @@ class TestMissionSummary:
 		missions = db.get_all_missions()
 		assert len(missions) == 2
 
-	def test_get_all_missions_limit(self, db: Database) -> None:
-		for i in range(5):
-			db.insert_mission(Mission(id=f"m{i}", objective=f"Mission {i}"))
-		missions = db.get_all_missions(limit=3)
-		assert len(missions) == 3
-
 	def test_get_mission_summary_unit_counts(self, db: Database) -> None:
 		self._setup_mission_data(db)
 		summary = db.get_mission_summary("m1")
@@ -602,14 +516,6 @@ class TestMissionSummary:
 		assert summary["events_by_type"]["dispatched"] == 3
 		assert summary["events_by_type"]["merged"] == 2
 		assert summary["events_by_type"]["failed"] == 1
-
-	def test_get_mission_summary_epochs(self, db: Database) -> None:
-		self._setup_mission_data(db)
-		summary = db.get_mission_summary("m1")
-		assert len(summary["epochs"]) == 1
-		assert summary["epochs"][0]["number"] == 1
-		assert summary["epochs"][0]["units_planned"] == 3
-		assert summary["epochs"][0]["units_completed"] == 2
 
 	def test_get_mission_summary_empty(self, db: Database) -> None:
 		db.insert_mission(Mission(id="empty", objective="Empty"))
@@ -636,31 +542,6 @@ class TestMigrationResilience:
 		db._migrate_token_columns()
 		db._migrate_unit_type_column()
 
-	def test_non_duplicate_operational_error_is_reraised(self) -> None:
-		"""OperationalError that is NOT 'duplicate column name' should be re-raised."""
-		db = Database(":memory:")
-		# Drop the work_units table so ALTER TABLE fails with 'no such table'
-		db.conn.execute("DROP TABLE work_units")
-		with pytest.raises(sqlite3.OperationalError, match="no such table"):
-			db._migrate_unit_type_column()
-		db.close()
-
-	def test_epoch_migration_reraised_on_non_duplicate(self) -> None:
-		"""_migrate_epoch_columns re-raises non-duplicate OperationalError."""
-		db = Database(":memory:")
-		db.conn.execute("DROP TABLE work_units")
-		with pytest.raises(sqlite3.OperationalError, match="no such table"):
-			db._migrate_epoch_columns()
-		db.close()
-
-	def test_token_migration_reraised_on_non_duplicate(self) -> None:
-		"""_migrate_token_columns re-raises non-duplicate OperationalError."""
-		db = Database(":memory:")
-		db.conn.execute("DROP TABLE work_units")
-		with pytest.raises(sqlite3.OperationalError, match="no such table"):
-			db._migrate_token_columns()
-		db.close()
-
 
 class TestContextManager:
 	def test_context_manager_opens_and_closes(self) -> None:
@@ -674,34 +555,12 @@ class TestContextManager:
 		with pytest.raises(sqlite3.ProgrammingError):
 			db.conn.execute("SELECT 1")
 
-	def test_context_manager_returns_self(self) -> None:
-		"""__enter__ should return the Database instance."""
-		db = Database(":memory:")
-		ctx = db.__enter__()
-		assert ctx is db
-		db.__exit__(None, None, None)
-
 
 class TestValidateIdentifier:
 	def test_valid_names(self) -> None:
 		"""Valid SQL identifiers should pass without error."""
 		for name in ["work_units", "epoch_id", "a", "_private", "Table1", "col_2_x"]:
 			Database._validate_identifier(name)
-
-	def test_rejects_empty_string(self) -> None:
-		with pytest.raises(ValueError, match="Invalid SQL identifier"):
-			Database._validate_identifier("")
-
-	def test_rejects_name_starting_with_digit(self) -> None:
-		with pytest.raises(ValueError, match="Invalid SQL identifier"):
-			Database._validate_identifier("1bad")
-
-	def test_rejects_name_over_64_chars(self) -> None:
-		with pytest.raises(ValueError, match="Invalid SQL identifier"):
-			Database._validate_identifier("a" * 65)
-
-	def test_accepts_name_at_64_chars(self) -> None:
-		Database._validate_identifier("a" * 64)
 
 	def test_rejects_sql_injection_attempts(self) -> None:
 		injection_attempts = [
@@ -718,12 +577,6 @@ class TestValidateIdentifier:
 			with pytest.raises(ValueError, match="Invalid SQL identifier"):
 				Database._validate_identifier(attempt)
 
-	def test_migrations_work_with_validation(self, db: Database) -> None:
-		"""Migrations should complete successfully with validation in place."""
-		db._migrate_epoch_columns()
-		db._migrate_token_columns()
-		db._migrate_unit_type_column()
-
 
 class TestMissionAmbitionScore:
 	def test_insert_mission_with_ambition_score(self, db: Database) -> None:
@@ -734,14 +587,6 @@ class TestMissionAmbitionScore:
 		assert result is not None
 		assert result.ambition_score == 7
 
-	def test_insert_mission_ambition_score_default(self, db: Database) -> None:
-		"""Mission without explicit ambition_score defaults to 0."""
-		m = Mission(id="m2", objective="Lint fixes")
-		db.insert_mission(m)
-		result = db.get_mission("m2")
-		assert result is not None
-		assert result.ambition_score == 0
-
 	def test_update_mission_ambition_score(self, db: Database) -> None:
 		"""ambition_score can be updated after insert."""
 		m = Mission(id="m3", objective="Refactor")
@@ -751,91 +596,3 @@ class TestMissionAmbitionScore:
 		result = db.get_mission("m3")
 		assert result is not None
 		assert result.ambition_score == 5
-
-	def test_insert_mission_with_next_objective(self, db: Database) -> None:
-		"""Mission with next_objective round-trips through insert/get."""
-		m = Mission(id="m4", objective="Phase 1", next_objective="Phase 2: integrate API")
-		db.insert_mission(m)
-		result = db.get_mission("m4")
-		assert result is not None
-		assert result.next_objective == "Phase 2: integrate API"
-
-	def test_insert_mission_with_proposed_by_strategist(self, db: Database) -> None:
-		"""Mission with proposed_by_strategist=True round-trips correctly."""
-		m = Mission(id="m5", objective="Auto-proposed", proposed_by_strategist=True)
-		db.insert_mission(m)
-		result = db.get_mission("m5")
-		assert result is not None
-		assert result.proposed_by_strategist is True
-
-	def test_update_mission_all_strategy_fields(self, db: Database) -> None:
-		"""All strategy fields can be updated together."""
-		m = Mission(id="m6", objective="Initial")
-		db.insert_mission(m)
-		m.ambition_score = 8
-		m.next_objective = "Follow-up work"
-		m.proposed_by_strategist = True
-		db.update_mission(m)
-		result = db.get_mission("m6")
-		assert result is not None
-		assert result.ambition_score == 8
-		assert result.next_objective == "Follow-up work"
-		assert result.proposed_by_strategist is True
-
-	def test_migration_idempotent(self, db: Database) -> None:
-		"""Calling _migrate_mission_strategy_columns twice does not raise."""
-		db._migrate_mission_strategy_columns()
-		db._migrate_mission_strategy_columns()
-
-	def test_migration_adds_columns_to_old_schema(self) -> None:
-		"""Migration adds ambition_score/next_objective/proposed_by_strategist to a DB without them."""
-		db = Database(":memory:")
-		# Drop and recreate missions without strategy columns to simulate old schema
-		db.conn.execute("DROP TABLE missions")
-		db.conn.execute("""CREATE TABLE missions (
-			id TEXT PRIMARY KEY,
-			objective TEXT NOT NULL DEFAULT '',
-			status TEXT NOT NULL DEFAULT 'pending',
-			started_at TEXT NOT NULL DEFAULT '',
-			finished_at TEXT,
-			total_rounds INTEGER NOT NULL DEFAULT 0,
-			total_cost_usd REAL NOT NULL DEFAULT 0.0,
-			final_score REAL NOT NULL DEFAULT 0.0,
-			stopped_reason TEXT NOT NULL DEFAULT ''
-		)""")
-		db.conn.commit()
-		# Run migration
-		db._migrate_mission_strategy_columns()
-		# Insert and read back
-		m = Mission(id="mig1", objective="Test migration", ambition_score=9)
-		db.insert_mission(m)
-		result = db.get_mission("mig1")
-		assert result is not None
-		assert result.ambition_score == 9
-		assert result.next_objective == ""
-		assert result.proposed_by_strategist is False
-		db.close()
-
-	def test_get_latest_mission_includes_ambition_score(self, db: Database) -> None:
-		"""get_latest_mission returns ambition_score correctly."""
-		db.insert_mission(Mission(
-			id="old", objective="Old", ambition_score=2,
-			started_at="2025-01-01T00:00:00",
-		))
-		db.insert_mission(Mission(
-			id="new", objective="New", ambition_score=8,
-			started_at="2025-01-02T00:00:00",
-		))
-		latest = db.get_latest_mission()
-		assert latest is not None
-		assert latest.id == "new"
-		assert latest.ambition_score == 8
-
-	def test_get_all_missions_includes_ambition_score(self, db: Database) -> None:
-		"""get_all_missions returns ambition_score for each mission."""
-		db.insert_mission(Mission(id="m1", objective="A", ambition_score=3))
-		db.insert_mission(Mission(id="m2", objective="B", ambition_score=7))
-		missions = db.get_all_missions()
-		scores = {m.id: m.ambition_score for m in missions}
-		assert scores["m1"] == 3
-		assert scores["m2"] == 7

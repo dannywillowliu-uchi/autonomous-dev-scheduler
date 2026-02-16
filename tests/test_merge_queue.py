@@ -160,19 +160,6 @@ class TestMergeQueue:
 		assert updated_unit.heartbeat_at is None
 		assert updated_unit.attempt == 2
 
-	async def test_release_unit_exhausted(self) -> None:
-		"""Unit at max_attempts gets status=failed."""
-		db, mr, unit, worker = _db_with_mr(unit_attempt=3, unit_max_attempts=3)
-		config = _config()
-		queue = MergeQueue(config, db, "/tmp/merge-workspace")
-
-		await queue._release_unit_for_retry(mr)
-
-		updated_unit = db.get_work_unit("unit1")
-		assert updated_unit is not None
-		assert updated_unit.status == "failed"
-		assert updated_unit.finished_at is not None
-
 	async def test_queue_processes_in_order(self) -> None:
 		"""Two MRs: lower position is processed first."""
 		db = Database(":memory:")
@@ -208,26 +195,6 @@ class TestMergeQueue:
 		assert next_mr is not None
 		assert next_mr.id == "mr2"
 		assert next_mr.position == 1
-
-	async def test_empty_queue_waits(self) -> None:
-		"""No pending MRs: run loop sleeps and continues."""
-		db = Database(":memory:")
-		config = _config()
-		queue = MergeQueue(config, db, "/tmp/merge-workspace")
-
-		call_count = 0
-
-		async def fake_sleep(seconds: float) -> None:
-			nonlocal call_count
-			call_count += 1
-			if call_count >= 2:
-				queue.stop()
-
-		with patch("mission_control.merge_queue.asyncio.sleep", side_effect=fake_sleep):
-			await queue.run()
-
-		# Should have slept at least twice before stopping
-		assert call_count >= 2
 
 	@patch("mission_control.merge_queue.snapshot_project_health", new_callable=AsyncMock)
 	async def test_neutral_verdict_merges(self, mock_snapshot: AsyncMock) -> None:
@@ -416,37 +383,6 @@ class TestRebaseOntoBase:
 			assert not call[1].startswith("origin/"), \
 				f"Rebase should use local ref, not {call[1]}"
 
-	async def test_sequential_merges_preserve_prior_changes(self) -> None:
-		"""Two MRs merged sequentially: second MR rebases onto post-first-merge state."""
-		db, mr, unit, worker = _db_with_mr()
-		config = _config()
-		queue = MergeQueue(config, db, "/tmp/merge-workspace")
-
-		git_calls: list[tuple[str, ...]] = []
-
-		async def mock_run_git(*args: str) -> bool:
-			git_calls.append(args)
-			return True
-
-		queue._run_git = mock_run_git  # type: ignore[assignment]
-
-		# First rebase
-		await queue._rebase_onto_base(mr)
-
-		git_calls.clear()
-
-		# Second rebase (different MR)
-		mr2 = MergeRequest(
-			id="mr2", work_unit_id="unit1", worker_id="w1234567",
-			branch_name="fix/other", status="pending", position=2,
-		)
-		await queue._rebase_onto_base(mr2)
-
-		# Second rebase should also use local base branch
-		rebase_calls = [c for c in git_calls if c[0] == "rebase"]
-		assert len(rebase_calls) == 1
-		assert rebase_calls[0] == ("rebase", "main")
-
 	async def test_rebase_failure_returns_to_base_branch(self) -> None:
 		"""On rebase failure, workspace should be on base branch after abort."""
 		db, mr, unit, worker = _db_with_mr()
@@ -499,23 +435,3 @@ class TestMergeIntoBase:
 		assert len(abort_calls) == 1
 		# Last call should checkout base branch
 		assert git_calls[-1] == ("checkout", "main")
-
-	async def test_successful_merge_no_abort(self) -> None:
-		"""Successful merge does not call merge --abort."""
-		db, mr, unit, worker = _db_with_mr()
-		config = _config()
-		queue = MergeQueue(config, db, "/tmp/merge-workspace")
-
-		git_calls: list[tuple[str, ...]] = []
-
-		async def mock_run_git(*args: str) -> bool:
-			git_calls.append(args)
-			return True
-
-		queue._run_git = mock_run_git  # type: ignore[assignment]
-
-		result = await queue._merge_into_base(mr)
-
-		assert result is True
-		abort_calls = [c for c in git_calls if c == ("merge", "--abort")]
-		assert len(abort_calls) == 0

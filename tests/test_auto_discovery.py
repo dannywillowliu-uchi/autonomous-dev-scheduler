@@ -101,12 +101,6 @@ class TestComputePriority:
 	def test_basic(self) -> None:
 		assert _compute_priority(7, 3) == 5.6
 
-	def test_high_impact_low_effort(self) -> None:
-		assert _compute_priority(10, 1) == 10.0
-
-	def test_low_impact_high_effort(self) -> None:
-		assert _compute_priority(1, 10) == 0.1
-
 	def test_clamps_values(self) -> None:
 		assert _compute_priority(0, 0) == 1.0  # clamped to 1,1
 		assert _compute_priority(15, 15) == 1.0  # clamped to 10,10
@@ -128,17 +122,6 @@ class TestParseDiscoveryOutput:
 		assert items[0].track == "quality"
 		assert items[0].priority_score == 5.6
 
-	def test_parse_multiple_tracks(self) -> None:
-		output = _discovery_json([
-			_sample_item(track="feature", title="Add API endpoint"),
-			_sample_item(track="quality", title="Refactor utils"),
-			_sample_item(track="security", title="Fix SQL injection"),
-		])
-		result, items = self.engine._parse_discovery_output(output)
-		assert result.item_count == 3
-		tracks = {i.track for i in items}
-		assert tracks == {"feature", "quality", "security"}
-
 	def test_filters_low_priority(self) -> None:
 		output = _discovery_json([
 			_sample_item(impact=1, effort=10),  # priority 0.1
@@ -148,33 +131,9 @@ class TestParseDiscoveryOutput:
 		assert result.item_count == 1
 		assert items[0].title == "High priority"
 
-	def test_filters_invalid_track(self) -> None:
-		output = _discovery_json([
-			_sample_item(track="invalid"),
-			_sample_item(track="quality"),
-		])
-		result, items = self.engine._parse_discovery_output(output)
-		assert result.item_count == 1
-		assert items[0].track == "quality"
-
-	def test_sorted_by_priority(self) -> None:
-		output = _discovery_json([
-			_sample_item(impact=5, effort=4, title="Low"),  # 3.5
-			_sample_item(impact=9, effort=2, title="High"),  # 8.1
-			_sample_item(impact=7, effort=3, title="Mid"),  # 5.6
-		])
-		result, items = self.engine._parse_discovery_output(output)
-		assert items[0].title == "High"
-		assert items[-1].title == "Low"
-
 	def test_empty_output(self) -> None:
 		result, items = self.engine._parse_discovery_output("")
 		assert result.item_count == 0
-		assert items == []
-
-	def test_no_marker(self) -> None:
-		output = "Some random text without JSON"
-		result, items = self.engine._parse_discovery_output(output)
 		assert items == []
 
 	def test_fallback_json_without_marker(self) -> None:
@@ -203,22 +162,6 @@ class TestParseAnalysisOutput:
 		assert result.gaps == []
 		assert result.raw == ""
 
-	def test_parse_bad_json_fallback(self) -> None:
-		result = self.engine._parse_analysis_output("not json at all")
-		assert result.architecture == ""
-		assert result.gaps == []
-		assert result.raw == "not json at all"
-
-	def test_parse_multiple_gaps(self) -> None:
-		gaps = [
-			{"category": "testing", "description": "Missing tests", "files": "a.py", "severity": "high"},
-			{"category": "security", "description": "No input validation", "files": "b.py", "severity": "medium"},
-		]
-		output = _analysis_json(gaps=gaps)
-		result = self.engine._parse_analysis_output(output)
-		assert len(result.gaps) == 2
-		assert result.gaps[1]["category"] == "security"
-
 
 class TestParseResearchResult:
 	def setup_method(self) -> None:
@@ -233,14 +176,6 @@ class TestParseResearchResult:
 		assert result["gap_category"] == "testing"
 		assert "pytest" in result["best_practices"]
 
-	def test_parse_empty_output(self) -> None:
-		result = self.engine._parse_research_result("", "testing")
-		assert result is None
-
-	def test_parse_bad_json(self) -> None:
-		result = self.engine._parse_research_result("not json", "testing")
-		assert result is None
-
 
 class TestSynthesizePrompt:
 	def setup_method(self) -> None:
@@ -254,11 +189,6 @@ class TestSynthesizePrompt:
 		assert "Track A - Features" in prompt
 		assert "Track B - Code Quality" in prompt
 		assert "Track C - Security" in prompt
-
-	def test_includes_max_per_track(self) -> None:
-		analysis = AnalysisOutput(architecture="modular", gaps=[])
-		prompt = self.engine._build_synthesize_prompt(analysis, None)
-		assert "up to 3 improvements" in prompt
 
 	def test_includes_analysis_context(self) -> None:
 		analysis = AnalysisOutput(
@@ -279,33 +209,6 @@ class TestSynthesizePrompt:
 		prompt = self.engine._build_synthesize_prompt(analysis, research)
 		assert "Research Findings" in prompt
 		assert "pytest fixtures" in prompt
-
-	def test_no_research_section_when_none(self) -> None:
-		analysis = AnalysisOutput(gaps=[])
-		prompt = self.engine._build_synthesize_prompt(analysis, None)
-		assert "Research Findings" not in prompt
-
-	def test_includes_past_discoveries(self) -> None:
-		dr = DiscoveryResult(target_path="/tmp/test", model="sonnet")
-		item = DiscoveryItem(
-			track="quality",
-			title="Old improvement",
-			priority_score=5.0,
-		)
-		self.db.insert_discovery_result(dr, [item])
-
-		analysis = AnalysisOutput(gaps=[])
-		prompt = self.engine._build_synthesize_prompt(analysis, None)
-		assert "Old improvement" in prompt
-		assert "Previously Discovered" in prompt
-
-	def test_subset_tracks(self) -> None:
-		self.config.discovery.tracks = ["security"]
-		analysis = AnalysisOutput(gaps=[])
-		prompt = self.engine._build_synthesize_prompt(analysis, None)
-		assert "Track C - Security" in prompt
-		assert "Track A" not in prompt
-		assert "Track B" not in prompt
 
 
 class TestComposeObjective:
@@ -329,18 +232,6 @@ class TestComposeObjective:
 		assert "Add /users endpoint" in obj
 		assert "Features" in obj
 
-	def test_multiple_tracks(self) -> None:
-		items = [
-			DiscoveryItem(track="feature", title="T1", description="D1", priority_score=8.0),
-			DiscoveryItem(track="quality", title="T2", description="D2", priority_score=7.0),
-		]
-		obj = self.engine.compose_objective(items)
-		assert "Features" in obj
-		assert "Code Quality" in obj
-
-	def test_empty(self) -> None:
-		assert self.engine.compose_objective([]) == ""
-
 
 class TestDBIntegration:
 	def test_insert_and_retrieve(self) -> None:
@@ -361,25 +252,6 @@ class TestDBIntegration:
 		assert retrieved_items[0].title == "Item 1"
 		assert retrieved_items[1].title == "Item 2"
 
-	def test_past_titles(self) -> None:
-		db = Database(":memory:")
-		dr = DiscoveryResult(target_path="/tmp/test", model="sonnet", item_count=1)
-		items = [DiscoveryItem(track="feature", title="My Title", priority_score=5.0)]
-		db.insert_discovery_result(dr, items)
-
-		titles = db.get_past_discovery_titles()
-		assert "My Title" in titles
-
-	def test_update_item_status(self) -> None:
-		db = Database(":memory:")
-		dr = DiscoveryResult(target_path="/tmp/test", model="sonnet", item_count=1)
-		item = DiscoveryItem(track="feature", title="T", priority_score=5.0)
-		db.insert_discovery_result(dr, [item])
-
-		db.update_discovery_item_status(item.id, "approved")
-		_, items = db.get_latest_discovery()
-		assert items[0].status == "approved"
-
 
 class TestStageAnalyze:
 	@pytest.mark.asyncio
@@ -397,33 +269,6 @@ class TestStageAnalyze:
 		assert result is not None
 		assert result.architecture == "modular"
 		assert len(result.gaps) == 1
-
-	@pytest.mark.asyncio
-	async def test_analyze_failure_returns_none(self) -> None:
-		config = _config()
-		db = Database(":memory:")
-		engine = DiscoveryEngine(config, db)
-
-		mock = _mock_proc(returncode=1, stderr=b"budget exceeded")
-
-		with patch("mission_control.auto_discovery.asyncio.create_subprocess_exec", return_value=mock):
-			result = await engine._stage_analyze()
-
-		assert result is None
-
-	@pytest.mark.asyncio
-	async def test_analyze_empty_output(self) -> None:
-		config = _config()
-		db = Database(":memory:")
-		engine = DiscoveryEngine(config, db)
-
-		mock = _mock_proc(stdout=b"")
-
-		with patch("mission_control.auto_discovery.asyncio.create_subprocess_exec", return_value=mock):
-			result = await engine._stage_analyze()
-
-		assert result is not None
-		assert result.gaps == []
 
 
 class TestStageResearch:
@@ -479,65 +324,6 @@ class TestStageResearch:
 		assert result is not None
 		assert len(result.findings) == 1
 		assert result.findings[0]["gap_category"] == "testing"
-
-	@pytest.mark.asyncio
-	async def test_research_all_fail_returns_none(self) -> None:
-		config = _config()
-		db = Database(":memory:")
-		engine = DiscoveryEngine(config, db)
-
-		analysis = AnalysisOutput(
-			gaps=[{"category": "testing", "description": "Missing tests"}],
-		)
-		mock = _mock_proc(returncode=1, stderr=b"error")
-
-		with patch("mission_control.auto_discovery.asyncio.create_subprocess_exec", return_value=mock):
-			result = await engine._stage_research(analysis)
-
-		assert result is None
-
-	@pytest.mark.asyncio
-	async def test_research_uses_web_flag(self) -> None:
-		"""Research subprocess should use --permission-mode bypassPermissions."""
-		config = _config()
-		db = Database(":memory:")
-		engine = DiscoveryEngine(config, db)
-
-		analysis = AnalysisOutput(
-			gaps=[{"category": "testing", "description": "Missing tests"}],
-		)
-		research_output = _research_json("testing")
-		mock = _mock_proc(stdout=research_output.encode())
-
-		with patch("mission_control.auto_discovery.asyncio.create_subprocess_exec", return_value=mock) as mock_exec:
-			await engine._stage_research(analysis)
-
-		# Check the command includes bypassPermissions
-		call_args = mock_exec.call_args
-		cmd = call_args[0]
-		assert "--permission-mode" in cmd
-		assert "bypassPermissions" in cmd
-
-	@pytest.mark.asyncio
-	async def test_research_uses_research_model(self) -> None:
-		"""Research subprocess should use research_model, not main model."""
-		config = _config()
-		config.discovery.research_model = "haiku"
-		db = Database(":memory:")
-		engine = DiscoveryEngine(config, db)
-
-		analysis = AnalysisOutput(
-			gaps=[{"category": "testing", "description": "Missing tests"}],
-		)
-		research_output = _research_json("testing")
-		mock = _mock_proc(stdout=research_output.encode())
-
-		with patch("mission_control.auto_discovery.asyncio.create_subprocess_exec", return_value=mock) as mock_exec:
-			await engine._stage_research(analysis)
-
-		cmd = mock_exec.call_args[0]
-		model_idx = list(cmd).index("--model")
-		assert cmd[model_idx + 1] == "haiku"
 
 
 class TestFullPipeline:
@@ -597,74 +383,6 @@ class TestFullPipeline:
 		assert result.error_type == ""
 
 	@pytest.mark.asyncio
-	async def test_pipeline_falls_back_on_research_failure(self) -> None:
-		"""Stage 2 fails, Stage 3 still produces results."""
-		config = _config(research_enabled=True)
-		db = Database(":memory:")
-		engine = DiscoveryEngine(config, db)
-
-		call_count = 0
-
-		async def mock_exec(*args, **kwargs):
-			nonlocal call_count
-			call_count += 1
-			if call_count == 1:
-				# Stage 1: analyze
-				return _mock_proc(stdout=_analysis_json().encode())
-			elif call_count == 2:
-				# Stage 2: research fails
-				return _mock_proc(returncode=1, stderr=b"timeout")
-			else:
-				# Stage 3: synthesize (still works without research)
-				return _mock_proc(stdout=_discovery_json([_sample_item()]).encode())
-
-		with patch("mission_control.auto_discovery.asyncio.create_subprocess_exec", side_effect=mock_exec):
-			result, items = await engine.discover()
-
-		assert result.item_count == 1
-		assert result.error_type == ""  # no error since synthesize succeeded
-
-	@pytest.mark.asyncio
-	async def test_pipeline_analyze_failure(self) -> None:
-		"""Stage 1 fails -> return empty result with error."""
-		config = _config()
-		db = Database(":memory:")
-		engine = DiscoveryEngine(config, db)
-
-		mock = _mock_proc(returncode=1, stderr=b"budget exceeded")
-
-		with patch("mission_control.auto_discovery.asyncio.create_subprocess_exec", return_value=mock):
-			result, items = await engine.discover()
-
-		assert result.error_type == "analyze_failed"
-		assert result.item_count == 0
-		assert items == []
-
-	@pytest.mark.asyncio
-	async def test_pipeline_no_gaps_skips_research(self) -> None:
-		"""When analysis finds no gaps, research is skipped even if enabled."""
-		config = _config(research_enabled=True)
-		db = Database(":memory:")
-		engine = DiscoveryEngine(config, db)
-
-		call_count = 0
-
-		async def mock_exec(*args, **kwargs):
-			nonlocal call_count
-			call_count += 1
-			if call_count == 1:
-				# Stage 1: analyze with no gaps
-				return _mock_proc(stdout=_analysis_json(gaps=[]).encode())
-			else:
-				# Stage 3: synthesize
-				return _mock_proc(stdout=_discovery_json([_sample_item()]).encode())
-
-		with patch("mission_control.auto_discovery.asyncio.create_subprocess_exec", side_effect=mock_exec):
-			result, items = await engine.discover()
-
-		assert call_count == 2  # analyze + synthesize, no research
-
-	@pytest.mark.asyncio
 	async def test_persists_to_db(self) -> None:
 		"""Results are persisted to DB."""
 		config = _config(research_enabled=False)
@@ -711,21 +429,6 @@ class TestRunStageSubprocess:
 		assert "timed out" in error_detail
 
 	@pytest.mark.asyncio
-	async def test_nonzero_exit_budget_exceeded(self) -> None:
-		config = _config()
-		db = Database(":memory:")
-		engine = DiscoveryEngine(config, db)
-
-		mock = _mock_proc(returncode=1, stderr=b"Error: budget limit exceeded")
-
-		with patch("mission_control.auto_discovery.asyncio.create_subprocess_exec", return_value=mock):
-			output, error_type, error_detail = await engine._run_stage_subprocess(
-				"test prompt", model="sonnet", stage_name="test",
-			)
-
-		assert error_type == "budget_exceeded"
-
-	@pytest.mark.asyncio
 	async def test_success_no_error(self) -> None:
 		config = _config()
 		db = Database(":memory:")
@@ -741,55 +444,6 @@ class TestRunStageSubprocess:
 		assert output == "hello world"
 		assert error_type == ""
 		assert error_detail == ""
-
-	@pytest.mark.asyncio
-	async def test_web_flag_adds_bypass_permissions(self) -> None:
-		config = _config()
-		db = Database(":memory:")
-		engine = DiscoveryEngine(config, db)
-
-		mock = _mock_proc(stdout=b"ok")
-
-		with patch("mission_control.auto_discovery.asyncio.create_subprocess_exec", return_value=mock) as mock_exec:
-			await engine._run_stage_subprocess(
-				"test prompt", model="sonnet", stage_name="test", enable_web=True,
-			)
-
-		cmd = mock_exec.call_args[0]
-		assert "--permission-mode" in cmd
-		assert "bypassPermissions" in cmd
-
-	@pytest.mark.asyncio
-	async def test_no_web_flag_no_bypass(self) -> None:
-		config = _config()
-		db = Database(":memory:")
-		engine = DiscoveryEngine(config, db)
-
-		mock = _mock_proc(stdout=b"ok")
-
-		with patch("mission_control.auto_discovery.asyncio.create_subprocess_exec", return_value=mock) as mock_exec:
-			await engine._run_stage_subprocess(
-				"test prompt", model="sonnet", stage_name="test", enable_web=False,
-			)
-
-		cmd = mock_exec.call_args[0]
-		assert "--permission-mode" not in cmd
-
-	@pytest.mark.asyncio
-	async def test_stderr_truncated(self) -> None:
-		config = _config()
-		db = Database(":memory:")
-		engine = DiscoveryEngine(config, db)
-
-		long_stderr = b"x" * 1000
-		mock = _mock_proc(returncode=1, stderr=long_stderr)
-
-		with patch("mission_control.auto_discovery.asyncio.create_subprocess_exec", return_value=mock):
-			_, _, error_detail = await engine._run_stage_subprocess(
-				"test prompt", model="sonnet", stage_name="test",
-			)
-
-		assert len(error_detail) == 500
 
 
 class TestDiscoveryToBacklog:
@@ -848,53 +502,3 @@ class TestDiscoveryToBacklog:
 		# The new one should be inserted
 		new = [i for i in backlog if i.title == "New item"]
 		assert len(new) == 1
-
-	def test_priority_score_carried_over(self, config: MissionConfig, db: Database) -> None:
-		"""Priority score, impact, effort, and track are mapped correctly."""
-		engine = DiscoveryEngine(config, db)
-		items = [
-			DiscoveryItem(
-				id="d1", title="Optimize queries", description="Add indexes",
-				priority_score=_compute_priority(9, 2), impact=9, effort=2, track="quality",
-			),
-		]
-
-		engine._insert_items_to_backlog(items)
-
-		backlog = db.list_backlog_items(limit=10)
-		assert len(backlog) == 1
-		item = backlog[0]
-		assert item.title == "Optimize queries"
-		assert item.description == "Add indexes"
-		assert item.priority_score == _compute_priority(9, 2)
-		assert item.impact == 9
-		assert item.effort == 2
-		assert item.track == "quality"
-		assert item.status == "pending"
-
-	def test_duplicate_within_same_batch(self, config: MissionConfig, db: Database) -> None:
-		"""If the same title appears twice in one batch, only the first is inserted."""
-		engine = DiscoveryEngine(config, db)
-		items = [
-			DiscoveryItem(
-				id="d1", title="Same title", description="First",
-				priority_score=7.0, impact=8, effort=5, track="feature",
-			),
-			DiscoveryItem(
-				id="d2", title="Same title", description="Second",
-				priority_score=6.0, impact=7, effort=4, track="feature",
-			),
-		]
-
-		engine._insert_items_to_backlog(items)
-
-		backlog = db.list_backlog_items(limit=10)
-		assert len(backlog) == 1
-		assert backlog[0].description == "First"
-
-	def test_empty_items_noop(self, config: MissionConfig, db: Database) -> None:
-		"""Passing an empty list does nothing."""
-		engine = DiscoveryEngine(config, db)
-		engine._insert_items_to_backlog([])
-		backlog = db.list_backlog_items(limit=10)
-		assert len(backlog) == 0

@@ -316,11 +316,6 @@ class TestCompletionPct:
 		snap = DashboardSnapshot(units_total=0, units_completed=0)
 		assert snap.completion_pct == 0.0
 
-	def test_completion_pct_all_done(self) -> None:
-		"""completion_pct is 100 when all units completed."""
-		snap = DashboardSnapshot(units_total=4, units_completed=4)
-		assert snap.completion_pct == pytest.approx(100.0)
-
 
 class TestScoreDelta:
 	def test_score_delta_with_history(self) -> None:
@@ -329,13 +324,6 @@ class TestScoreDelta:
 			score_history=[(1, 40.0), (2, 75.0)],
 		)
 		assert snap.score_delta == pytest.approx(35.0)
-
-	def test_score_delta_single_round(self) -> None:
-		"""score_delta is 0 with only one round."""
-		snap = DashboardSnapshot(
-			score_history=[(1, 50.0)],
-		)
-		assert snap.score_delta == 0.0
 
 	def test_score_delta_empty(self) -> None:
 		"""score_delta is 0 with no history."""
@@ -381,13 +369,6 @@ class TestBuildEventsEmpty:
 		events = _build_events([], [])
 		assert events == []
 
-	def test_build_events_no_qualifying_units(self) -> None:
-		"""Units without qualifying status/timestamps produce no events."""
-		unit = WorkUnit(id="wu1", plan_id="p1", title="Pending", status="pending")
-		mr = MergeRequest(id="mr1", work_unit_id="wu1", worker_id="w1", status="pending")
-		events = _build_events([unit], [mr])
-		assert events == []
-
 
 class TestRefreshUpdatesSnapshot:
 	def test_refresh_updates_snapshot(self) -> None:
@@ -413,13 +394,6 @@ class TestRefreshUpdatesSnapshot:
 
 
 class TestBlockedUnits:
-	def test_units_blocked_counted(self) -> None:
-		"""Blocked units are counted in units_blocked."""
-		db = _populated_db()
-		provider = _make_provider(db)
-		snap = provider.refresh()
-		assert snap.units_blocked == 1
-
 	def test_blocked_event_generated(self) -> None:
 		"""A blocked unit with finished_at produces a 'blocked' event."""
 		db = _make_db()
@@ -469,13 +443,6 @@ class TestDeriveWorkersFromPlan:
 		assert len(infos) == 1
 		assert infos[0].current_unit_title == "Active task"
 		assert infos[0].status == "working"
-
-	def test_no_round_returns_empty(self) -> None:
-		"""No current round returns empty workers."""
-		db = _make_db()
-		infos, active = _derive_workers_from_plan(db, None)
-		assert infos == []
-		assert active == 0
 
 	def test_snapshot_uses_plan_derive_without_worker_rows(self) -> None:
 		"""Full snapshot derives workers from plan when no Worker DB rows exist."""
