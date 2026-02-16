@@ -387,10 +387,11 @@ def cmd_mission(args: argparse.Namespace) -> int:
 
 		with Database(db_path) as db:
 			strategist = Strategist(config, db)
-			proposal = strategist.propose_objective()
+			objective, rationale, ambition = asyncio.run(strategist.propose_objective())
 
-		print(f"Proposed objective: {proposal.objective}")
-		print(f"Rationale: {proposal.rationale}")
+		print(f"Proposed objective: {objective}")
+		print(f"Rationale: {rationale}")
+		print(f"Ambition score: {ambition}/10")
 
 		if not args.approve_all:
 			answer = input("Approve this objective? [y/N] ").strip().lower()
@@ -398,7 +399,7 @@ def cmd_mission(args: argparse.Namespace) -> int:
 				print("Objective rejected. Exiting.")
 				return 0
 
-		config.target.objective = proposal.objective
+		config.target.objective = objective
 
 	# Auto-discover mode: run discovery, then use results as objective
 	if args.auto_discover:

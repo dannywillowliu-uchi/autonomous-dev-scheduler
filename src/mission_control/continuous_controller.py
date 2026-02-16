@@ -390,6 +390,7 @@ class ContinuousController:
 					elif summary_text:
 						failed_summaries.append(summary_text)
 				self.db.append_strategic_context(
+					mission_id=mission.mission_id,
 					what_attempted=mission.objective[:500],
 					what_worked="; ".join(merged_summaries[:10]) or "nothing merged",
 					what_failed="; ".join(failed_summaries[:10]) or "no failures",
