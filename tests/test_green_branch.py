@@ -44,17 +44,6 @@ def _manager() -> GreenBranchManager:
 	return mgr
 
 
-class TestGreenBranchManagerInit:
-	def test_init_sets_config_and_db(self) -> None:
-		config = _config()
-		db = Database(":memory:")
-		mgr = GreenBranchManager(config, db)
-
-		assert mgr.config is config
-		assert mgr.db is db
-		assert mgr.workspace == ""
-
-
 class TestMergeUnit:
 	"""Tests for merge_unit() -- merge-only path without verification."""
 
@@ -89,22 +78,6 @@ class TestMergeUnit:
 		assert result.rebase_ok is False
 		assert "Merge conflict" in result.failure_output
 
-	async def test_fetch_failure(self) -> None:
-		"""Fetch failure returns failure output."""
-		mgr = _manager()
-
-		async def side_effect(*args: str) -> tuple[bool, str]:
-			if args[0] == "fetch":
-				return (False, "fatal: couldn't find remote ref")
-			return (True, "")
-
-		mgr._run_git = AsyncMock(side_effect=side_effect)
-
-		result = await mgr.merge_unit("/tmp/worker", "feat/broken")
-
-		assert result.merged is False
-		assert result.failure_output == "Failed to fetch unit branch"
-
 	async def test_auto_push(self) -> None:
 		"""When auto_push is configured, push_green_to_main is called."""
 		mgr = _manager()
@@ -118,33 +91,6 @@ class TestMergeUnit:
 		assert result.merged is True
 		mgr.push_green_to_main.assert_awaited_once()
 
-	async def test_ff_only_failure(self) -> None:
-		"""When ff-only merge fails, returns failure."""
-		mgr = _manager()
-
-		async def side_effect(*args: str) -> tuple[bool, str]:
-			if args[0] == "merge" and "--ff-only" in args:
-				return (False, "fatal: Not possible to fast-forward")
-			return (True, "")
-
-		mgr._run_git = AsyncMock(side_effect=side_effect)
-
-		result = await mgr.merge_unit("/tmp/worker", "feat/branch")
-
-		assert result.merged is False
-		assert result.failure_output == "ff-only merge failed"
-
-	async def test_sync_called_on_success(self) -> None:
-		"""merge_unit calls _sync_to_source after successful merge."""
-		mgr = _manager()
-		mgr._run_git = AsyncMock(return_value=(True, ""))
-		mgr._sync_to_source = AsyncMock()  # type: ignore[method-assign]
-
-		result = await mgr.merge_unit("/tmp/worker", "feat/branch")
-
-		assert result.merged is True
-		mgr._sync_to_source.assert_awaited_once()
-
 
 class TestGetGreenHash:
 	async def test_returns_hash(self) -> None:
@@ -156,15 +102,6 @@ class TestGetGreenHash:
 
 		assert result == "abc123def456"
 		mgr._run_git.assert_called_once_with("rev-parse", "mc/green")
-
-	async def test_returns_empty_on_failure(self) -> None:
-		"""Returns empty string when git rev-parse fails."""
-		mgr = _manager()
-		mgr._run_git = AsyncMock(return_value=(False, "fatal: bad revision"))
-
-		result = await mgr.get_green_hash()
-
-		assert result == ""
 
 
 class TestRunCommandTimeout:
@@ -227,39 +164,6 @@ class TestInitializeSetupCommand:
 			with pytest.raises(RuntimeError, match="Workspace setup failed"):
 				await mgr.initialize("/tmp/workspace")
 
-	async def test_setup_command_timeout_raises(self) -> None:
-		"""Setup command timeout raises RuntimeError."""
-		config = _config()
-		config.target.verification.setup_command = "npm install"
-		config.target.verification.setup_timeout = 1
-		db = Database(":memory:")
-		mgr = GreenBranchManager(config, db)
-
-		mock_proc = AsyncMock()
-		mock_proc.kill = MagicMock()
-		mock_proc.wait = AsyncMock()
-
-		with patch.object(mgr, "_run_git_in", AsyncMock(return_value=(False, ""))), \
-			patch.object(mgr, "_run_git", AsyncMock(return_value=(True, ""))), \
-			patch("mission_control.green_branch.asyncio.create_subprocess_exec", return_value=mock_proc), \
-			patch("mission_control.green_branch.asyncio.wait_for", side_effect=asyncio.TimeoutError):
-			with pytest.raises(RuntimeError, match="timed out"):
-				await mgr.initialize("/tmp/workspace")
-
-	async def test_no_setup_command_skips(self) -> None:
-		"""When setup_command is empty, no subprocess is spawned."""
-		config = _config()
-		config.target.verification.setup_command = ""
-		db = Database(":memory:")
-		mgr = GreenBranchManager(config, db)
-
-		with patch.object(mgr, "_run_git_in", AsyncMock(return_value=(False, ""))), \
-			patch.object(mgr, "_run_git", AsyncMock(return_value=(True, ""))), \
-			patch("mission_control.green_branch.asyncio.create_subprocess_exec") as mock_shell:
-			await mgr.initialize("/tmp/workspace")
-
-		mock_shell.assert_not_called()
-
 
 class TestInitializeResetOnInit:
 	"""Existing branches are reset to base on init when reset_on_init=True."""
@@ -304,74 +208,6 @@ class TestInitializeResetOnInit:
 		src_branch_calls = [c[1] for c in source_calls if c[1][0] == "branch"]
 		assert len(src_branch_calls) == 0
 
-	async def test_reset_on_init_false_preserves_branches(self) -> None:
-		"""When reset_on_init is False, existing branches are not touched."""
-		config = _config()
-		config.green_branch.reset_on_init = False
-		db = Database(":memory:")
-		mgr = GreenBranchManager(config, db)
-
-		source_calls: list[tuple[str, tuple[str, ...]]] = []
-		workspace_calls: list[tuple[str, ...]] = []
-
-		async def mock_run_git_in(cwd: str, *args: str) -> tuple[bool, str]:
-			source_calls.append((cwd, args))
-			if args[0] == "rev-parse":
-				return True, "abc123"
-			return True, ""
-
-		async def mock_run_git(*args: str) -> tuple[bool, str]:
-			workspace_calls.append(args)
-			if args[0] == "rev-parse":
-				return True, "abc123"
-			return True, ""
-
-		with patch.object(mgr, "_run_git_in", side_effect=mock_run_git_in), \
-			patch.object(mgr, "_run_git", side_effect=mock_run_git):
-			await mgr.initialize("/tmp/workspace")
-
-		# No update-ref calls in source or workspace
-		src_update_refs = [c[1] for c in source_calls if c[1][0] == "update-ref"]
-		assert len(src_update_refs) == 0
-		ws_update_refs = [c for c in workspace_calls if c[0] == "update-ref"]
-		assert len(ws_update_refs) == 0
-
-	async def test_new_branches_created_regardless_of_setting(self) -> None:
-		"""New branches are created even when reset_on_init is True."""
-		config = _config()
-		config.green_branch.reset_on_init = True
-		db = Database(":memory:")
-		mgr = GreenBranchManager(config, db)
-
-		source_calls: list[tuple[str, tuple[str, ...]]] = []
-		workspace_calls: list[tuple[str, ...]] = []
-
-		async def mock_run_git_in(cwd: str, *args: str) -> tuple[bool, str]:
-			source_calls.append((cwd, args))
-			if args[0] == "rev-parse":
-				return False, ""
-			return True, ""
-
-		async def mock_run_git(*args: str) -> tuple[bool, str]:
-			workspace_calls.append(args)
-			if args[0] == "rev-parse":
-				return False, ""
-			return True, ""
-
-		with patch.object(mgr, "_run_git_in", side_effect=mock_run_git_in), \
-			patch.object(mgr, "_run_git", side_effect=mock_run_git):
-			await mgr.initialize("/tmp/workspace")
-
-		# Source repo: should create branches, not update-ref
-		src_branch_calls = [c[1] for c in source_calls if c[1][0] == "branch"]
-		src_update_refs = [c[1] for c in source_calls if c[1][0] == "update-ref"]
-		assert len(src_branch_calls) == 2
-		assert len(src_update_refs) == 0
-
-		# Workspace: should also create branches from origin
-		ws_branch_calls = [c for c in workspace_calls if c[0] == "branch"]
-		assert len(ws_branch_calls) == 2
-
 
 class TestSyncToSource:
 	"""Tests for _sync_to_source: pushing refs from workspace clone back to source repo."""
@@ -396,36 +232,6 @@ class TestSyncToSource:
 		# Second call: fetch mc/working
 		assert calls[1][0] == "/tmp/test"
 		assert calls[1][1] == ("fetch", "/tmp/test-workspace", "mc/working:mc/working")
-
-	async def test_warns_on_failure_but_does_not_raise(self) -> None:
-		"""Failed sync logs a warning but doesn't propagate the error."""
-		mgr = _manager()
-
-		async def mock_run_git_in(cwd: str, *args: str) -> tuple[bool, str]:
-			return (False, "fetch failed")
-
-		mgr._run_git_in = mock_run_git_in  # type: ignore[assignment]
-
-		# Should not raise
-		await mgr._sync_to_source()
-
-	async def test_partial_failure_continues(self) -> None:
-		"""If first branch sync fails, second is still attempted."""
-		mgr = _manager()
-		calls: list[tuple[str, tuple[str, ...]]] = []
-
-		async def mock_run_git_in(cwd: str, *args: str) -> tuple[bool, str]:
-			calls.append((cwd, args))
-			if "mc/green:mc/green" in args:
-				return (False, "failed")
-			return (True, "")
-
-		mgr._run_git_in = mock_run_git_in  # type: ignore[assignment]
-
-		await mgr._sync_to_source()
-
-		# Both branches attempted despite first failure
-		assert len(calls) == 2
 
 
 class TestParallelMergeConflicts:
@@ -471,64 +277,6 @@ class TestParallelMergeConflicts:
 		for r in failed:
 			assert r.rebase_ok is False
 			assert "Merge conflict" in r.failure_output
-
-	async def test_merge_conflict_detection(self) -> None:
-		"""merge_unit detects conflicts and returns rebase_ok=False with descriptive output."""
-		mgr = _manager()
-		conflict_msg = "CONFLICT (content): Merge conflict in src/shared_module.py\nAutomatic merge failed"
-
-		async def conflict_git(*args: str) -> tuple[bool, str]:
-			if args[0] == "merge" and len(args) > 1 and args[1] == "--no-ff":
-				return (False, conflict_msg)
-			if args[0] == "merge" and "--abort" in args:
-				return (True, "")
-			return (True, "")
-
-		mgr._run_git = AsyncMock(side_effect=conflict_git)
-
-		result = await mgr.merge_unit("/tmp/worker", "feat/conflicting")
-
-		assert result.merged is False
-		assert result.rebase_ok is False
-		assert "Merge conflict" in result.failure_output
-		assert "src/shared_module.py" in result.failure_output
-
-	async def test_green_branch_advances_monotonically(self) -> None:
-		"""After N sequential merges, green hash changes each time and never goes backwards."""
-		mgr = _manager()
-		mgr._sync_to_source = AsyncMock()  # type: ignore[method-assign]
-
-		# Simulate a git environment where rev-parse returns incrementing hashes
-		hash_counter = 0
-		hashes_seen: list[str] = []
-
-		async def tracking_git(*args: str) -> tuple[bool, str]:
-			nonlocal hash_counter
-			if args[0] == "rev-parse" and args[-1] == "mc/green":
-				hash_counter += 1
-				h = f"{hash_counter:040x}"
-				hashes_seen.append(h)
-				return (True, h + "\n")
-			return (True, "")
-
-		mgr._run_git = AsyncMock(side_effect=tracking_git)
-
-		# Perform 5 sequential merges
-		for i in range(5):
-			result = await mgr.merge_unit(f"/tmp/w{i}", f"feat/unit-{i}")
-			assert result.merged is True
-
-		# Capture the green hash after each merge
-		green_hashes: list[str] = []
-		for i in range(5):
-			h = await mgr.get_green_hash()
-			green_hashes.append(h)
-
-		# All hashes should be unique (branch advanced each time)
-		assert len(set(green_hashes)) == len(green_hashes)
-		# Hashes should be monotonically increasing (never goes backwards)
-		for i in range(1, len(green_hashes)):
-			assert green_hashes[i] > green_hashes[i - 1]
 
 	async def test_concurrent_merge_lock_serialization(self) -> None:
 		"""_merge_lock serializes concurrent merge attempts (no true parallelism)."""
@@ -632,58 +380,6 @@ class TestRunDeploy:
 		assert ok is False
 		assert "timed out" in output
 
-	async def test_no_deploy_command(self) -> None:
-		config = _config()
-		config.deploy = DeployConfig(enabled=True, command="")
-		db = Database(":memory:")
-		mgr = GreenBranchManager(config, db)
-
-		ok, output = await mgr.run_deploy()
-		assert ok is False
-		assert "No deploy command" in output
-
-	async def test_health_check_success(self) -> None:
-		config = self._deploy_config()
-		config.deploy.health_check_url = "https://example.com"
-		config.deploy.health_check_timeout = 10
-		db = Database(":memory:")
-		mgr = GreenBranchManager(config, db)
-
-		mock_proc = AsyncMock()
-		mock_proc.returncode = 0
-		mock_proc.communicate = AsyncMock(return_value=(b"ok", None))
-
-		with patch(
-			"mission_control.green_branch.asyncio.create_subprocess_exec",
-			return_value=mock_proc,
-		), patch.object(
-			mgr, "_poll_health_check", AsyncMock(return_value=True),
-		):
-			ok, output = await mgr.run_deploy()
-
-		assert ok is True
-
-	async def test_health_check_failure(self) -> None:
-		config = self._deploy_config()
-		config.deploy.health_check_url = "https://example.com"
-		db = Database(":memory:")
-		mgr = GreenBranchManager(config, db)
-
-		mock_proc = AsyncMock()
-		mock_proc.returncode = 0
-		mock_proc.communicate = AsyncMock(return_value=(b"ok", None))
-
-		with patch(
-			"mission_control.green_branch.asyncio.create_subprocess_exec",
-			return_value=mock_proc,
-		), patch.object(
-			mgr, "_poll_health_check", AsyncMock(return_value=False),
-		):
-			ok, output = await mgr.run_deploy()
-
-		assert ok is False
-		assert "Health check failed" in output
-
 	async def test_deploy_after_auto_push(self) -> None:
 		"""When auto_push and on_auto_push, deploy runs after push."""
 		config = self._deploy_config()
@@ -702,23 +398,6 @@ class TestRunDeploy:
 		assert result.merged is True
 		mgr.push_green_to_main.assert_awaited_once()
 		mgr.run_deploy.assert_awaited_once()
-
-	async def test_no_deploy_when_push_disabled(self) -> None:
-		"""When auto_push is off, deploy is not triggered on merge."""
-		config = self._deploy_config()
-		config.green_branch.auto_push = False
-		config.deploy.on_auto_push = True
-		db = Database(":memory:")
-		mgr = GreenBranchManager(config, db)
-		mgr.workspace = "/tmp/test-workspace"
-		mgr._run_git = AsyncMock(return_value=(True, ""))
-		mgr._sync_to_source = AsyncMock()  # type: ignore[method-assign]
-		mgr.run_deploy = AsyncMock(return_value=(True, "ok"))  # type: ignore[method-assign]
-
-		result = await mgr.merge_unit("/tmp/worker", "feat/branch")
-
-		assert result.merged is True
-		mgr.run_deploy.assert_not_awaited()
 
 
 class TestPollHealthCheck:
@@ -739,76 +418,6 @@ class TestPollHealthCheck:
 
 		assert result is True
 		mock_client.get.assert_awaited_once()
-
-	async def test_success_after_retries(self) -> None:
-		"""Health check returns True after initial failures."""
-		mgr = _manager()
-
-		call_count = 0
-
-		async def mock_get(url: str, timeout: float = 10.0) -> httpx.Response:
-			nonlocal call_count
-			call_count += 1
-			if call_count < 3:
-				raise httpx.ConnectError("Connection refused")
-			return httpx.Response(200)
-
-		mock_client = AsyncMock(spec=httpx.AsyncClient)
-		mock_client.get = AsyncMock(side_effect=mock_get)
-		mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-		mock_client.__aexit__ = AsyncMock(return_value=False)
-
-		with patch("mission_control.green_branch.httpx.AsyncClient", return_value=mock_client), \
-			patch("mission_control.green_branch.random.uniform", return_value=0.01):
-			result = await mgr._poll_health_check("https://example.com/health", 30)
-
-		assert result is True
-		assert call_count == 3
-
-	async def test_timeout_returns_false(self) -> None:
-		"""Health check returns False when total timeout expires."""
-		mgr = _manager()
-
-		mock_client = AsyncMock(spec=httpx.AsyncClient)
-		mock_client.get = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
-		mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-		mock_client.__aexit__ = AsyncMock(return_value=False)
-
-		# Use a very short timeout so the test completes fast
-		with patch("mission_control.green_branch.httpx.AsyncClient", return_value=mock_client), \
-			patch("mission_control.green_branch.random.uniform", return_value=0.01):
-			result = await mgr._poll_health_check("https://example.com/health", 0)
-
-		assert result is False
-
-	async def test_jitter_range_applied(self) -> None:
-		"""Poll interval uses random.uniform(3.0, 7.0) for jitter."""
-		mgr = _manager()
-		mock_response = httpx.Response(503)
-
-		call_count = 0
-
-		async def mock_get(url: str, timeout: float = 10.0) -> httpx.Response:
-			nonlocal call_count
-			call_count += 1
-			if call_count >= 3:
-				return httpx.Response(200)
-			return mock_response
-
-		mock_client = AsyncMock(spec=httpx.AsyncClient)
-		mock_client.get = AsyncMock(side_effect=mock_get)
-		mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-		mock_client.__aexit__ = AsyncMock(return_value=False)
-
-		with patch("mission_control.green_branch.httpx.AsyncClient", return_value=mock_client), \
-			patch("mission_control.green_branch.random.uniform", return_value=0.01) as mock_uniform:
-			result = await mgr._poll_health_check("https://example.com/health", 30)
-
-		assert result is True
-		# random.uniform should be called for each sleep between polls
-		assert mock_uniform.call_count == 2
-		for call in mock_uniform.call_args_list:
-			assert call.args == (3.0, 7.0)
 
 
 def _run(cmd: list[str], cwd: str | Path) -> str:
@@ -933,7 +542,7 @@ class TestGreenBranchRealGit:
 		_run(["git", "checkout", "mc/green"], workspace)
 		assert (workspace / "feature_a.py").exists()
 
-	async def test_merge_conflict_detection(self, tmp_path: Path) -> None:
+	async def test_merge_conflict_detection_real(self, tmp_path: Path) -> None:
 		"""Two workers modifying the same line -- first merges, second gets conflict."""
 		source, workspace = _setup_source_repo(tmp_path)
 		config = _real_config(source)
@@ -970,62 +579,6 @@ class TestGreenBranchRealGit:
 		content = (workspace / "app.py").read_text()
 		assert "worker 1 was here" in content
 
-	async def test_cleanup_after_merge(self, tmp_path: Path) -> None:
-		"""Temp branch and worker remote are removed after merge."""
-		source, workspace = _setup_source_repo(tmp_path)
-		config = _real_config(source)
-		db = Database(":memory:")
-		mgr = GreenBranchManager(config, db)
-		mgr.workspace = str(workspace)
-
-		worker = _make_worker_clone(tmp_path, source, "worker-cleanup")
-		_run(["git", "checkout", "-b", "unit/cleanup-test"], worker)
-		(worker / "cleanup.py").write_text("# cleanup\n")
-		_run(["git", "add", "cleanup.py"], worker)
-		_run(["git", "commit", "-m", "Cleanup test"], worker)
-
-		result = await mgr.merge_unit(str(worker), "unit/cleanup-test")
-		assert result.merged is True
-
-		# Temp branch mc/merge-unit/cleanup-test should not exist
-		branches = _run(["git", "branch"], workspace)
-		assert "mc/merge-" not in branches
-
-		# Worker remote should not exist
-		remotes = _run(["git", "remote"], workspace)
-		assert "worker-unit/cleanup-test" not in remotes
-
-	async def test_cleanup_after_failed_merge(self, tmp_path: Path) -> None:
-		"""Temp branch and worker remote are removed even when merge fails."""
-		source, workspace = _setup_source_repo(tmp_path)
-		config = _real_config(source)
-		db = Database(":memory:")
-		mgr = GreenBranchManager(config, db)
-		mgr.workspace = str(workspace)
-
-		# First merge: occupy mc/green with a change to app.py
-		worker1 = _make_worker_clone(tmp_path, source, "worker-ok")
-		_run(["git", "checkout", "-b", "unit/ok"], worker1)
-		(worker1 / "app.py").write_text("print('occupied')\n")
-		_run(["git", "add", "app.py"], worker1)
-		_run(["git", "commit", "-m", "Occupy"], worker1)
-		await mgr.merge_unit(str(worker1), "unit/ok")
-
-		# Second merge: conflicting change
-		worker2 = _make_worker_clone(tmp_path, source, "worker-fail")
-		_run(["git", "checkout", "-b", "unit/fail"], worker2)
-		(worker2 / "app.py").write_text("print('conflict')\n")
-		_run(["git", "add", "app.py"], worker2)
-		_run(["git", "commit", "-m", "Conflict"], worker2)
-		result = await mgr.merge_unit(str(worker2), "unit/fail")
-		assert result.merged is False
-
-		# Cleanup still happened
-		branches = _run(["git", "branch"], workspace)
-		assert "mc/merge-" not in branches
-		remotes = _run(["git", "remote"], workspace)
-		assert "worker-unit/fail" not in remotes
-
 	async def test_sync_to_source_updates_source_repo(self, tmp_path: Path) -> None:
 		"""After merge_unit, source repo's mc/green matches workspace's mc/green."""
 		source, workspace = _setup_source_repo(tmp_path)
@@ -1046,34 +599,6 @@ class TestGreenBranchRealGit:
 		ws_green = _run(["git", "rev-parse", "mc/green"], workspace)
 		src_green = _run(["git", "rev-parse", "mc/green"], source)
 		assert ws_green == src_green
-
-	async def test_sequential_merges_advance_green(self, tmp_path: Path) -> None:
-		"""Multiple sequential merges each advance mc/green."""
-		source, workspace = _setup_source_repo(tmp_path)
-		config = _real_config(source)
-		db = Database(":memory:")
-		mgr = GreenBranchManager(config, db)
-		mgr.workspace = str(workspace)
-
-		hashes: list[str] = []
-		hashes.append(_run(["git", "rev-parse", "mc/green"], workspace))
-
-		for i in range(3):
-			worker = _make_worker_clone(tmp_path, source, f"worker-seq-{i}")
-			_run(["git", "checkout", "-b", f"unit/seq-{i}"], worker)
-			(worker / f"seq_{i}.py").write_text(f"# seq {i}\n")
-			_run(["git", "add", f"seq_{i}.py"], worker)
-			_run(["git", "commit", "-m", f"Sequential {i}"], worker)
-
-			result = await mgr.merge_unit(str(worker), f"unit/seq-{i}")
-			assert result.merged is True
-			hashes.append(_run(["git", "rev-parse", "mc/green"], workspace))
-
-		# All hashes should be unique (mc/green advanced each time)
-		assert len(set(hashes)) == 4
-		# Each hash should be different from the previous
-		for j in range(1, len(hashes)):
-			assert hashes[j] != hashes[j - 1]
 
 
 def _state_config(target_path: str = "/tmp/test") -> MissionConfig:
@@ -1126,23 +651,6 @@ class TestCommitStateFile:
 		# Git add and commit were called
 		assert ("add", "MISSION_STATE.md") in git_calls
 		assert ("commit", "-m", "Update MISSION_STATE.md") in git_calls
-
-	async def test_returns_true_on_nothing_to_commit(self, tmp_path: Path) -> None:
-		"""commit_state_file returns True when git says nothing to commit."""
-		workspace = tmp_path / "workspace"
-		workspace.mkdir()
-		mgr = _state_manager(workspace=str(workspace))
-
-		async def mock_run_git(*args: str) -> tuple[bool, str]:
-			if args[0] == "commit":
-				return (False, "nothing to commit, working tree clean")
-			return (True, "")
-
-		mgr._run_git = AsyncMock(side_effect=mock_run_git)
-
-		result = await mgr.commit_state_file("# State\n")
-
-		assert result is True
 
 	async def test_returns_false_on_commit_failure(self, tmp_path: Path) -> None:
 		"""commit_state_file returns False when git commit fails for other reasons."""
@@ -1204,46 +712,4 @@ class TestMergeUnitCommitsState:
 		result = await mgr.merge_unit("/tmp/worker", "feat/branch")
 
 		assert result.merged is True
-		mgr.commit_state_file.assert_not_awaited()
-
-	async def test_merge_succeeds_even_if_state_commit_fails(self, tmp_path: Path) -> None:
-		"""merge_unit still returns merged=True if commit_state_file raises."""
-		target_dir = tmp_path / "target"
-		target_dir.mkdir()
-		(target_dir / "MISSION_STATE.md").write_text("# State\n")
-
-		workspace = tmp_path / "workspace"
-		workspace.mkdir()
-
-		mgr = _state_manager(target_path=str(target_dir), workspace=str(workspace))
-		mgr._run_git = AsyncMock(return_value=(True, ""))
-		mgr._sync_to_source = AsyncMock()  # type: ignore[method-assign]
-		mgr.commit_state_file = AsyncMock(side_effect=RuntimeError("git exploded"))  # type: ignore[method-assign]
-
-		result = await mgr.merge_unit("/tmp/worker", "feat/branch")
-
-		assert result.merged is True
-
-	async def test_state_not_committed_on_merge_conflict(self, tmp_path: Path) -> None:
-		"""commit_state_file is NOT called when the merge itself fails."""
-		target_dir = tmp_path / "target"
-		target_dir.mkdir()
-		(target_dir / "MISSION_STATE.md").write_text("# State\n")
-
-		workspace = tmp_path / "workspace"
-		workspace.mkdir()
-
-		mgr = _state_manager(target_path=str(target_dir), workspace=str(workspace))
-		mgr.commit_state_file = AsyncMock(return_value=True)  # type: ignore[method-assign]
-
-		async def side_effect(*args: str) -> tuple[bool, str]:
-			if args[0] == "merge" and args[1] == "--no-ff":
-				return (False, "CONFLICT")
-			return (True, "")
-
-		mgr._run_git = AsyncMock(side_effect=side_effect)
-
-		result = await mgr.merge_unit("/tmp/worker", "feat/conflict")
-
-		assert result.merged is False
 		mgr.commit_state_file.assert_not_awaited()

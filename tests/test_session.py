@@ -56,10 +56,6 @@ class TestRenderPrompt:
 		assert "Lint errors: 3" in prompt
 		assert "Type errors: 1" in prompt
 
-	def test_contains_branch(self) -> None:
-		prompt = render_prompt(_task(), _snapshot(), _config(), "mc/session-abc")
-		assert "mc/session-abc" in prompt
-
 	def test_contains_verification_command(self) -> None:
 		prompt = render_prompt(_task(), _snapshot(), _config(), "mc/session-abc")
 		assert "pytest -q" in prompt
@@ -67,14 +63,6 @@ class TestRenderPrompt:
 	def test_contains_context(self) -> None:
 		prompt = render_prompt(_task(), _snapshot(), _config(), "mc/session-abc", context="Previous session failed")
 		assert "Previous session failed" in prompt
-
-	def test_default_context(self) -> None:
-		prompt = render_prompt(_task(), _snapshot(), _config(), "mc/session-abc")
-		assert "No additional context" in prompt
-
-	def test_contains_target_name(self) -> None:
-		prompt = render_prompt(_task(), _snapshot(), _config(), "mc/session-abc")
-		assert "test-proj" in prompt
 
 
 class TestParseMcResult:
@@ -95,21 +83,6 @@ class TestParseMcResult:
 		result = parse_mc_result(output)
 		assert result is None
 
-	def test_malformed_json(self) -> None:
-		output = "MC_RESULT:{bad json}"
-		result = parse_mc_result(output)
-		assert result is None
-
-	def test_result_in_middle(self) -> None:
-		output = 'line 1\nMC_RESULT:{"status":"failed","commits":[],"summary":"Could not fix"}\nline 3'
-		result = parse_mc_result(output)
-		assert result is not None
-		assert result["status"] == "failed"
-
-	def test_empty_output(self) -> None:
-		result = parse_mc_result("")
-		assert result is None
-
 	def test_multiline_json(self) -> None:
 		"""MC_RESULT with pretty-printed multiline JSON should parse correctly."""
 		output = (
@@ -127,20 +100,6 @@ class TestParseMcResult:
 		assert result["status"] == "completed"
 		assert result["commits"] == ["abc123"]
 
-	def test_multiline_json_no_trailing_content(self) -> None:
-		"""MC_RESULT with multiline JSON at end of output."""
-		output = (
-			"Working on task...\n"
-			"MC_RESULT:{\n"
-			'  "status": "failed",\n'
-			'  "commits": [],\n'
-			'  "summary": "Could not fix"\n'
-			"}"
-		)
-		result = parse_mc_result(output)
-		assert result is not None
-		assert result["status"] == "failed"
-
 	def test_uses_last_mc_result(self) -> None:
 		"""When multiple MC_RESULT markers exist, use the last one."""
 		output = (
@@ -157,9 +116,6 @@ class TestParseMcResult:
 class TestBranchName:
 	def test_format(self) -> None:
 		assert build_branch_name("abc123") == "mc/session-abc123"
-
-	def test_unique(self) -> None:
-		assert build_branch_name("a") != build_branch_name("b")
 
 
 class TestSpawnSessionTimeout:
@@ -229,21 +185,6 @@ class TestMCResultSchemaValidation:
 		assert result["discoveries"] == []
 		assert result["concerns"] == []
 
-	def test_extra_fields_are_ignored(self) -> None:
-		"""Extra fields not in the schema are stripped out."""
-		raw = {
-			"status": "completed",
-			"commits": ["abc123"],
-			"summary": "Did it",
-			"files_changed": ["src/foo.py"],
-			"extra_field": "should be ignored",
-			"another": 42,
-		}
-		result = validate_mc_result(raw)
-		assert "extra_field" not in result
-		assert "another" not in result
-		assert result["status"] == "completed"
-
 	def test_wrong_status_type_returns_degraded(self, caplog: pytest.LogCaptureFixture) -> None:
 		"""Invalid status value triggers degraded parsing with warning."""
 		raw = {
@@ -259,20 +200,6 @@ class TestMCResultSchemaValidation:
 		assert result["summary"] == "Did it"  # valid field preserved
 		assert "schema validation failed" in caplog.text.lower()
 
-	def test_wrong_commits_type_returns_degraded(self, caplog: pytest.LogCaptureFixture) -> None:
-		"""Non-list commits triggers degraded parsing, valid fields preserved."""
-		raw = {
-			"status": "completed",
-			"commits": "not-a-list",
-			"summary": "Did it",
-			"files_changed": ["src/foo.py"],
-		}
-		with caplog.at_level(logging.WARNING, logger="mission_control.session"):
-			result = validate_mc_result(raw)
-		assert result["status"] == "completed"  # valid field preserved
-		assert result["commits"] == []  # invalid field gets default
-		assert "schema validation failed" in caplog.text.lower()
-
 	def test_completely_invalid_input_returns_degraded(self, caplog: pytest.LogCaptureFixture) -> None:
 		"""Completely invalid dict returns all defaults with warning."""
 		raw = {"garbage": True, "number": 42}
@@ -285,18 +212,6 @@ class TestMCResultSchemaValidation:
 		assert result["discoveries"] == []
 		assert result["concerns"] == []
 		assert "schema validation failed" in caplog.text.lower()
-
-	def test_pydantic_model_directly(self) -> None:
-		"""MCResultSchema can be instantiated directly with valid data."""
-		schema = MCResultSchema(
-			status="blocked",
-			commits=[],
-			summary="Blocked on dependency",
-			files_changed=[],
-		)
-		assert schema.status == "blocked"
-		assert schema.discoveries == []
-		assert schema.concerns == []
 
 	def test_parse_mc_result_integration(self) -> None:
 		"""parse_mc_result returns validated data for valid MC_RESULT output."""

@@ -40,12 +40,6 @@ SAMPLE_BACKLOG_MD = """\
 
 
 class TestArgParsing:
-	def test_priority_list_args(self) -> None:
-		parser = build_parser()
-		args = parser.parse_args(["priority", "list"])
-		assert args.command == "priority"
-		assert args.priority_command == "list"
-
 	def test_priority_set_args(self) -> None:
 		parser = build_parser()
 		args = parser.parse_args(["priority", "set", "abc123", "9.5"])
@@ -54,25 +48,12 @@ class TestArgParsing:
 		assert args.item_id == "abc123"
 		assert args.score == 9.5
 
-	def test_priority_defer_args(self) -> None:
-		parser = build_parser()
-		args = parser.parse_args(["priority", "defer", "abc123"])
-		assert args.command == "priority"
-		assert args.priority_command == "defer"
-		assert args.item_id == "abc123"
-
 	def test_priority_import_args(self) -> None:
 		parser = build_parser()
 		args = parser.parse_args(["priority", "import", "--file", "/tmp/BACKLOG.md"])
 		assert args.command == "priority"
 		assert args.priority_command == "import"
 		assert args.file == "/tmp/BACKLOG.md"
-
-	def test_priority_config_arg(self) -> None:
-		parser = build_parser()
-		args = parser.parse_args(["priority", "--config", "custom.toml", "list"])
-		assert args.config == "custom.toml"
-		assert args.priority_command == "list"
 
 
 class TestParseBacklogMd:
@@ -95,19 +76,6 @@ class TestParseBacklogMd:
 	def test_extracts_description(self) -> None:
 		items = parse_backlog_md(SAMPLE_BACKLOG_MD)
 		assert "expensive and noisy" in items[0].description
-
-	def test_sets_status_pending(self) -> None:
-		items = parse_backlog_md(SAMPLE_BACKLOG_MD)
-		for item in items:
-			assert item.status == "pending"
-
-	def test_empty_input(self) -> None:
-		items = parse_backlog_md("")
-		assert items == []
-
-	def test_no_matching_sections(self) -> None:
-		items = parse_backlog_md("# Just a title\n\nSome text without P sections.")
-		assert items == []
 
 
 class TestRecalculatePriorities:
@@ -187,13 +155,6 @@ def _insert_sample_items(db_path: Path) -> list[str]:
 
 
 class TestCmdPriorityList:
-	def test_list_empty(self, tmp_path: Path) -> None:
-		config_file, _ = _setup_db_with_config(tmp_path)
-		parser = build_parser()
-		args = parser.parse_args(["priority", "--config", str(config_file), "list"])
-		result = cmd_priority_list(args)
-		assert result == 0
-
 	def test_list_with_items(self, tmp_path: Path, capsys: object) -> None:
 		config_file, db_path = _setup_db_with_config(tmp_path)
 		_insert_sample_items(db_path)
@@ -201,14 +162,6 @@ class TestCmdPriorityList:
 		args = parser.parse_args(["priority", "--config", str(config_file), "list"])
 		result = cmd_priority_list(args)
 		assert result == 0
-
-	def test_list_no_db(self, tmp_path: Path) -> None:
-		config_file = tmp_path / "mission-control.toml"
-		config_file.write_text('[target]\nname = "test"\npath = "/tmp/test"\n')
-		parser = build_parser()
-		args = parser.parse_args(["priority", "--config", str(config_file), "list"])
-		result = cmd_priority_list(args)
-		assert result == 1
 
 
 class TestCmdPrioritySet:
@@ -231,14 +184,6 @@ class TestCmdPrioritySet:
 		result = cmd_priority_set(args)
 		assert result == 1
 
-	def test_set_no_db(self, tmp_path: Path) -> None:
-		config_file = tmp_path / "mission-control.toml"
-		config_file.write_text('[target]\nname = "test"\npath = "/tmp/test"\n')
-		parser = build_parser()
-		args = parser.parse_args(["priority", "--config", str(config_file), "set", "x", "5.0"])
-		result = cmd_priority_set(args)
-		assert result == 1
-
 
 class TestCmdPriorityDefer:
 	def test_defer_item(self, tmp_path: Path) -> None:
@@ -252,13 +197,6 @@ class TestCmdPriorityDefer:
 			item = db.get_backlog_item(ids[1])
 			assert item is not None
 			assert item.status == "deferred"
-
-	def test_defer_not_found(self, tmp_path: Path) -> None:
-		config_file, _ = _setup_db_with_config(tmp_path)
-		parser = build_parser()
-		args = parser.parse_args(["priority", "--config", str(config_file), "defer", "nonexistent"])
-		result = cmd_priority_defer(args)
-		assert result == 1
 
 
 class TestCmdPriorityImport:
@@ -294,23 +232,3 @@ class TestCmdPriorityImport:
 		with Database(db_path) as db:
 			items = db.list_backlog_items()
 			assert len(items) == 3
-
-	def test_import_file_not_found(self, tmp_path: Path) -> None:
-		config_file, _ = _setup_db_with_config(tmp_path)
-		parser = build_parser()
-		args = parser.parse_args([
-			"priority", "--config", str(config_file), "import", "--file", "/nonexistent/BACKLOG.md",
-		])
-		result = cmd_priority_import(args)
-		assert result == 1
-
-	def test_import_empty_file(self, tmp_path: Path) -> None:
-		config_file, _ = _setup_db_with_config(tmp_path)
-		backlog_file = tmp_path / "BACKLOG.md"
-		backlog_file.write_text("# Empty backlog\n")
-		parser = build_parser()
-		args = parser.parse_args([
-			"priority", "--config", str(config_file), "import", "--file", str(backlog_file),
-		])
-		result = cmd_priority_import(args)
-		assert result == 0

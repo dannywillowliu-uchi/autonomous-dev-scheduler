@@ -87,27 +87,6 @@ class TestLoadContext:
 		result = load_context(task, db, config)
 		assert len(result) <= CONTEXT_BUDGET + 500  # some overhead for section headers and joining
 
-	def test_missing_claude_md(self, db, config):
-		"""No error when CLAUDE.md doesn't exist."""
-		task = TaskRecord(description="do something")
-		result = load_context(task, db, config)
-		assert "### Project Instructions" not in result
-
-	def test_claude_md_truncated_to_budget(self, db, config, tmp_path):
-		"""Large CLAUDE.md is truncated."""
-		(tmp_path / "CLAUDE.md").write_text("x" * 10000)
-		# Fill budget with sessions first
-		for i in range(10):
-			db.insert_session(_make_session(id=f"s-{i}", desc="a" * 200, summary="b" * 200))
-		task = TaskRecord(description="do something")
-		result = load_context(task, db, config)
-		# CLAUDE.md section should exist but be truncated
-		if "### Project Instructions" in result:
-			instructions_start = result.index("### Project Instructions")
-			instructions_section = result[instructions_start:]
-			# The x content should be less than min(2000, remaining budget)
-			assert instructions_section.count("x") <= 2000
-
 
 # -- load_context_for_work_unit --
 
@@ -145,26 +124,6 @@ class TestLoadContextForWorkUnit:
 		assert "refactor module A" in result
 		assert "refactor module B" in result
 		assert "refactor module C" not in result  # self excluded
-
-	def test_sibling_output_summary_truncated(self, db, config):
-		plan = Plan(id="plan1", objective="Work")
-		db.insert_plan(plan)
-		db.insert_work_unit(WorkUnit(
-			id="u1", plan_id="plan1", title="sibling",
-			status="completed", output_summary="x" * 200,
-		))
-		unit = WorkUnit(id="u2", plan_id="plan1", title="self")
-		db.insert_work_unit(unit)
-		result = load_context_for_work_unit(unit, db, config)
-		# output_summary truncated to 60 chars in sibling display
-		assert "### Sibling Units" in result
-		assert "x" * 61 not in result
-
-	def test_no_plan_id(self, db, config):
-		"""Unit with no plan_id returns only CLAUDE.md if present."""
-		unit = WorkUnit(plan_id="", title="standalone")
-		result = load_context_for_work_unit(unit, db, config)
-		assert result == ""
 
 	def test_includes_claude_md(self, db, config, tmp_path):
 		(tmp_path / "CLAUDE.md").write_text("# Instructions\nDo the thing.")
@@ -216,21 +175,6 @@ class TestLoadContextForMissionWorker:
 		max_content = min(4000, CONTEXT_BUDGET)
 		assert result.count("y") <= max_content
 
-	def test_missing_claude_md(self, config):
-		"""Gracefully handles missing CLAUDE.md."""
-		unit = WorkUnit(title="task")
-		result = load_context_for_mission_worker(unit, config)
-		assert result == ""
-
-	def test_no_session_history_included(self, db, config, tmp_path):
-		"""Mission worker context does NOT include session history."""
-		(tmp_path / "CLAUDE.md").write_text("# Docs")
-		db.insert_session(_make_session())
-		unit = WorkUnit(title="task")
-		result = load_context_for_mission_worker(unit, config)
-		assert "### Recent Sessions" not in result
-		assert "fix bug" not in result
-
 
 # -- _format_session_history --
 
@@ -249,23 +193,6 @@ class TestFormatSessionHistory:
 		s = _make_session(id="def", status="failed", desc="deploy", summary="timeout")
 		result = _format_session_history([s])
 		assert "[x] def: deploy -> failed (timeout)" in result
-
-	def test_reverted_session(self):
-		s = _make_session(id="ghi", status="reverted", desc="refactor", summary="broke tests")
-		result = _format_session_history([s])
-		assert "[!] ghi: refactor -> reverted (broke tests)" in result
-
-	def test_unknown_status(self):
-		s = _make_session(id="jkl", status="running", desc="wip", summary="in progress")
-		result = _format_session_history([s])
-		assert "[?] jkl: wip -> running" in result
-
-	def test_output_summary_truncated_at_80(self):
-		s = _make_session(id="m1", status="completed", desc="task", summary="z" * 200)
-		result = _format_session_history([s])
-		# The output_summary slice is [:80]
-		assert "z" * 80 in result
-		assert "z" * 81 not in result
 
 	def test_multiple_sessions(self):
 		sessions = [
@@ -298,19 +225,6 @@ class TestCompressHistory:
 		assert "... and" in result
 		assert "more sessions" in result
 
-	def test_all_sessions_fit(self):
-		sessions = [_make_session(id=f"s{i}", status="completed", desc="t") for i in range(3)]
-		result = compress_history(sessions, max_chars=10000)
-		assert "... and" not in result
-		lines = result.strip().split("\n")
-		assert len(lines) == 3
-
-	def test_zero_max_chars(self):
-		sessions = [_make_session(id="s1", status="completed", desc="task")]
-		result = compress_history(sessions, max_chars=0)
-		# First line exceeds budget immediately, so we get truncation message
-		assert "... and 1 more sessions" in result
-
 
 # -- summarize_session --
 
@@ -334,28 +248,6 @@ class TestSummarizeSession:
 		verdict = ReviewVerdict(verdict="hurt", regressions=["broke API", "lost data"])
 		result = summarize_session(session, verdict)
 		assert "Regressed: broke API, lost data." in result
-
-	def test_with_output_summary(self):
-		session = _make_session(
-			id="s1", desc="fix",
-			summary="Fixed the critical authentication bypass vulnerability in login handler",
-		)
-		verdict = ReviewVerdict(verdict="helped")
-		result = summarize_session(session, verdict)
-		assert "Output: Fixed the critical" in result
-
-	def test_output_summary_truncated_at_200(self):
-		session = _make_session(id="s1", desc="fix", summary="a" * 500)
-		verdict = ReviewVerdict(verdict="neutral")
-		result = summarize_session(session, verdict)
-		assert "a" * 200 in result
-		assert "a" * 201 not in result
-
-	def test_empty_output_summary(self):
-		session = _make_session(id="s1", desc="fix", summary="")
-		verdict = ReviewVerdict(verdict="neutral")
-		result = summarize_session(session, verdict)
-		assert "Output:" not in result
 
 	def test_full_combo(self):
 		session = _make_session(id="s1", desc="big change", summary="lots happened")

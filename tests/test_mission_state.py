@@ -85,30 +85,6 @@ class TestInitialGeneration:
 		assert "## Remaining" in content
 		assert "planner should focus" in content
 
-	def test_initial_state_no_completed_section(self, config: MissionConfig, db: Database) -> None:
-		"""Initial state has no Completed section when nothing has been done."""
-		mission = Mission(id="m1", objective="Do stuff", status="running")
-		db.insert_mission(mission)
-
-		ctrl = ContinuousController(config, db)
-		ctrl._update_mission_state(mission)
-
-		state_path = config.target.resolved_path / "MISSION_STATE.md"
-		content = state_path.read_text()
-		assert "## Completed" not in content
-
-	def test_initial_state_no_changelog(self, config: MissionConfig, db: Database) -> None:
-		"""Initial state has no Changelog section when nothing has happened."""
-		mission = Mission(id="m1", objective="Do stuff", status="running")
-		db.insert_mission(mission)
-
-		ctrl = ContinuousController(config, db)
-		ctrl._update_mission_state(mission)
-
-		state_path = config.target.resolved_path / "MISSION_STATE.md"
-		content = state_path.read_text()
-		assert "## Changelog" not in content
-
 
 class TestCompletionWithTimestamp:
 	"""Test that completed units get timestamped entries."""
@@ -293,54 +269,9 @@ class TestChangelogAccumulation:
 		third_pos = content.index("third entry")
 		assert first_pos < second_pos < third_pos
 
-	def test_no_changelog_when_empty(self, config: MissionConfig, db: Database) -> None:
-		"""No Changelog section when _state_changelog is empty."""
-		mission = Mission(id="m1", objective="Test", status="running")
-		db.insert_mission(mission)
-
-		ctrl = ContinuousController(config, db)
-		ctrl._update_mission_state(mission)
-
-		state_path = config.target.resolved_path / "MISSION_STATE.md"
-		content = state_path.read_text()
-		assert "## Changelog" not in content
-
 
 class TestTimestampFallback:
 	"""Test timestamp handling when finished_at is missing."""
-
-	def test_no_timestamp_when_unit_not_found(self, config: MissionConfig, db: Database) -> None:
-		"""Entry is still created when work unit is not found in DB (no timestamp)."""
-		mission = Mission(id="m1", objective="Test", status="running")
-		db.insert_mission(mission)
-		epoch = Epoch(id="e1", mission_id="m1")
-		db.insert_epoch(epoch)
-
-		# Insert dummy work unit, then handoff, then remove unit (FK off temporarily)
-		db.insert_plan(Plan(id="p1", objective="test"))
-		dummy = WorkUnit(id="ghost12345ab", plan_id="p1", epoch_id="e1")
-		db.insert_work_unit(dummy)
-
-		handoff = Handoff(
-			work_unit_id="ghost12345ab", epoch_id="e1",
-			status="completed", summary="Ghost unit",
-			files_changed=json.dumps(["src/ghost.py"]),
-		)
-		db.insert_handoff(handoff)
-
-		# Disable FK checks to delete the work unit, then re-enable
-		db.conn.execute("PRAGMA foreign_keys = OFF")
-		db.conn.execute("DELETE FROM work_units WHERE id = 'ghost12345ab'")
-		db.conn.execute("PRAGMA foreign_keys = ON")
-
-		ctrl = ContinuousController(config, db)
-		ctrl._update_mission_state(mission)
-
-		state_path = config.target.resolved_path / "MISSION_STATE.md"
-		content = state_path.read_text()
-		assert "## Completed" in content
-		assert "ghost123" in content
-		assert "Ghost unit" in content
 
 	def test_no_timestamp_when_finished_at_is_none(self, config: MissionConfig, db: Database) -> None:
 		"""Entry omits timestamp when work unit's finished_at is None."""

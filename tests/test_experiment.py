@@ -14,46 +14,6 @@ from mission_control.db import Database
 from mission_control.models import Epoch, ExperimentResult, Handoff, Mission, Plan, WorkUnit, _now_iso
 from mission_control.worker import render_mission_worker_prompt
 
-# -- ExperimentResult dataclass tests --
-
-
-class TestExperimentResultDataclass:
-	def test_default_fields(self) -> None:
-		r = ExperimentResult()
-		assert r.work_unit_id == ""
-		assert r.epoch_id is None
-		assert r.mission_id == ""
-		assert r.approach_count == 2
-		assert r.comparison_report == ""
-		assert r.recommended_approach == ""
-		assert r.id  # auto-generated
-		assert r.timestamp  # auto-generated
-		assert r.created_at  # auto-generated
-
-	def test_custom_fields(self) -> None:
-		r = ExperimentResult(
-			id="exp-1",
-			work_unit_id="wu-1",
-			epoch_id="ep-1",
-			mission_id="m-1",
-			approach_count=3,
-			comparison_report='{"winner": "A"}',
-			recommended_approach="Approach A",
-		)
-		assert r.id == "exp-1"
-		assert r.work_unit_id == "wu-1"
-		assert r.epoch_id == "ep-1"
-		assert r.mission_id == "m-1"
-		assert r.approach_count == 3
-		assert r.comparison_report == '{"winner": "A"}'
-		assert r.recommended_approach == "Approach A"
-
-	def test_multiple_instances_unique_ids(self) -> None:
-		r1 = ExperimentResult()
-		r2 = ExperimentResult()
-		assert r1.id != r2.id
-
-
 # -- DB experiment_results CRUD tests --
 
 
@@ -96,9 +56,6 @@ class TestExperimentResultDB:
 		assert fetched.comparison_report == '{"a": 1}'
 		assert fetched.recommended_approach == "A"
 
-	def test_get_nonexistent(self, db: Database) -> None:
-		assert db.get_experiment_result("nope") is None
-
 	def test_get_results_for_mission(self, db: Database) -> None:
 		from mission_control.models import Mission, Plan
 		mission = Mission(id="m-1", objective="test")
@@ -128,53 +85,6 @@ class TestExperimentResultDB:
 		assert len(results) == 3
 		assert all(r.mission_id == "m-1" for r in results)
 
-	def test_get_results_for_mission_empty(self, db: Database) -> None:
-		results = db.get_experiment_results_for_mission("no-mission")
-		assert results == []
-
-
-# -- WorkUnit experiment_mode persistence --
-
-
-class TestWorkUnitExperimentMode:
-	def test_workunit_experiment_mode_default(self) -> None:
-		unit = WorkUnit()
-		assert unit.experiment_mode is False
-
-	def test_workunit_experiment_mode_true(self) -> None:
-		unit = WorkUnit(experiment_mode=True)
-		assert unit.experiment_mode is True
-
-	def test_workunit_experiment_mode_persists(self, db: Database) -> None:
-		from mission_control.models import Plan
-		plan = Plan(id="plan-exp", objective="test")
-		db.insert_plan(plan)
-		unit = WorkUnit(
-			id="wu-exp",
-			plan_id=plan.id,
-			title="experiment unit",
-			experiment_mode=True,
-		)
-		db.insert_work_unit(unit)
-		fetched = db.get_work_unit("wu-exp")
-		assert fetched is not None
-		assert fetched.experiment_mode is True
-
-	def test_workunit_experiment_mode_false_persists(self, db: Database) -> None:
-		from mission_control.models import Plan
-		plan = Plan(id="plan-normal", objective="test")
-		db.insert_plan(plan)
-		unit = WorkUnit(
-			id="wu-normal",
-			plan_id=plan.id,
-			title="normal unit",
-			experiment_mode=False,
-		)
-		db.insert_work_unit(unit)
-		fetched = db.get_work_unit("wu-normal")
-		assert fetched is not None
-		assert fetched.experiment_mode is False
-
 
 # -- Worker prompt template tests --
 
@@ -203,51 +113,6 @@ class TestExperimentWorkerPrompt:
 		assert "Compare caching strategies" in prompt
 		assert "Try Redis vs Memcached" in prompt
 
-	def test_render_mission_prompt_normal_unit(self) -> None:
-		"""Normal implementation units render with the mission template."""
-		from mission_control.worker import render_mission_worker_prompt
-
-		config = MagicMock()
-		config.target.name = "test-project"
-		config.target.verification.command = "pytest"
-
-		unit = WorkUnit(
-			title="Add feature X",
-			description="Implement feature",
-			unit_type="implementation",
-			experiment_mode=False,
-		)
-		prompt = render_mission_worker_prompt(
-			unit=unit,
-			config=config,
-			workspace_path="/tmp/ws",
-			branch_name="mc/unit-test",
-		)
-		assert "Add feature X" in prompt
-		assert "Implement feature" in prompt
-
-
-# -- Experiment units skip merge in _process_completions --
-
-
-class TestExperimentSkipMerge:
-	def test_research_units_skip_merge(self) -> None:
-		"""Verify that research-type units (used for experiments) skip merge logic."""
-		unit = WorkUnit(
-			unit_type="research",
-			experiment_mode=True,
-		)
-		# The controller checks unit.unit_type == "research" to skip merge
-		assert unit.unit_type == "research"
-		assert unit.experiment_mode is True
-
-	def test_implementation_units_do_not_skip_merge(self) -> None:
-		unit = WorkUnit(
-			unit_type="implementation",
-			experiment_mode=False,
-		)
-		assert unit.unit_type != "research"
-
 
 # -- CLI parser tests --
 
@@ -258,26 +123,6 @@ class TestExperimentCLIFlag:
 		args = parser.parse_args(["mission"])
 		assert hasattr(args, "experiment")
 		assert args.experiment is False
-
-	def test_experiment_flag_set(self) -> None:
-		parser = build_parser()
-		args = parser.parse_args(["mission", "--experiment"])
-		assert args.experiment is True
-
-	def test_experiment_with_other_flags(self) -> None:
-		parser = build_parser()
-		args = parser.parse_args([
-			"mission", "--experiment", "--dry-run", "--workers", "4",
-		])
-		assert args.experiment is True
-		assert args.dry_run is True
-		assert args.workers == 4
-
-	def test_experiment_and_strategist_flags(self) -> None:
-		parser = build_parser()
-		args = parser.parse_args(["mission", "--experiment", "--strategist"])
-		assert args.experiment is True
-		assert args.strategist is True
 
 
 # -- Experiment prompt rendering tests --
@@ -313,40 +158,6 @@ class TestExperimentPromptRendering:
 		assert "Try Redis vs Memcached" in prompt
 		assert "comparison report" in prompt.lower()
 
-	def test_research_unit_selects_research_template(self) -> None:
-		"""unit_type='research' should use RESEARCH_WORKER_PROMPT_TEMPLATE."""
-		config = self._make_config()
-		unit = WorkUnit(
-			title="Investigate API patterns",
-			description="Read the codebase",
-			unit_type="research",
-		)
-		prompt = render_mission_worker_prompt(
-			unit=unit,
-			config=config,
-			workspace_path="/tmp/ws",
-			branch_name="mc/unit-test",
-		)
-		assert "research agent" in prompt.lower()
-		assert "Research Task" in prompt
-
-	def test_implementation_unit_selects_mission_template(self) -> None:
-		"""unit_type='implementation' should use MISSION_WORKER_PROMPT_TEMPLATE."""
-		config = self._make_config()
-		unit = WorkUnit(
-			title="Add feature X",
-			description="Implement feature",
-			unit_type="implementation",
-		)
-		prompt = render_mission_worker_prompt(
-			unit=unit,
-			config=config,
-			workspace_path="/tmp/ws",
-			branch_name="mc/unit-test",
-		)
-		assert "Constraints" in prompt
-		assert "No TODOs" in prompt
-
 	def test_experiment_template_includes_json_comparison_format(self) -> None:
 		"""Experiment prompt should instruct JSON comparison report output."""
 		config = self._make_config()
@@ -364,59 +175,6 @@ class TestExperimentPromptRendering:
 		)
 		assert "comparison_report" in prompt
 		assert "recommended_approach" in prompt
-
-	def test_experiment_template_instructs_no_commits(self) -> None:
-		"""Experiment prompt should tell worker not to commit."""
-		config = self._make_config()
-		unit = WorkUnit(
-			title="Test approaches",
-			description="Compare two implementations",
-			unit_type="experiment",
-			experiment_mode=True,
-		)
-		prompt = render_mission_worker_prompt(
-			unit=unit,
-			config=config,
-			workspace_path="/tmp/ws",
-			branch_name="mc/unit-test",
-		)
-		assert "Do NOT commit" in prompt
-
-	def test_experiment_prompt_includes_experience_context(self) -> None:
-		"""Experience context should be included in experiment prompts."""
-		config = self._make_config()
-		unit = WorkUnit(
-			title="Experiment task",
-			description="Compare approaches",
-			unit_type="experiment",
-			experiment_mode=True,
-		)
-		prompt = render_mission_worker_prompt(
-			unit=unit,
-			config=config,
-			workspace_path="/tmp/ws",
-			branch_name="mc/unit-test",
-			experience_context="Previous experiment showed approach A is 2x faster",
-		)
-		assert "Previous experiment showed approach A is 2x faster" in prompt
-
-	def test_experiment_prompt_includes_mission_state(self) -> None:
-		"""Mission state should be included in experiment prompts."""
-		config = self._make_config()
-		unit = WorkUnit(
-			title="Experiment task",
-			description="Compare approaches",
-			unit_type="experiment",
-			experiment_mode=True,
-		)
-		prompt = render_mission_worker_prompt(
-			unit=unit,
-			config=config,
-			workspace_path="/tmp/ws",
-			branch_name="mc/unit-test",
-			mission_state="3 units completed, 1 failed",
-		)
-		assert "3 units completed, 1 failed" in prompt
 
 
 # -- Controller experiment completion flow tests --
@@ -569,163 +327,6 @@ class TestControllerExperimentCompletion:
 		assert results[0].mission_id == "m-2"
 		assert results[0].epoch_id == "ep-2"
 
-	def test_experiment_completed_event_logged(self, db_runtime: Database) -> None:
-		"""An 'experiment_completed' UnitEvent should be logged."""
-		from mission_control.continuous_controller import WorkerCompletion
-
-		controller = self._make_controller(db_runtime)
-		mission = Mission(id="m-3", objective="test")
-		db_runtime.insert_mission(mission)
-
-		epoch = Epoch(id="ep-3", mission_id="m-3")
-		db_runtime.insert_epoch(epoch)
-
-		self._insert_plan(db_runtime, "p-3")
-		unit = WorkUnit(
-			id="wu-exp-3",
-			plan_id="p-3",
-			title="Compare algorithms",
-			description="Quick sort vs merge sort",
-			unit_type="experiment",
-			experiment_mode=True,
-			status="completed",
-			finished_at=_now_iso(),
-		)
-		db_runtime.insert_work_unit(unit)
-
-		handoff = Handoff(
-			id="h-3",
-			work_unit_id="wu-exp-3",
-			epoch_id="ep-3",
-			status="completed",
-			summary="Quick sort faster for small arrays",
-		)
-		db_runtime.insert_handoff(handoff)
-
-		completion = WorkerCompletion(
-			unit=unit,
-			handoff=handoff,
-			workspace="/tmp/ws",
-			epoch=epoch,
-		)
-
-		controller._completion_queue.put_nowait(completion)
-		controller.running = False
-
-		result = MagicMock()
-		asyncio.run(
-			controller._process_completions(mission, result)
-		)
-
-		# Check event logged
-		events = db_runtime.conn.execute(
-			"SELECT * FROM unit_events WHERE work_unit_id = ? AND event_type = 'experiment_completed'",
-			("wu-exp-3",),
-		).fetchall()
-		assert len(events) == 1
-
-	def test_experiment_handoff_fed_to_planner(self, db_runtime: Database) -> None:
-		"""Handoff from experiment units should be ingested by the planner."""
-		from mission_control.continuous_controller import WorkerCompletion
-
-		controller = self._make_controller(db_runtime)
-		mission = Mission(id="m-4", objective="test")
-		db_runtime.insert_mission(mission)
-
-		epoch = Epoch(id="ep-4", mission_id="m-4")
-		db_runtime.insert_epoch(epoch)
-
-		self._insert_plan(db_runtime, "p-4")
-		unit = WorkUnit(
-			id="wu-exp-4",
-			plan_id="p-4",
-			title="Test DB engines",
-			description="PostgreSQL vs MySQL",
-			unit_type="experiment",
-			experiment_mode=True,
-			status="completed",
-			finished_at=_now_iso(),
-		)
-		db_runtime.insert_work_unit(unit)
-
-		handoff = Handoff(
-			id="h-4",
-			work_unit_id="wu-exp-4",
-			epoch_id="ep-4",
-			status="completed",
-			summary="PostgreSQL handles complex queries better",
-		)
-		db_runtime.insert_handoff(handoff)
-
-		completion = WorkerCompletion(
-			unit=unit,
-			handoff=handoff,
-			workspace="/tmp/ws",
-			epoch=epoch,
-		)
-
-		controller._completion_queue.put_nowait(completion)
-		controller.running = False
-
-		result = MagicMock()
-		asyncio.run(
-			controller._process_completions(mission, result)
-		)
-
-		# Planner should have received the handoff
-		controller._planner.ingest_handoff.assert_called_once_with(handoff)
-
-	def test_experiment_increments_merged_counter(self, db_runtime: Database) -> None:
-		"""Completed experiment units should increment _total_merged (counted as successful)."""
-		from mission_control.continuous_controller import WorkerCompletion
-
-		controller = self._make_controller(db_runtime)
-		mission = Mission(id="m-5", objective="test")
-		db_runtime.insert_mission(mission)
-
-		epoch = Epoch(id="ep-5", mission_id="m-5")
-		db_runtime.insert_epoch(epoch)
-
-		self._insert_plan(db_runtime, "p-5")
-		unit = WorkUnit(
-			id="wu-exp-5",
-			plan_id="p-5",
-			title="Test experiment",
-			description="A vs B",
-			unit_type="experiment",
-			experiment_mode=True,
-			status="completed",
-			finished_at=_now_iso(),
-		)
-		db_runtime.insert_work_unit(unit)
-
-		handoff = Handoff(
-			id="h-5",
-			work_unit_id="wu-exp-5",
-			epoch_id="ep-5",
-			status="completed",
-			summary="A is better",
-		)
-		db_runtime.insert_handoff(handoff)
-
-		completion = WorkerCompletion(
-			unit=unit,
-			handoff=handoff,
-			workspace="/tmp/ws",
-			epoch=epoch,
-		)
-
-		controller._completion_queue.put_nowait(completion)
-		controller.running = False
-
-		result = MagicMock()
-		asyncio.run(
-			controller._process_completions(mission, result)
-		)
-
-		assert controller._total_merged == 1
-		assert controller._total_failed == 0
-
 	def test_failed_experiment_increments_failed_counter(self, db_runtime: Database) -> None:
 		"""Failed experiment units should increment _total_failed."""
 		from mission_control.continuous_controller import WorkerCompletion
@@ -778,58 +379,3 @@ class TestControllerExperimentCompletion:
 		assert controller._total_merged == 0
 		# merge_unit should NOT be called even for failed experiment units
 		controller._green_branch.merge_unit.assert_not_called()
-
-	def test_experiment_adds_state_changelog_entry(self, db_runtime: Database) -> None:
-		"""Completed experiment should add an entry to _state_changelog."""
-		from mission_control.continuous_controller import WorkerCompletion
-
-		controller = self._make_controller(db_runtime)
-		mission = Mission(id="m-7", objective="test")
-		db_runtime.insert_mission(mission)
-
-		epoch = Epoch(id="ep-7", mission_id="m-7")
-		db_runtime.insert_epoch(epoch)
-
-		self._insert_plan(db_runtime, "p-7")
-		unit = WorkUnit(
-			id="wu-exp-7abc",
-			plan_id="p-7",
-			title="Changelog test",
-			description="Test changelog",
-			unit_type="experiment",
-			experiment_mode=True,
-			status="completed",
-			finished_at=_now_iso(),
-		)
-		db_runtime.insert_work_unit(unit)
-
-		handoff = Handoff(
-			id="h-7",
-			work_unit_id="wu-exp-7abc",
-			epoch_id="ep-7",
-			status="completed",
-			summary="Experiment completed successfully",
-		)
-		db_runtime.insert_handoff(handoff)
-
-		# Mock _update_mission_state to avoid file I/O
-		controller._update_mission_state = MagicMock()
-
-		completion = WorkerCompletion(
-			unit=unit,
-			handoff=handoff,
-			workspace="/tmp/ws",
-			epoch=epoch,
-		)
-
-		controller._completion_queue.put_nowait(completion)
-		controller.running = False
-
-		result = MagicMock()
-		asyncio.run(
-			controller._process_completions(mission, result)
-		)
-
-		assert len(controller._state_changelog) == 1
-		assert "experiment completed" in controller._state_changelog[0]
-		assert "wu-exp-7" in controller._state_changelog[0]

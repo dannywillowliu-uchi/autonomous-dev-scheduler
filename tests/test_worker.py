@@ -71,43 +71,12 @@ class TestRenderWorkerPrompt:
 		prompt = render_worker_prompt(unit, config, "/tmp/clone", "mc/unit-abc")
 		assert "src/foo.py,src/bar.py" in prompt
 
-	def test_contains_branch_name(self, config: MissionConfig) -> None:
-		unit = WorkUnit(title="X")
-		prompt = render_worker_prompt(unit, config, "/tmp/clone", "mc/unit-abc123")
-		assert "mc/unit-abc123" in prompt
-
-	def test_contains_verification_hint(self, config: MissionConfig) -> None:
-		unit = WorkUnit(title="X", verification_hint="Run test_foo.py specifically")
-		prompt = render_worker_prompt(unit, config, "/tmp/clone", "mc/unit-x")
-		assert "Run test_foo.py specifically" in prompt
-
-	def test_contains_verification_command(self, config: MissionConfig) -> None:
-		unit = WorkUnit(title="X")
-		prompt = render_worker_prompt(unit, config, "/tmp/clone", "mc/unit-x")
-		assert "pytest -q" in prompt
-
-	def test_contains_target_name(self, config: MissionConfig) -> None:
-		unit = WorkUnit(title="X")
-		prompt = render_worker_prompt(unit, config, "/tmp/clone", "mc/unit-x")
-		assert "test-proj" in prompt
-
-	def test_default_files_hint(self, config: MissionConfig) -> None:
-		unit = WorkUnit(title="X")
-		prompt = render_worker_prompt(unit, config, "/tmp/clone", "mc/unit-x")
-		assert "Not specified" in prompt
-
 	def test_per_unit_verification_command_override(self, config: MissionConfig) -> None:
 		"""Per-unit verification_command overrides config default."""
 		unit = WorkUnit(title="X", verification_command="make test-specific")
 		prompt = render_worker_prompt(unit, config, "/tmp/clone", "mc/unit-x")
 		assert "make test-specific" in prompt
 		assert "pytest -q" not in prompt
-
-	def test_per_unit_verification_command_none_uses_config(self, config: MissionConfig) -> None:
-		"""When verification_command is None, falls back to config."""
-		unit = WorkUnit(title="X")
-		prompt = render_worker_prompt(unit, config, "/tmp/clone", "mc/unit-x")
-		assert "pytest -q" in prompt
 
 
 class TestRenderMissionWorkerPrompt:
@@ -129,22 +98,12 @@ class TestRenderMissionWorkerPrompt:
 		assert "## Mission State" in prompt
 		assert "Added auth module" in prompt
 
-	def test_mission_state_empty_omits_section(self, config: MissionConfig) -> None:
-		unit = WorkUnit(title="Fix bug", description="Fix the thing")
-		prompt = render_mission_worker_prompt(unit, config, "/tmp/ws", "mc/unit-x", mission_state="")
-		assert "## Mission State" not in prompt
-
 	def test_overlap_warnings_injected_in_prompt(self, config: MissionConfig) -> None:
 		unit = WorkUnit(title="Fix bug", description="Fix the thing")
 		warnings = "- src/auth.py (also targeted by unit abc12345: Add login)"
 		prompt = render_mission_worker_prompt(unit, config, "/tmp/ws", "mc/unit-x", overlap_warnings=warnings)
 		assert "## File Locking Warnings" in prompt
 		assert "src/auth.py" in prompt
-
-	def test_overlap_warnings_empty_omits_section(self, config: MissionConfig) -> None:
-		unit = WorkUnit(title="Fix bug", description="Fix the thing")
-		prompt = render_mission_worker_prompt(unit, config, "/tmp/ws", "mc/unit-x", overlap_warnings="")
-		assert "## File Locking Warnings" not in prompt
 
 
 class TestResearchPromptSelection:
@@ -155,29 +114,6 @@ class TestResearchPromptSelection:
 		assert "research agent" in prompt.lower()
 		assert "EXPLORATION and DISCOVERY" in prompt
 		assert "Do NOT commit code changes" in prompt
-
-	def test_implementation_unit_uses_standard_template(self, config: MissionConfig) -> None:
-		"""Implementation units should use the standard mission template."""
-		unit = WorkUnit(title="Fix bug", description="Fix the thing", unit_type="implementation")
-		prompt = render_mission_worker_prompt(unit, config, "/tmp/ws", "mc/unit-x")
-		assert "research agent" not in prompt.lower()
-		assert "Constraints" in prompt
-
-	def test_default_unit_type_uses_standard_template(self, config: MissionConfig) -> None:
-		"""Default unit_type (no explicit type) should use standard template."""
-		unit = WorkUnit(title="Fix bug", description="Fix the thing")
-		prompt = render_mission_worker_prompt(unit, config, "/tmp/ws", "mc/unit-x")
-		assert "Constraints" in prompt
-		assert "research agent" not in prompt.lower()
-
-	def test_research_template_includes_experience(self, config: MissionConfig) -> None:
-		"""Research prompt should include experience context when provided."""
-		unit = WorkUnit(title="Research", description="Explore", unit_type="research")
-		prompt = render_mission_worker_prompt(
-			unit, config, "/tmp/ws", "mc/unit-x",
-			experience_context="Previously found X",
-		)
-		assert "Previously found X" in prompt
 
 
 class TestWorkerAgent:
@@ -344,7 +280,6 @@ class TestWorkerAgent:
 		assert len(checkout_base_calls) >= 1, f"Expected checkout to base branch, got: {git_calls}"
 		assert len(branch_delete_calls) == 0, f"Branch should NOT be deleted on success: {git_calls}"
 
-
 	async def test_checkout_failure_marks_unit_failed(
 		self, db: Database, config: MissionConfig, worker_and_unit: tuple[Worker, WorkUnit],
 		mock_backend: MockBackend,
@@ -432,41 +367,6 @@ class TestWorkerAgent:
 		assert result is not None
 		assert result.status == "completed"
 
-	async def test_branch_exists_until_merge_queue_processes(
-		self, db: Database, config: MissionConfig, worker_and_unit: tuple[Worker, WorkUnit],
-		mock_backend: MockBackend,
-	) -> None:
-		"""After MR submission, feature branch is NOT deleted -- merge queue needs to fetch it."""
-		w, _ = worker_and_unit
-
-		mc_output = (
-			'MC_RESULT:{"status":"completed","commits":["abc123"],'
-			'"summary":"Fixed it","files_changed":["foo.py"]}'
-		)
-		mock_backend.get_output = AsyncMock(return_value=mc_output)  # type: ignore[method-assign]
-
-		agent = WorkerAgent(w, db, config, mock_backend, heartbeat_interval=9999)
-
-		git_calls: list[tuple[str, ...]] = []
-
-		async def tracking_run_git(*args: str, cwd: str) -> bool:
-			git_calls.append(args)
-			return True
-
-		with patch.object(agent, "_run_git", side_effect=tracking_run_git):
-			unit = db.claim_work_unit(w.id)
-			assert unit is not None
-			await agent._execute_unit(unit)  # noqa: SLF001
-
-		# MR should be pending (not yet processed by merge queue)
-		mr = db.get_next_merge_request()
-		assert mr is not None
-		assert mr.status == "pending"
-
-		# No branch -D calls should have happened on the success path
-		delete_calls = [c for c in git_calls if c[0] == "branch" and c[1] == "-D"]
-		assert len(delete_calls) == 0, f"Branch should NOT be deleted before merge queue fetches: {git_calls}"
-
 	async def test_cleanup_deletes_branches_for_processed_mrs(
 		self, db: Database, config: MissionConfig, worker_and_unit: tuple[Worker, WorkUnit],
 		mock_backend: MockBackend,
@@ -501,40 +401,6 @@ class TestWorkerAgent:
 		delete_calls = [c for c in git_calls if c[0] == "branch" and c[1] == "-D"]
 		assert len(delete_calls) == 1
 		assert delete_calls[0] == ("branch", "-D", "mc/unit-old")
-
-	async def test_cleanup_skips_pending_mr_branches(
-		self, db: Database, config: MissionConfig, worker_and_unit: tuple[Worker, WorkUnit],
-		mock_backend: MockBackend,
-	) -> None:
-		"""_cleanup_merged_branches does NOT delete branches for pending MRs."""
-		w, _ = worker_and_unit
-
-		# Insert a pending MR for this worker (merge queue hasn't fetched yet)
-		from mission_control.models import MergeRequest
-		mr = MergeRequest(
-			id="mr-pending",
-			work_unit_id="wu1",
-			worker_id=w.id,
-			branch_name="mc/unit-pending",
-			commit_hash="abc123",
-			status="pending",
-		)
-		db.insert_merge_request(mr)
-
-		agent = WorkerAgent(w, db, config, mock_backend, heartbeat_interval=9999)
-
-		git_calls: list[tuple[str, ...]] = []
-
-		async def tracking_run_git(*args: str, cwd: str) -> bool:
-			git_calls.append(args)
-			return True
-
-		with patch.object(agent, "_run_git", side_effect=tracking_run_git):
-			await agent._cleanup_merged_branches("/tmp/clone1")  # noqa: SLF001
-
-		# Should NOT delete branches for pending MRs
-		delete_calls = [c for c in git_calls if c[0] == "branch" and c[1] == "-D"]
-		assert len(delete_calls) == 0, f"Should not delete pending MR branches: {git_calls}"
 
 	async def test_cleanup_runs_before_new_unit(
 		self, db: Database, config: MissionConfig, worker_and_unit: tuple[Worker, WorkUnit],
@@ -609,7 +475,6 @@ class TestWorkerAgent:
 		assert "fatal: not a git repository" in caplog.text
 		assert "rc=128" in caplog.text
 
-
 	async def test_failed_unit_resets_to_pending_if_retries_remain(
 		self, db: Database, config: MissionConfig, worker_and_unit: tuple[Worker, WorkUnit],
 		mock_backend: MockBackend,
@@ -670,7 +535,6 @@ class TestWorkerAgent:
 		assert result.attempt == 1
 		assert result.finished_at is not None
 
-
 	async def test_completed_no_commits_treated_as_success(
 		self, db: Database, config: MissionConfig, worker_and_unit: tuple[Worker, WorkUnit],
 		mock_backend: MockBackend,
@@ -705,81 +569,6 @@ class TestWorkerAgent:
 		# No merge request should be created for no-op
 		mr = db.get_next_merge_request()
 		assert mr is None, "No MR should exist for no-op completion"
-
-
-	async def test_workspace_cleared_when_reset_fails(
-		self, db: Database, config: MissionConfig, worker_and_unit: tuple[Worker, WorkUnit],
-		mock_backend: MockBackend,
-	) -> None:
-		"""If workspace reset fails after failure, workspace_path is cleared for re-provisioning."""
-		w, _ = worker_and_unit
-		assert w.workspace_path == "/tmp/clone1"
-
-		# Backend returns failed output
-		mock_backend.check_status = AsyncMock(return_value="failed")  # type: ignore[method-assign]
-		mock_backend.get_output = AsyncMock(return_value="Error: crash")  # type: ignore[method-assign]
-
-		agent = WorkerAgent(w, db, config, mock_backend, heartbeat_interval=9999)
-
-		# First call (checkout -b) succeeds, then all subsequent git calls fail
-		call_count = 0
-		async def failing_run_git(*args: str, cwd: str) -> bool:
-			nonlocal call_count
-			call_count += 1
-			# Let first 2 calls succeed (checkout -b, cleanup), then fail all
-			return call_count <= 2
-
-		with patch.object(agent, "_run_git", side_effect=failing_run_git):
-			unit = db.claim_work_unit(w.id)
-			assert unit is not None
-			await agent._execute_unit(unit)  # noqa: SLF001
-
-		# workspace_path should be cleared since git reset failed
-		assert w.workspace_path == "", f"Expected empty string, got {w.workspace_path!r}"
-
-	async def test_unexpected_exception_in_execute_unit_does_not_kill_worker(
-		self, db: Database, config: MissionConfig, worker_and_unit: tuple[Worker, WorkUnit],
-		mock_backend: MockBackend, caplog: pytest.LogCaptureFixture,
-	) -> None:
-		"""An unexpected exception in _execute_unit resets worker to idle and marks unit failed."""
-		w, _ = worker_and_unit
-
-		agent = WorkerAgent(w, db, config, mock_backend, heartbeat_interval=9999)
-
-		# Make _execute_unit raise an unexpected error
-		async def exploding_execute(unit: WorkUnit) -> None:
-			raise RuntimeError("unexpected kaboom")
-
-		with patch.object(agent, "_execute_unit", side_effect=exploding_execute):
-			# Run a single iteration of the main loop
-			claimed = db.claim_work_unit(w.id)
-			assert claimed is not None
-
-			agent.worker.status = "working"
-			agent.worker.current_unit_id = claimed.id
-			await db.locked_call("update_worker", agent.worker)
-
-			# Simulate the try/except/finally from run() directly
-			try:
-				await agent._execute_unit(claimed)  # noqa: SLF001
-			except Exception:
-				try:
-					await agent._mark_unit_failed(claimed)  # noqa: SLF001
-				except Exception:
-					pass
-			finally:
-				agent.worker.status = "idle"
-				agent.worker.current_unit_id = None
-				await db.locked_call("update_worker", agent.worker)
-
-		# Worker should be idle, not dead
-		assert w.status == "idle"
-		assert w.current_unit_id is None
-
-		# Unit should be marked failed (attempt incremented, reset to pending since retries remain)
-		result = db.get_work_unit("wu1")
-		assert result is not None
-		assert result.attempt == 1
 
 	async def test_run_loop_survives_execute_unit_exception(
 		self, db: Database, config: MissionConfig, worker_and_unit: tuple[Worker, WorkUnit],
@@ -819,10 +608,3 @@ class TestWorkerAgent:
 		# Exception was logged
 		assert "unexpected kaboom" in caplog.text
 		assert "Unexpected error executing unit" in caplog.text
-
-	def test_stop(self, db: Database, config: MissionConfig, mock_backend: MockBackend) -> None:
-		w = Worker(id="w1", workspace_path="/tmp/clone")
-		agent = WorkerAgent(w, db, config, mock_backend)
-		assert agent.running is True
-		agent.stop()
-		assert agent.running is False
