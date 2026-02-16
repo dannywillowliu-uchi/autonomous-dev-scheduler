@@ -1091,10 +1091,12 @@ function updateHeader(mission, summary) {
 
 	updateControlStates(mission);
 
+	const isExpanded = banner.classList.contains("expanded");
+
 	if (!mission) {
 		badge.textContent = "NO MISSION";
 		badge.className = "status-badge no-mission";
-		banner.className = "objective-banner inactive";
+		banner.className = "objective-banner inactive" + (isExpanded ? " expanded" : "");
 		objText.textContent = "No active mission";
 		return;
 	}
@@ -1105,11 +1107,11 @@ function updateHeader(mission, summary) {
 
 	// Update objective banner
 	if (mission.objective) {
-		banner.className = "objective-banner";
+		banner.className = "objective-banner" + (isExpanded ? " expanded" : "");
 		objText.textContent = mission.objective;
 		objText.title = mission.objective;
 	} else {
-		banner.className = "objective-banner inactive";
+		banner.className = "objective-banner inactive" + (isExpanded ? " expanded" : "");
 		objText.textContent = "No objective set";
 		objText.title = "";
 	}
