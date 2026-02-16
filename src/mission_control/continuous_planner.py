@@ -30,6 +30,7 @@ class ContinuousPlanner:
 		self._discoveries: list[str] = []
 		self._concerns: list[str] = []
 		self._epoch_count: int = 0
+		self._unit_to_backlog: dict[str, str] = {}
 
 	def ingest_handoff(self, handoff: Handoff) -> None:
 		"""Accumulate discoveries and concerns from worker feedback."""
@@ -52,16 +53,27 @@ class ContinuousPlanner:
 	def backlog_size(self) -> int:
 		return len(self._backlog)
 
+	def get_backlog_mapping(self) -> dict[str, str]:
+		"""Return a copy of the unit-to-backlog-item mapping."""
+		return dict(self._unit_to_backlog)
+
 	async def get_next_units(
 		self,
 		mission: Mission,
 		max_units: int = 3,
 		feedback_context: str = "",
+		backlog_item_ids: list[str] | None = None,
 	) -> tuple[Plan, list[WorkUnit], Epoch]:
 		"""Return next work units from backlog, replanning if needed.
 
 		If the backlog has enough units, returns from it without an LLM call.
 		Otherwise, invokes the planner to generate a new batch.
+
+		Args:
+			mission: The current mission.
+			max_units: Maximum units to return.
+			feedback_context: Context from recent worker feedback.
+			backlog_item_ids: Optional backlog item IDs being worked on.
 
 		Returns:
 			(plan, units, epoch) -- the plan, selected work units, and the epoch.
@@ -71,7 +83,7 @@ class ContinuousPlanner:
 		if len(self._backlog) < min_size:
 			# Need to replan
 			plan, units, epoch = await self._replan(
-				mission, max_units, feedback_context,
+				mission, max_units, feedback_context, backlog_item_ids,
 			)
 			# Empty replan + empty backlog = objective complete
 			if not units and not self._backlog:
@@ -108,6 +120,7 @@ class ContinuousPlanner:
 		mission: Mission,
 		max_units: int,
 		feedback_context: str,
+		backlog_item_ids: list[str] | None = None,
 	) -> tuple[Plan, list[WorkUnit], Epoch]:
 		"""Invoke the planner LLM to generate new work units."""
 		self._epoch_count += 1
@@ -131,6 +144,13 @@ class ContinuousPlanner:
 		if concern_text:
 			enriched_context = (feedback_context + concern_text) if feedback_context else concern_text
 
+		# Add backlog item context if IDs provided
+		if backlog_item_ids:
+			backlog_section = "\nBacklog items being worked on:\n" + "\n".join(
+				f"- {bid}" for bid in backlog_item_ids
+			)
+			enriched_context = (enriched_context + backlog_section) if enriched_context else backlog_section
+
 		plan, root_node = await self._inner.plan_round(
 			objective=mission.objective,
 			snapshot_hash="",  # continuous mode doesn't use snapshot hash
@@ -145,6 +165,12 @@ class ContinuousPlanner:
 		# Post-planning: detect file overlaps and inject dependency edges
 		from mission_control.overlap import resolve_file_overlaps
 		units = resolve_file_overlaps(units)
+
+		# Track unit-to-backlog-item mapping
+		if backlog_item_ids:
+			joined_ids = ",".join(backlog_item_ids)
+			for unit in units:
+				self._unit_to_backlog[unit.id] = joined_ids
 
 		plan.status = "active"
 		plan.total_units = len(units)
