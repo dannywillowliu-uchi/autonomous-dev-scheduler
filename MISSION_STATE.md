@@ -13,6 +13,15 @@ Objective: Evolve mission control from a task executor into an autonomous engine
 
 Each unit: implement the feature, add tests, ensure all existing tests pass. Read BACKLOG.md for the full spec (Autonomous Engineering Lead section).
 
+## Completed
+- [x] 27c55874 (2026-02-16T06:16:28.342807+00:00) -- Added StrategicContext dataclass to models.py, added ambition_score/next_objective/proposed_by_strat (files: src/mission_control/models.py, src/mission_control/db.py, src/mission_control/continuous_controller.py, tests/test_strategic_context_db.py)
+
+## Files Modified
+src/mission_control/continuous_controller.py, src/mission_control/db.py, src/mission_control/models.py, tests/test_strategic_context_db.py
+
 ## Remaining
 The planner should focus on what hasn't been done yet.
 Do NOT re-target files in the 'Files Modified' list unless fixing a failure.
+
+## Changelog
+- 2026-02-16T06:16:28.342807+00:00 | 27c55874 merged (commit: eed6e1d) -- Added StrategicContext dataclass to models.py, added ambition_score/next_objecti
