@@ -12,7 +12,6 @@ from pathlib import Path
 from mission_control.config import load_config, validate_config
 from mission_control.db import Database
 from mission_control.models import BacklogItem, _new_id, _now_iso
-from mission_control.scheduler import Scheduler
 
 DEFAULT_CONFIG = "mission-control.toml"
 DEFAULT_DB = "mission-control.db"
@@ -25,12 +24,6 @@ def build_parser() -> argparse.ArgumentParser:
 	)
 	sub = parser.add_subparsers(dest="command")
 
-	# mc start
-	start = sub.add_parser("start", help="Start the scheduler")
-	start.add_argument("--config", default=DEFAULT_CONFIG, help="Config file path")
-	start.add_argument("--max-sessions", type=int, default=None, help="Max sessions to run")
-	start.add_argument("--dry-run", action="store_true", help="Show plan without executing")
-
 	# mc status
 	status = sub.add_parser("status", help="Show current status")
 	status.add_argument("--config", default=DEFAULT_CONFIG)
@@ -39,16 +32,6 @@ def build_parser() -> argparse.ArgumentParser:
 	history = sub.add_parser("history", help="Show session history")
 	history.add_argument("--config", default=DEFAULT_CONFIG)
 	history.add_argument("--limit", type=int, default=10)
-
-	# mc snapshot
-	snap = sub.add_parser("snapshot", help="Take a project health snapshot")
-	snap.add_argument("--config", default=DEFAULT_CONFIG)
-
-	# mc parallel
-	par = sub.add_parser("parallel", help="Run parallel execution mode")
-	par.add_argument("--config", default=DEFAULT_CONFIG, help="Config file path")
-	par.add_argument("--workers", type=int, default=None, help="Number of workers")
-	par.add_argument("--dry-run", action="store_true", help="Show plan without executing")
 
 	# mc mission
 	mission = sub.add_parser("mission", help="Run continuous mission mode")
@@ -157,29 +140,6 @@ def _get_db_path(config_path: str) -> Path:
 	return Path(config_path).parent / DEFAULT_DB
 
 
-def cmd_start(args: argparse.Namespace) -> int:
-	"""Run the scheduler."""
-	config = load_config(args.config)
-	db_path = _get_db_path(args.config)
-
-	if args.dry_run:
-		print(f"Target: {config.target.name} ({config.target.resolved_path})")
-		print(f"Model: {config.scheduler.model}")
-		print(f"Max sessions: {args.max_sessions or config.scheduler.max_sessions_per_run}")
-		print(f"Session timeout: {config.scheduler.session_timeout}s")
-		print(f"Budget: ${config.scheduler.budget.max_per_run_usd}/run")
-		print(f"Database: {db_path}")
-		return 0
-
-	with Database(db_path) as db:
-		scheduler = Scheduler(config, db)
-		report = asyncio.run(scheduler.run(max_sessions=args.max_sessions))
-		print(f"Sessions run: {report.sessions_run}")
-		print(f"Helped: {report.sessions_helped}, Hurt: {report.sessions_hurt}, Neutral: {report.sessions_neutral}")
-		print(f"Stopped: {report.stopped_reason}")
-		return 0
-
-
 def cmd_status(args: argparse.Namespace) -> int:
 	"""Show current project status."""
 	load_config(args.config)  # validate config exists
@@ -226,51 +186,6 @@ def cmd_history(args: argparse.Namespace) -> int:
 			print(f"[{status_icon}] {s.id} | {s.task_description} | {s.status}")
 			if s.output_summary:
 				print(f"    {s.output_summary[:100]}")
-		return 0
-
-
-def cmd_snapshot(args: argparse.Namespace) -> int:
-	"""Take a project health snapshot."""
-	from mission_control.state import snapshot_project_health
-
-	config = load_config(args.config)
-	snapshot = asyncio.run(snapshot_project_health(config))
-	print(f"Tests: {snapshot.test_passed}/{snapshot.test_total} passing ({snapshot.test_failed} failed)")
-	print(f"Lint errors: {snapshot.lint_errors}")
-	print(f"Type errors: {snapshot.type_errors}")
-	print(f"Security findings: {snapshot.security_findings}")
-	return 0
-
-
-def cmd_parallel(args: argparse.Namespace) -> int:
-	"""Run the parallel coordinator."""
-	from mission_control.coordinator import Coordinator
-
-	config = load_config(args.config)
-	db_path = _get_db_path(args.config)
-
-	num_workers = args.workers or config.scheduler.parallel.num_workers
-
-	if args.dry_run:
-		print(f"Target: {config.target.name} ({config.target.resolved_path})")
-		print(f"Objective: {config.target.objective}")
-		print(f"Model: {config.scheduler.model}")
-		print(f"Workers: {num_workers}")
-		print(f"Pool dir: {config.scheduler.parallel.pool_dir or '(auto)'}")
-		print(f"Session timeout: {config.scheduler.session_timeout}s")
-		print(f"Budget: ${config.scheduler.budget.max_per_session_usd}/session")
-		print(f"Database: {db_path}")
-		return 0
-
-	with Database(db_path) as db:
-		coordinator = Coordinator(config, db, num_workers=num_workers)
-		report = asyncio.run(coordinator.run())
-		print(f"Plan: {report.plan_id}")
-		print(f"Units: {report.total_units} total, {report.units_completed} completed, {report.units_failed} failed")
-		print(f"Merged: {report.units_merged}, Rejected: {report.units_rejected}")
-		print(f"Workers: {report.workers_spawned}")
-		print(f"Wall time: {report.wall_time_seconds:.1f}s")
-		print(f"Stopped: {report.stopped_reason}")
 		return 0
 
 
@@ -991,11 +906,8 @@ _PRIORITY_COMMANDS = {
 
 
 COMMANDS = {
-	"start": cmd_start,
 	"status": cmd_status,
 	"history": cmd_history,
-	"snapshot": cmd_snapshot,
-	"parallel": cmd_parallel,
 	"discover": cmd_discover,
 	"mission": cmd_mission,
 	"init": cmd_init,
