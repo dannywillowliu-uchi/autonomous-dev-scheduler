@@ -18,6 +18,13 @@ REVIEW_RESULT_MARKER = "REVIEW_RESULT:"
 
 
 def _build_review_prompt(unit: WorkUnit, diff: str, objective: str) -> str:
+	criteria_section = ""
+	criteria_scoring = ""
+	criteria_output = ""
+	if unit.acceptance_criteria:
+		criteria_section = f"\nAcceptance Criteria: {unit.acceptance_criteria}\n"
+		criteria_scoring = '\n4. **Criteria Met** (1-10): How well does the diff satisfy the acceptance criteria above?'
+		criteria_output = ', "criteria_met": 7'
 	return f"""You are a code reviewer evaluating a merged work unit's diff.
 
 ## Mission Objective
@@ -26,7 +33,7 @@ def _build_review_prompt(unit: WorkUnit, diff: str, objective: str) -> str:
 ## Work Unit
 Title: {unit.title}
 Description: {unit.description}
-
+{criteria_section}
 ## Git Diff
 ```
 {diff[:8000]}
@@ -37,7 +44,7 @@ Description: {unit.description}
 Score each dimension 1-10:
 1. **Alignment** (1-10): How well does this diff advance the mission objective?
 2. **Approach** (1-10): Is the implementation approach clean, idiomatic, and maintainable?
-3. **Test Quality** (1-10): Are the tests meaningful and covering real behavior (not trivial)?
+3. **Test Quality** (1-10): Are the tests meaningful and covering real behavior (not trivial)?{criteria_scoring}
 
 Then provide a 1-2 sentence rationale summarizing the overall quality.
 
@@ -45,7 +52,7 @@ Then provide a 1-2 sentence rationale summarizing the overall quality.
 
 You MUST end your response with a REVIEW_RESULT line:
 
-REVIEW_RESULT:{{"alignment": 7, "approach": 8, "test_quality": 6, "rationale": "Clean but shallow tests"}}
+REVIEW_RESULT:{{"alignment": 7, "approach": 8, "test_quality": 6{criteria_output}, "rationale": "summary"}}
 
 IMPORTANT: The REVIEW_RESULT line must be the LAST line of your output."""
 
@@ -154,7 +161,12 @@ class DiffReviewer:
 		alignment = _clamp_score(data.get("alignment", 5))
 		approach = _clamp_score(data.get("approach", 5))
 		test_quality = _clamp_score(data.get("test_quality", 5))
-		avg = round((alignment + approach + test_quality) / 3.0, 1)
+		criteria_met = 0
+		scores = [alignment, approach, test_quality]
+		if unit.acceptance_criteria and "criteria_met" in data:
+			criteria_met = _clamp_score(data["criteria_met"])
+			scores.append(criteria_met)
+		avg = round(sum(scores) / len(scores), 1)
 		rationale = str(data.get("rationale", ""))[:500]
 
 		return UnitReview(
@@ -164,6 +176,7 @@ class DiffReviewer:
 			alignment_score=alignment,
 			approach_score=approach,
 			test_score=test_quality,
+			criteria_met_score=criteria_met,
 			avg_score=avg,
 			rationale=rationale,
 			model=model,

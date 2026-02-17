@@ -193,7 +193,7 @@ You are working on {target_name} at {workspace_path}.
 {title}
 
 {description}
-
+{acceptance_criteria_block}
 ## Constraints
 - ONLY modify files in scope: {files_hint}
 - No TODOs, no partial implementations
@@ -313,6 +313,9 @@ def render_mission_worker_prompt(
 	"""Render constraint-based prompt for mission mode workers."""
 	verify_cmd = unit.verification_command or config.target.verification.command
 	exp_block, ms_block, ow_block = _build_context_blocks(experience_context, mission_state, overlap_warnings)
+	ac_block = ""
+	if unit.acceptance_criteria:
+		ac_block = f"\n## Acceptance Criteria\n{_sanitize_braces(unit.acceptance_criteria)}\n"
 	if unit.unit_type == "research":
 		template = RESEARCH_WORKER_PROMPT_TEMPLATE
 	elif unit.unit_type == "experiment":
@@ -330,6 +333,7 @@ def render_mission_worker_prompt(
 		experience_block=exp_block,
 		mission_state_block=ms_block,
 		overlap_warnings_block=ow_block,
+		acceptance_criteria_block=ac_block,
 	)
 
 

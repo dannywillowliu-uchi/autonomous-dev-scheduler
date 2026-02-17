@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS work_units (
 	timeout INTEGER,
 	verification_command TEXT,
 	experiment_mode INTEGER NOT NULL DEFAULT 0,
+	acceptance_criteria TEXT NOT NULL DEFAULT '',
 	FOREIGN KEY (plan_id) REFERENCES plans(id)
 );
 
@@ -378,7 +379,8 @@ CREATE TABLE IF NOT EXISTS backlog_items (
 	last_failure_reason TEXT,
 	pinned_score REAL,
 	depends_on TEXT NOT NULL DEFAULT '',
-	tags TEXT NOT NULL DEFAULT ''
+	tags TEXT NOT NULL DEFAULT '',
+	acceptance_criteria TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_backlog_items_status ON backlog_items(status, priority_score DESC);
@@ -422,6 +424,7 @@ CREATE TABLE IF NOT EXISTS unit_reviews (
 	alignment_score INTEGER NOT NULL DEFAULT 0,
 	approach_score INTEGER NOT NULL DEFAULT 0,
 	test_score INTEGER NOT NULL DEFAULT 0,
+	criteria_met_score INTEGER NOT NULL DEFAULT 0,
 	avg_score REAL NOT NULL DEFAULT 0.0,
 	rationale TEXT NOT NULL DEFAULT '',
 	model TEXT NOT NULL DEFAULT '',
@@ -512,6 +515,7 @@ class Database:
 		self._migrate_mission_strategy_columns()
 		self._migrate_experiment_mode_column()
 		self._migrate_context_items_mission_columns()
+		self._migrate_acceptance_criteria_columns()
 
 	def _migrate_context_items_mission_columns(self) -> None:
 		"""Add mission_id and scope_level columns to context_items (idempotent)."""
@@ -628,6 +632,26 @@ class Database:
 			else:
 				logger.warning("Migration failed for work_units.experiment_mode: %s", exc)
 				raise
+
+	def _migrate_acceptance_criteria_columns(self) -> None:
+		"""Add acceptance_criteria to work_units/backlog_items and criteria_met_score to unit_reviews (idempotent)."""
+		migrations = [
+			("work_units", "acceptance_criteria", "TEXT DEFAULT ''"),
+			("backlog_items", "acceptance_criteria", "TEXT DEFAULT ''"),
+			("unit_reviews", "criteria_met_score", "INTEGER DEFAULT 0"),
+		]
+		for table, column, col_type in migrations:
+			self._validate_identifier(table)
+			self._validate_identifier(column)
+			try:
+				self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")  # noqa: S608
+				logger.debug("Migration: added column %s.%s", table, column)
+			except sqlite3.OperationalError as exc:
+				if "duplicate column name" in str(exc):
+					pass
+				else:
+					logger.warning("Migration failed for %s.%s: %s", table, column, exc)
+					raise
 
 	def close(self) -> None:
 		logger.debug("Closing database connection")
@@ -912,8 +936,9 @@ class Database:
 			 claimed_at, heartbeat_at, started_at, finished_at,
 			 exit_code, commit_hash, output_summary, attempt, max_attempts,
 			 unit_type, timeout, verification_command,
-			 epoch_id, input_tokens, output_tokens, cost_usd, experiment_mode)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+			 epoch_id, input_tokens, output_tokens, cost_usd, experiment_mode,
+			 acceptance_criteria)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
 			(
 				unit.id, unit.plan_id, unit.title, unit.description,
 				unit.files_hint, unit.verification_hint, unit.priority,
@@ -924,7 +949,7 @@ class Database:
 				unit.output_summary, unit.attempt, unit.max_attempts,
 				unit.unit_type, unit.timeout, unit.verification_command,
 				unit.epoch_id, unit.input_tokens, unit.output_tokens, unit.cost_usd,
-				int(unit.experiment_mode),
+				int(unit.experiment_mode), unit.acceptance_criteria,
 			),
 		)
 		self.conn.commit()
@@ -941,7 +966,7 @@ class Database:
 			output_summary=?, attempt=?, max_attempts=?,
 			unit_type=?, timeout=?, verification_command=?,
 			epoch_id=?, input_tokens=?, output_tokens=?, cost_usd=?,
-			experiment_mode=?
+			experiment_mode=?, acceptance_criteria=?
 			WHERE id=?""",
 			(
 				unit.plan_id, unit.title, unit.description, unit.files_hint,
@@ -953,7 +978,7 @@ class Database:
 				unit.output_summary, unit.attempt, unit.max_attempts,
 				unit.unit_type, unit.timeout, unit.verification_command,
 				unit.epoch_id, unit.input_tokens, unit.output_tokens, unit.cost_usd,
-				int(unit.experiment_mode),
+				int(unit.experiment_mode), unit.acceptance_criteria,
 				unit.id,
 			),
 		)
@@ -1109,6 +1134,7 @@ class Database:
 			output_tokens=row["output_tokens"] if "output_tokens" in keys else 0,
 			cost_usd=row["cost_usd"] if "cost_usd" in keys else 0.0,
 			experiment_mode=bool(row["experiment_mode"]) if "experiment_mode" in keys else False,
+			acceptance_criteria=row["acceptance_criteria"] if "acceptance_criteria" in keys else "",
 		)
 
 	# -- Workers --
@@ -2092,14 +2118,14 @@ class Database:
 			"""INSERT INTO backlog_items
 			(id, title, description, priority_score, impact, effort, track, status,
 			 source_mission_id, created_at, updated_at, attempt_count,
-			 last_failure_reason, pinned_score, depends_on, tags)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+			 last_failure_reason, pinned_score, depends_on, tags, acceptance_criteria)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
 			(
 				item.id, item.title, item.description, item.priority_score,
 				item.impact, item.effort, item.track, item.status,
 				item.source_mission_id, item.created_at, item.updated_at,
 				item.attempt_count, item.last_failure_reason, item.pinned_score,
-				item.depends_on, item.tags,
+				item.depends_on, item.tags, item.acceptance_criteria,
 			),
 		)
 		self.conn.commit()
@@ -2110,14 +2136,14 @@ class Database:
 			title=?, description=?, priority_score=?, impact=?, effort=?,
 			track=?, status=?, source_mission_id=?, created_at=?, updated_at=?,
 			attempt_count=?, last_failure_reason=?, pinned_score=?,
-			depends_on=?, tags=?
+			depends_on=?, tags=?, acceptance_criteria=?
 			WHERE id=?""",
 			(
 				item.title, item.description, item.priority_score, item.impact,
 				item.effort, item.track, item.status, item.source_mission_id,
 				item.created_at, item.updated_at, item.attempt_count,
 				item.last_failure_reason, item.pinned_score, item.depends_on,
-				item.tags, item.id,
+				item.tags, item.acceptance_criteria, item.id,
 			),
 		)
 		self.conn.commit()
@@ -2223,6 +2249,7 @@ class Database:
 
 	@staticmethod
 	def _row_to_backlog_item(row: sqlite3.Row) -> BacklogItem:
+		keys = row.keys()
 		return BacklogItem(
 			id=row["id"],
 			title=row["title"],
@@ -2240,6 +2267,7 @@ class Database:
 			pinned_score=row["pinned_score"],
 			depends_on=row["depends_on"],
 			tags=row["tags"],
+			acceptance_criteria=row["acceptance_criteria"] if "acceptance_criteria" in keys else "",
 		)
 
 	# -- Strategic Context --
@@ -2346,15 +2374,15 @@ class Database:
 		self.conn.execute(
 			"""INSERT INTO unit_reviews
 			(id, work_unit_id, mission_id, epoch_id, timestamp,
-			 alignment_score, approach_score, test_score, avg_score,
-			 rationale, model, cost_usd)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+			 alignment_score, approach_score, test_score, criteria_met_score,
+			 avg_score, rationale, model, cost_usd)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
 			(
 				review.id, review.work_unit_id, review.mission_id,
 				review.epoch_id, review.timestamp,
 				review.alignment_score, review.approach_score,
-				review.test_score, review.avg_score,
-				review.rationale, review.model, review.cost_usd,
+				review.test_score, review.criteria_met_score,
+				review.avg_score, review.rationale, review.model, review.cost_usd,
 			),
 		)
 		self.conn.commit()
@@ -2377,6 +2405,7 @@ class Database:
 
 	@staticmethod
 	def _row_to_unit_review(row: sqlite3.Row) -> UnitReview:
+		keys = row.keys()
 		return UnitReview(
 			id=row["id"],
 			work_unit_id=row["work_unit_id"],
@@ -2386,6 +2415,7 @@ class Database:
 			alignment_score=row["alignment_score"],
 			approach_score=row["approach_score"],
 			test_score=row["test_score"],
+			criteria_met_score=row["criteria_met_score"] if "criteria_met_score" in keys else 0,
 			avg_score=row["avg_score"],
 			rationale=row["rationale"],
 			model=row["model"],

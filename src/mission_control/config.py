@@ -244,6 +244,8 @@ class ReviewConfig:
 	enabled: bool = True
 	model: str = "sonnet"
 	budget_per_review_usd: float = 0.10
+	gate_completion: bool = False  # when True, review blocks unit completion
+	min_review_score: float = 0.0  # minimum avg_score to pass gating
 
 
 @dataclass
@@ -520,6 +522,10 @@ def _build_review(data: dict[str, Any]) -> ReviewConfig:
 		rc.model = str(data["model"])
 	if "budget_per_review_usd" in data:
 		rc.budget_per_review_usd = float(data["budget_per_review_usd"])
+	if "gate_completion" in data:
+		rc.gate_completion = bool(data["gate_completion"])
+	if "min_review_score" in data:
+		rc.min_review_score = float(data["min_review_score"])
 	return rc
 
 
