@@ -176,6 +176,7 @@ class RecursivePlanner:
 					files_hint=unit_data.get("files_hint", ""),
 					priority=unit_data.get("priority", 1),
 					plan_node_id=node.id,
+					acceptance_criteria=unit_data.get("acceptance_criteria", ""),
 				)
 				leaf = PlanNode(
 					plan_id=plan.id,
@@ -223,7 +224,7 @@ Option A - subdivide into sub-scopes (max {max_children}):
 
 Option B - leaf tasks:
 <!-- PLAN -->{{"type":"leaves","units":[
-  {{"title":"task","description":"do X","files_hint":"f.py","priority":1}}
+  {{"title":"task","description":"do X","files_hint":"f.py","priority":1,"acceptance_criteria":"testable condition"}}
 ]}}<!-- /PLAN -->
 
 Option C - nothing to do:
@@ -278,7 +279,8 @@ For subdivision:
 
 For leaf tasks:
 <!-- PLAN -->{{"type":"leaves","units":[
-  {{"title":"...","description":"...","files_hint":"...","priority":1,"depends_on_indices":[]}}
+  {{"title":"...","description":"...","files_hint":"...","priority":1,
+    "depends_on_indices":[],"acceptance_criteria":"testable done condition"}}
 ]}}<!-- /PLAN -->
 
 IMPORTANT: Put all reasoning BEFORE the <!-- PLAN --> block. The block must contain valid JSON only."""

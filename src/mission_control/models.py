@@ -150,6 +150,7 @@ class WorkUnit:
 	timeout: int | None = None  # per-unit timeout override (seconds)
 	verification_command: str | None = None  # per-unit verification override
 	epoch_id: str | None = None  # continuous mode epoch
+	acceptance_criteria: str = ""  # what must be true for this unit to be "done"
 	input_tokens: int = 0
 	output_tokens: int = 0
 	cost_usd: float = 0.0
@@ -452,6 +453,7 @@ class BacklogItem:
 	pinned_score: float | None = None
 	depends_on: str = ""  # comma-separated BacklogItem IDs
 	tags: str = ""  # comma-separated tags
+	acceptance_criteria: str = ""  # what must be true for this item to be "done"
 
 
 @dataclass
@@ -466,6 +468,7 @@ class UnitReview:
 	alignment_score: int = 0  # 1-10: how well the diff aligns with the objective
 	approach_score: int = 0  # 1-10: quality of the implementation approach
 	test_score: int = 0  # 1-10: meaningfulness of the tests
+	criteria_met_score: int = 0  # 1-10: how well acceptance criteria were met
 	avg_score: float = 0.0
 	rationale: str = ""
 	model: str = ""

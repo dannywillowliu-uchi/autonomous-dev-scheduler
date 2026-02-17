@@ -30,6 +30,7 @@ from mission_control.models import (
 	Mission,
 	Signal,
 	UnitEvent,
+	UnitReview,
 	Worker,
 	WorkUnit,
 	_now_iso,
@@ -1165,15 +1166,29 @@ class ContinuousController:
 							output_tokens=unit.output_tokens,
 							cost_usd=unit.cost_usd,
 						)
-						# Fire-and-forget LLM diff review
+						# LLM diff review (blocking if gate_completion, else fire-and-forget)
 						if self.config.review.enabled:
-							task = asyncio.create_task(
-								self._review_merged_unit(
+							if self.config.review.gate_completion:
+								review = await self._blocking_review(
 									unit, workspace, mission, epoch,
-								),
-							)
-							self._active_tasks.add(task)
-							task.add_done_callback(self._task_done_callback)
+								)
+								if review and review.avg_score < self.config.review.min_review_score:
+									logger.warning(
+										"Unit %s review score %.1f below threshold %.1f, scheduling retry",
+										unit.id, review.avg_score, self.config.review.min_review_score,
+									)
+									feedback = f"Review feedback (score {review.avg_score}): {review.rationale}"
+									self._schedule_retry(unit, epoch, mission, feedback, cont)
+									self._record_round_outcome(unit, epoch, merged=False)
+									continue
+							else:
+								task = asyncio.create_task(
+									self._review_merged_unit(
+										unit, workspace, mission, epoch,
+									),
+								)
+								self._active_tasks.add(task)
+								task.add_done_callback(self._task_done_callback)
 					else:
 						logger.warning(
 							"Unit %s failed merge: %s",
@@ -1354,6 +1369,49 @@ class ContinuousController:
 
 		# Clean up resolved round
 		del round_tracker[epoch.id]
+
+	async def _blocking_review(
+		self,
+		unit: WorkUnit,
+		workspace: str,
+		mission: Mission,
+		epoch: Epoch,
+	) -> UnitReview | None:
+		"""Blocking review: returns UnitReview for gating decisions."""
+		try:
+			green_branch = self.config.green_branch.green_branch
+			diff_cmd = ["git", "diff", f"{green_branch}~1..{green_branch}", "--", "."]
+			proc = await asyncio.create_subprocess_exec(
+				*diff_cmd,
+				stdout=asyncio.subprocess.PIPE,
+				stderr=asyncio.subprocess.PIPE,
+				cwd=str(self.config.target.resolved_path),
+			)
+			stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+			diff = stdout.decode() if stdout else ""
+
+			if not diff.strip():
+				logger.debug("No diff for unit %s, skipping blocking review", unit.id)
+				return None
+
+			review = await self._diff_reviewer.review_unit(
+				unit=unit,
+				diff=diff,
+				objective=mission.objective,
+				mission_id=mission.id,
+				epoch_id=epoch.id,
+			)
+			if review:
+				await self.db.locked_call("insert_unit_review", review)
+				logger.info(
+					"Blocking review for unit %s: alignment=%d approach=%d tests=%d criteria=%d avg=%.1f",
+					unit.id, review.alignment_score, review.approach_score,
+					review.test_score, review.criteria_met_score, review.avg_score,
+				)
+			return review
+		except Exception as exc:
+			logger.warning("Blocking review failed for unit %s: %s", unit.id, exc)
+			return None
 
 	async def _review_merged_unit(
 		self,
