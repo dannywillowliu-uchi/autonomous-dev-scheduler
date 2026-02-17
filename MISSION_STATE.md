@@ -28,6 +28,15 @@ CLAUDE.md documents that recursive_planner.py MUST set cwd=target.resolved_path 
 
 Each unit: implement the fix, add tests, ensure ALL existing tests pass.
 
+## Completed
+- [x] fc1c005f (2026-02-17T02:11:59.328526+00:00) -- Documented diff_reviewer.py as deliberate LLM eval exception in CLAUDE.md Architecture section and m (files: CLAUDE.md, BACKLOG.md)
+
+## Files Modified
+BACKLOG.md, CLAUDE.md
+
 ## Remaining
 The planner should focus on what hasn't been done yet.
 Do NOT re-target files in the 'Files Modified' list unless fixing a failure.
+
+## Changelog
+- 2026-02-17T02:11:59.328526+00:00 | fc1c005f merged (commit: e3f9731) -- Documented diff_reviewer.py as deliberate LLM eval exception in CLAUDE.md Archit
