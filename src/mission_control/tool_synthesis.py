@@ -7,6 +7,7 @@ scripts stored in a configurable directory.
 
 from __future__ import annotations
 
+import ast
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,6 +51,14 @@ class ToolEntry:
 class ToolRegistry:
 	"""Manages tool persistence -- tools are Python scripts stored in a configurable directory."""
 
+	BLOCKED_MODULES: set[str] = {
+		"os", "subprocess", "shutil", "pathlib",
+		"socket", "http", "urllib", "requests",
+		"ctypes", "importlib",
+	}
+
+	BLOCKED_CALLS: set[str] = {"exec", "eval", "compile", "__import__"}
+
 	def __init__(self, workspace: Path, config: MissionConfig) -> None:
 		self._workspace = workspace
 		self._config = config
@@ -69,6 +78,44 @@ class ToolRegistry:
 				description = first_line.lstrip("# ").strip()
 			self._tools[name] = ToolEntry(name=name, description=description, script_path=script_path)
 
+	def _validate_script_content(self, content: str) -> None:
+		"""Validate script content against blocked imports and calls.
+
+		Raises:
+			ValueError: If the script contains blocked imports or function calls.
+		"""
+		try:
+			tree = ast.parse(content)
+		except SyntaxError:
+			return  # Let Python's own error handling deal with syntax errors
+
+		for node in ast.walk(tree):
+			if isinstance(node, ast.Import):
+				for alias in node.names:
+					top_module = alias.name.split(".")[0]
+					if top_module in self.BLOCKED_MODULES:
+						raise ValueError(
+							f"Blocked import: '{alias.name}' (module '{top_module}' is not allowed)"
+						)
+			elif isinstance(node, ast.ImportFrom):
+				if node.module:
+					top_module = node.module.split(".")[0]
+					if top_module in self.BLOCKED_MODULES:
+						raise ValueError(
+							f"Blocked import: 'from {node.module} import ...' "
+							f"(module '{top_module}' is not allowed)"
+						)
+			elif isinstance(node, ast.Call):
+				func_name = None
+				if isinstance(node.func, ast.Name):
+					func_name = node.func.id
+				elif isinstance(node.func, ast.Attribute):
+					func_name = node.func.attr
+				if func_name and func_name in self.BLOCKED_CALLS:
+					raise ValueError(
+						f"Blocked function call: '{func_name}()' is not allowed"
+					)
+
 	def register_tool(self, name: str, script_content: str, description: str = "") -> ToolEntry:
 		"""Register a new tool by writing a Python script to the tools directory.
 
@@ -82,9 +129,12 @@ class ToolRegistry:
 
 		Raises:
 			ValueError: If name is empty or not a valid Python identifier.
+			ValueError: If script contains blocked imports or function calls.
 		"""
 		if not name or not name.replace("-", "_").replace("_", "a").isidentifier():
 			raise ValueError(f"Invalid tool name: {name!r}")
+
+		self._validate_script_content(script_content)
 
 		self._tools_dir.mkdir(parents=True, exist_ok=True)
 		script_path = self._tools_dir / f"{name}.py"

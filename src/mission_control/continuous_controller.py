@@ -132,6 +132,7 @@ class ContinuousController:
 		self._in_flight_count: int = 0
 		self._deferred_units: list[tuple[WorkUnit, Epoch, Mission]] = []
 		self._merged_files: set[str] = set()  # files covered by merged units
+		self._completed_unit_ids: set[str] = set()  # units that completed/merged successfully
 		self._db_error_count: int = 0
 		self._db_degraded: bool = False
 		self.ambition_score: float = 0.0
@@ -811,6 +812,13 @@ class ContinuousController:
 
 		return False
 
+	def _check_dependencies_met(self, unit: WorkUnit) -> bool:
+		"""Return True if all depends_on IDs have completed (or if there are none)."""
+		if not unit.depends_on:
+			return True
+		dep_ids = [d.strip() for d in unit.depends_on.split(",") if d.strip()]
+		return all(dep_id in self._completed_unit_ids for dep_id in dep_ids)
+
 	async def _dispatch_deferred(
 		self,
 		mission: Mission,
@@ -829,6 +837,9 @@ class ContinuousController:
 					"Dropping deferred unit %s (%s): files already covered by merged work",
 					unit.id[:12], unit.title[:50],
 				)
+				continue
+			if not self._check_dependencies_met(unit):
+				still_deferred.append((unit, epoch, mission_ref))
 				continue
 			if self._check_in_flight_overlap(unit):
 				still_deferred.append((unit, epoch, mission_ref))
@@ -1081,6 +1092,15 @@ class ContinuousController:
 			for unit in units:
 				unit.epoch_id = epoch.id
 
+				# Dependency gate: defer if depends_on IDs haven't completed
+				if not self._check_dependencies_met(unit):
+					logger.info(
+						"Deferring unit %s: dependencies not yet met",
+						unit.id[:12],
+					)
+					self._deferred_units.append((unit, epoch, mission))
+					continue
+
 				# Skip units whose files are already covered by merged work
 				if self._check_already_merged(unit):
 					logger.info(
@@ -1203,6 +1223,7 @@ class ContinuousController:
 					continue
 				logger.info("Research unit %s completed -- skipping merge", unit.id)
 				self._total_merged += 1
+				self._completed_unit_ids.add(unit.id)
 				self._log_unit_event(
 					mission_id=mission.id,
 					epoch_id=epoch.id,
@@ -1252,6 +1273,7 @@ class ContinuousController:
 					continue
 				logger.info("Experiment unit %s completed -- skipping merge", unit.id)
 				self._total_merged += 1
+				self._completed_unit_ids.add(unit.id)
 
 				# Parse comparison report from handoff and store as ExperimentResult
 				comparison_report = ""
@@ -1333,6 +1355,7 @@ class ContinuousController:
 							unit.id,
 						)
 						self._total_merged += 1
+						self._completed_unit_ids.add(unit.id)
 						# Track merged files so deferred duplicates are dropped
 						merged_files = _parse_files_hint(unit.files_hint)
 						if merged_files:

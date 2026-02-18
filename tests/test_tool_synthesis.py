@@ -412,3 +412,61 @@ class TestToolEntry:
 		assert entry.name == "test"
 		assert entry.description == "A test tool"
 		assert entry.script_path == tmp_path / "test.py"
+
+
+# ── Script content validation ───────────────────────────────────────────
+
+
+class TestScriptValidation:
+	def test_clean_script_passes(self, registry: ToolRegistry) -> None:
+		entry = registry.register_tool(
+			"safe", "import json\nimport math\nprint(json.dumps({'pi': math.pi}))",
+		)
+		assert entry.name == "safe"
+
+	def test_import_os_rejected(self, registry: ToolRegistry) -> None:
+		with pytest.raises(ValueError, match="Blocked import.*os"):
+			registry.register_tool("bad_os", "import os\nos.system('rm -rf /')")
+
+	def test_from_subprocess_rejected(self, registry: ToolRegistry) -> None:
+		with pytest.raises(ValueError, match="Blocked import.*subprocess"):
+			registry.register_tool("bad_sub", "from subprocess import run\nrun(['ls'])")
+
+	def test_from_pathlib_rejected(self, registry: ToolRegistry) -> None:
+		with pytest.raises(ValueError, match="Blocked import.*pathlib"):
+			registry.register_tool("bad_path", "from pathlib import Path\nPath('.').iterdir()")
+
+	def test_import_socket_rejected(self, registry: ToolRegistry) -> None:
+		with pytest.raises(ValueError, match="Blocked import.*socket"):
+			registry.register_tool("bad_sock", "import socket\nsocket.socket()")
+
+	def test_eval_rejected(self, registry: ToolRegistry) -> None:
+		with pytest.raises(ValueError, match="Blocked function call.*eval"):
+			registry.register_tool("bad_eval", "result = eval('1+1')")
+
+	def test_exec_rejected(self, registry: ToolRegistry) -> None:
+		with pytest.raises(ValueError, match="Blocked function call.*exec"):
+			registry.register_tool("bad_exec", "exec('print(1)')")
+
+	def test_compile_rejected(self, registry: ToolRegistry) -> None:
+		with pytest.raises(ValueError, match="Blocked function call.*compile"):
+			registry.register_tool("bad_compile", "code = compile('1+1', '<str>', 'eval')")
+
+	def test_dunder_import_rejected(self, registry: ToolRegistry) -> None:
+		with pytest.raises(ValueError, match="Blocked function call.*__import__"):
+			registry.register_tool("bad_dimport", "__import__('os')")
+
+	def test_allowed_imports_pass(self, registry: ToolRegistry) -> None:
+		script = "import json\nimport math\nimport re\nfrom collections import Counter\nprint('ok')"
+		entry = registry.register_tool("safe_imports", script)
+		assert entry.name == "safe_imports"
+
+	def test_submodule_of_blocked_rejected(self, registry: ToolRegistry) -> None:
+		with pytest.raises(ValueError, match="Blocked import.*http"):
+			registry.register_tool("bad_http", "from http.server import HTTPServer")
+
+	def test_existing_tests_still_pass_with_validation(self, registry: ToolRegistry) -> None:
+		"""Sanity check: register_tool with safe content still works."""
+		entry = registry.register_tool("checker", "import sys\nprint(sys.argv)", description="Arg checker")
+		assert entry.name == "checker"
+		assert entry.script_path.exists()

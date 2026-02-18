@@ -7,9 +7,10 @@ import json
 import logging
 import time
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
@@ -90,11 +91,24 @@ class LiveDashboard:
 	def __init__(self, db_path: str, auth_token: str = "") -> None:
 		self.db = Database(db_path)
 		self.auth_token = auth_token
-		self.app = FastAPI(title="Mission Control Live")
 		self._connections: set[WebSocket] = set()
 		self._broadcast_task: asyncio.Task[None] | None = None
 		self._ui_mtime: float = _UI_PATH.stat().st_mtime if _UI_PATH.exists() else 0.0
 		self._signal_timestamps: dict[str, list[float]] = defaultdict(list)
+
+		@asynccontextmanager
+		async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+			self._broadcast_task = asyncio.create_task(self._broadcast_loop())
+			yield
+			if self._broadcast_task:
+				self._broadcast_task.cancel()
+				try:
+					await self._broadcast_task
+				except asyncio.CancelledError:
+					pass
+			self.db.close()
+
+		self.app = FastAPI(title="Mission Control Live", lifespan=_lifespan)
 		self._setup_routes()
 
 	def _current_mission(self) -> Any | None:
@@ -125,20 +139,6 @@ class LiveDashboard:
 			if credentials is None:
 				raise HTTPException(status_code=401, detail="Missing authorization header")
 			self._verify_token(credentials)
-
-		@self.app.on_event("startup")
-		async def startup() -> None:
-			self._broadcast_task = asyncio.create_task(self._broadcast_loop())
-
-		@self.app.on_event("shutdown")
-		async def shutdown() -> None:
-			if self._broadcast_task:
-				self._broadcast_task.cancel()
-				try:
-					await self._broadcast_task
-				except asyncio.CancelledError:
-					pass
-			self.db.close()
 
 		@self.app.websocket("/ws")
 		async def ws_endpoint(websocket: WebSocket, token: str = Query(default="")) -> None:
