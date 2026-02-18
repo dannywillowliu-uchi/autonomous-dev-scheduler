@@ -2367,3 +2367,114 @@ class TestDeferredUnitRecovery:
 		# Now it should no longer be blocked
 		assert ctrl._check_in_flight_overlap(deferred_unit) is False
 
+
+class TestCheckDependenciesMet:
+	def test_no_depends_on(self, config: MissionConfig, db: Database) -> None:
+		ctrl = ContinuousController(config, db)
+		unit = WorkUnit(id="wu1", title="No deps", depends_on="")
+		assert ctrl._check_dependencies_met(unit) is True
+
+	def test_unmet_dependency(self, config: MissionConfig, db: Database) -> None:
+		ctrl = ContinuousController(config, db)
+		unit = WorkUnit(id="wu2", title="Has dep", depends_on="wu1")
+		assert ctrl._check_dependencies_met(unit) is False
+
+	def test_met_dependency(self, config: MissionConfig, db: Database) -> None:
+		ctrl = ContinuousController(config, db)
+		ctrl._completed_unit_ids.add("wu1")
+		unit = WorkUnit(id="wu2", title="Has dep", depends_on="wu1")
+		assert ctrl._check_dependencies_met(unit) is True
+
+	def test_multiple_deps_all_met(self, config: MissionConfig, db: Database) -> None:
+		ctrl = ContinuousController(config, db)
+		ctrl._completed_unit_ids.update({"wu1", "wu2"})
+		unit = WorkUnit(id="wu3", title="Has deps", depends_on="wu1,wu2")
+		assert ctrl._check_dependencies_met(unit) is True
+
+	def test_multiple_deps_partial_met(self, config: MissionConfig, db: Database) -> None:
+		ctrl = ContinuousController(config, db)
+		ctrl._completed_unit_ids.add("wu1")
+		unit = WorkUnit(id="wu3", title="Has deps", depends_on="wu1,wu2")
+		assert ctrl._check_dependencies_met(unit) is False
+
+	def test_whitespace_in_depends_on(self, config: MissionConfig, db: Database) -> None:
+		ctrl = ContinuousController(config, db)
+		ctrl._completed_unit_ids.add("wu1")
+		unit = WorkUnit(id="wu2", title="Has dep", depends_on=" wu1 ")
+		assert ctrl._check_dependencies_met(unit) is True
+
+
+class TestDependencyAwareDispatch:
+	@pytest.mark.asyncio
+	async def test_unit_deferred_when_dependency_unmet(self, config: MissionConfig, db: Database) -> None:
+		"""Unit with unmet depends_on should be deferred, not dispatched."""
+		ctrl = ContinuousController(config, db)
+		unit_a = WorkUnit(id="wu-a", title="A", depends_on="")
+		unit_b = WorkUnit(id="wu-b", title="B", depends_on="wu-a")
+
+		# Simulate dispatch check: A has no deps, B depends on A
+		assert ctrl._check_dependencies_met(unit_a) is True
+		assert ctrl._check_dependencies_met(unit_b) is False
+
+		# After A completes, B should be unblocked
+		ctrl._completed_unit_ids.add("wu-a")
+		assert ctrl._check_dependencies_met(unit_b) is True
+
+	@pytest.mark.asyncio
+	async def test_chain_dependency_order(self, config: MissionConfig, db: Database) -> None:
+		"""A -> B -> C chain: only A dispatchable initially."""
+		ctrl = ContinuousController(config, db)
+		unit_a = WorkUnit(id="a", title="A", depends_on="")
+		unit_b = WorkUnit(id="b", title="B", depends_on="a")
+		unit_c = WorkUnit(id="c", title="C", depends_on="b")
+
+		assert ctrl._check_dependencies_met(unit_a) is True
+		assert ctrl._check_dependencies_met(unit_b) is False
+		assert ctrl._check_dependencies_met(unit_c) is False
+
+		ctrl._completed_unit_ids.add("a")
+		assert ctrl._check_dependencies_met(unit_b) is True
+		assert ctrl._check_dependencies_met(unit_c) is False
+
+		ctrl._completed_unit_ids.add("b")
+		assert ctrl._check_dependencies_met(unit_c) is True
+
+	@pytest.mark.asyncio
+	async def test_deferred_unit_dispatches_after_dep_completes(
+		self, config: MissionConfig, db: Database,
+	) -> None:
+		"""_dispatch_deferred should dispatch a unit once its dependency completes."""
+		db.insert_mission(Mission(id="m1", objective="test"))
+		plan = Plan(id="p1", objective="test")
+		db.insert_plan(plan)
+		epoch = Epoch(id="ep1", mission_id="m1", number=1)
+		db.insert_epoch(epoch)
+
+		ctrl = ContinuousController(config, db)
+		ctrl._backend = AsyncMock()
+
+		unit = WorkUnit(id="wu-dep", plan_id="p1", title="Dep unit", depends_on="wu-pre")
+		mission = Mission(id="m1", objective="test")
+		ctrl._deferred_units = [(unit, epoch, mission)]
+
+		semaphore = asyncio.Semaphore(2)
+		epoch_map = {"ep1": epoch}
+
+		# Dependency not met -- unit stays deferred
+		await ctrl._dispatch_deferred(mission, epoch_map, semaphore)
+		assert len(ctrl._deferred_units) == 1
+
+		# Mark dependency as completed
+		ctrl._completed_unit_ids.add("wu-pre")
+
+		# Mock _execute_single_unit to prevent actual execution
+		with patch.object(ctrl, "_execute_single_unit", new_callable=AsyncMock):
+			await ctrl._dispatch_deferred(mission, epoch_map, semaphore)
+
+		assert len(ctrl._deferred_units) == 0
+
+	def test_completed_unit_ids_tracked_on_init(self, config: MissionConfig, db: Database) -> None:
+		"""_completed_unit_ids should be empty on construction."""
+		ctrl = ContinuousController(config, db)
+		assert ctrl._completed_unit_ids == set()
+

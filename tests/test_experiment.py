@@ -212,6 +212,7 @@ class TestControllerExperimentCompletion:
 		controller._completion_queue = asyncio.Queue()
 		controller._total_merged = 0
 		controller._total_failed = 0
+		controller._completed_unit_ids = set()
 		controller._state_changelog = []
 		controller._backlog_item_ids = []
 		return controller

@@ -80,11 +80,21 @@ Specialist templates: test-writer, refactorer, debugger, simplifier. Planner ass
 
 ## In Progress / Partial
 
-### P5: Auto-Pause and Recovery -- PARTIAL
+### P5: Auto-Pause and Recovery -- DONE
 
-Config fields exist for backoff/retry. Continuous controller has pause/retry references. Needs verification that the full backoff-with-condition-checking loop works as designed (pause on total round failure, verify condition resolved before retry, max retries before escalation).
+Full backoff-with-condition-checking loop verified: pause on total round failure, condition checking before retry, max retries before escalation. All retry paths in `continuous_controller.py` confirmed working with tests.
 
-**Remaining work**: Audit the actual retry paths in `continuous_controller.py` and confirm they match the design. Add tests if missing.
+### Dependency-Aware Dispatch -- DONE
+
+`continuous_controller.py` dispatch loop now respects `depends_on` fields on work units. Units with unmet dependencies are deferred and dispatched once dependencies complete. Tracked via `_completed_unit_ids` set updated on merge, research completion, and experiment completion.
+
+### Tool Synthesis Sandbox Validation -- DONE
+
+`tool_synthesis.py` `register_tool()` now validates script content via `ast.parse()` before writing to disk. Blocks dangerous imports (`os`, `subprocess`, `shutil`, `pathlib`, `socket`, `http`, `urllib`, `requests`, `ctypes`, `importlib`) and dangerous calls (`exec`, `eval`, `compile`, `__import__`). Blocklists configurable via class attributes.
+
+### FastAPI Lifespan Migration -- DONE
+
+`dashboard/live.py` replaced deprecated `@app.on_event("startup"/"shutdown")` with modern `asynccontextmanager` lifespan pattern. No deprecation warnings remain.
 
 ---
 
