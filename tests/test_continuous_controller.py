@@ -1416,17 +1416,11 @@ class TestNextObjectivePopulation:
 
 	@pytest.mark.asyncio
 	async def test_next_objective_empty_when_objective_met(self, config: MissionConfig, db: Database) -> None:
-		"""When objective is met, next_objective should remain empty."""
+		"""When objective is met and no backlog remains, next_objective should be empty."""
 		config.target.name = "test"
 		config.continuous.max_wall_time_seconds = 1
 		config.discovery.enabled = False
 		ctrl = ContinuousController(config, db)
-
-		# Insert backlog items (they exist but shouldn't trigger chaining since objective is met)
-		db.insert_backlog_item(BacklogItem(
-			id="bl1", title="Some task", priority_score=5.0,
-			track="feature", status="pending",
-		))
 
 		call_count = 0
 

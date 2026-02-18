@@ -275,7 +275,7 @@ class TestRunCommandTimeout:
 		mock_proc.kill = MagicMock()
 		mock_proc.wait = AsyncMock()
 
-		with patch("mission_control.green_branch.asyncio.create_subprocess_exec", return_value=mock_proc):
+		with patch("mission_control.green_branch.asyncio.create_subprocess_shell", return_value=mock_proc):
 			with patch("mission_control.green_branch.asyncio.wait_for", side_effect=asyncio.TimeoutError):
 				ok, output = await mgr._run_command("pytest -q")
 
