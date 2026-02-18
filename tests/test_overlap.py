@@ -97,8 +97,8 @@ class TestExistingDependsOnPreserved:
 
 
 class TestEmptyFilesHint:
-	def test_empty_hint_skipped(self) -> None:
-		"""Units with empty files_hint don't create overlaps."""
+	def test_one_empty_hint_skipped(self) -> None:
+		"""When only one unit has empty files_hint, no overlap is created."""
 		units = [
 			_wu("A", "", priority=1),
 			_wu("B", "src/a.py", priority=2),
@@ -106,6 +106,51 @@ class TestEmptyFilesHint:
 		result = resolve_file_overlaps(units)
 		assert result[0].depends_on == ""
 		assert result[1].depends_on == ""
+
+	def test_both_empty_hints_serialized(self) -> None:
+		"""Two units with empty files_hint get serialized (later depends on earlier)."""
+		units = [
+			_wu("A", "", priority=1),
+			_wu("B", "", priority=2),
+		]
+		result = resolve_file_overlaps(units)
+		assert result[0].depends_on == ""
+		assert result[1].depends_on == result[0].id
+
+	def test_three_empty_hints_chain(self) -> None:
+		"""Three empty-hint units form a serial chain: C->B->A."""
+		units = [
+			_wu("A", "", priority=1),
+			_wu("B", "", priority=2),
+			_wu("C", "", priority=3),
+		]
+		result = resolve_file_overlaps(units)
+		# A has no deps
+		assert result[0].depends_on == ""
+		# B depends on A
+		assert result[1].depends_on == result[0].id
+		# C depends on both A and B
+		c_deps = {d.strip() for d in result[2].depends_on.split(",") if d.strip()}
+		assert result[0].id in c_deps
+		assert result[1].id in c_deps
+
+	def test_mixed_empty_and_populated(self) -> None:
+		"""Mixed empty and populated hints: populated checked for overlap, empty serialized."""
+		units = [
+			_wu("Empty1", "", priority=1),
+			_wu("Pop1", "shared.py", priority=2),
+			_wu("Empty2", "", priority=3),
+			_wu("Pop2", "shared.py", priority=4),
+		]
+		result = resolve_file_overlaps(units)
+		# Empty1 (idx 0) and Empty2 (idx 2) are both empty -> Empty2 depends on Empty1
+		empty2_deps = {d.strip() for d in result[2].depends_on.split(",") if d.strip()}
+		assert result[0].id in empty2_deps
+		# Pop1 and Pop2 share "shared.py" -> Pop2 depends on Pop1
+		pop2_deps = {d.strip() for d in result[3].depends_on.split(",") if d.strip()}
+		assert result[1].id in pop2_deps
+		# Empty units don't create deps with populated units
+		assert result[1].depends_on == "" or result[0].id not in result[1].depends_on
 
 
 class TestMultipleOverlaps:

@@ -22,6 +22,28 @@ def _parse_files_hint(hint: str) -> set[str]:
 	return {f.strip() for f in hint.split(",") if f.strip()}
 
 
+def _add_dependency_edge(dependent: WorkUnit, dependency: WorkUnit, reason: str = "") -> bool:
+	"""Add a depends_on edge from dependent to dependency.
+
+	Returns True if the edge was newly added, False if it already existed.
+	"""
+	existing_deps = set()
+	if dependent.depends_on:
+		existing_deps = {d.strip() for d in dependent.depends_on.split(",") if d.strip()}
+
+	if dependency.id in existing_deps:
+		return False
+
+	existing_deps.add(dependency.id)
+	dependent.depends_on = ",".join(sorted(existing_deps))
+	if reason:
+		logger.info(
+			"%s; %s now depends on %s",
+			reason, dependent.title[:40], dependency.title[:40],
+		)
+	return True
+
+
 def resolve_file_overlaps(units: list[WorkUnit]) -> list[WorkUnit]:
 	"""Detect file overlaps between units and add depends_on edges.
 
@@ -29,6 +51,9 @@ def resolve_file_overlaps(units: list[WorkUnit]) -> list[WorkUnit]:
 	lower-priority unit (higher priority number) gets a depends_on edge
 	to the higher-priority unit.  Ties are broken by list position
 	(earlier = higher priority).
+
+	When both units in a pair have empty files_hint (unknown scope),
+	they are conservatively serialized (later unit depends on earlier).
 
 	Existing depends_on entries are preserved.
 
@@ -48,6 +73,14 @@ def resolve_file_overlaps(units: list[WorkUnit]) -> list[WorkUnit]:
 		for j in range(i + 1, len(units)):
 			files_i = unit_files[i][1]
 			files_j = unit_files[j][1]
+
+			if not files_i and not files_j:
+				# Both unknown scope -- serialize conservatively
+				_add_dependency_edge(
+					units[j], units[i],
+					reason=f"Both empty files_hint: {units[i].title[:40]} and {units[j].title[:40]}",
+				)
+				continue
 			if not files_i or not files_j:
 				continue
 
@@ -67,20 +100,10 @@ def resolve_file_overlaps(units: list[WorkUnit]) -> list[WorkUnit]:
 				# i has higher priority or tie (same priority, earlier position)
 				dependent, dependency = unit_j, unit_i
 
-			# Parse existing depends_on
-			existing_deps = set()
-			if dependent.depends_on:
-				existing_deps = {d.strip() for d in dependent.depends_on.split(",") if d.strip()}
-
-			if dependency.id not in existing_deps:
-				existing_deps.add(dependency.id)
-				dependent.depends_on = ",".join(sorted(existing_deps))
-				logger.info(
-					"Overlap detected: %s and %s share files %s; "
-					"%s now depends on %s",
-					unit_i.title[:40], unit_j.title[:40],
-					overlap, dependent.title[:40], dependency.title[:40],
-				)
+			_add_dependency_edge(
+				dependent, dependency,
+				reason=f"Overlap detected: {unit_i.title[:40]} and {unit_j.title[:40]} share files {overlap}",
+			)
 
 	_break_cycles(units)
 	return units
