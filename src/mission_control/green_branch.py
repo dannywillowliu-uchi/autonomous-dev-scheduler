@@ -17,7 +17,8 @@ import httpx
 
 from mission_control.config import MissionConfig
 from mission_control.db import Database
-from mission_control.state import _parse_pytest, _parse_ruff
+from mission_control.models import VerificationNodeKind, VerificationReport
+from mission_control.state import run_verification_nodes
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ class FixupCandidate:
 	tests_passed: int = 0
 	lint_errors: int = 0
 	diff_lines: int = 0
+	failed_kinds: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -60,6 +62,7 @@ class UnitMergeResult:
 	merge_commit_hash: str = ""
 	changed_files: list[str] = field(default_factory=list)
 	sync_ok: bool = True
+	verification_report: VerificationReport | None = None
 
 
 class GreenBranchManager:
@@ -211,15 +214,15 @@ class GreenBranchManager:
 					)
 
 				# Run smoke-test verification before promoting to mc/green
-				verify_cmd = self.config.target.verification.command
-				verify_ok, verify_output = await self._run_command(verify_cmd)
-				if not verify_ok:
-					logger.warning("Verification failed for %s: %s", branch_name, verify_output[-500:])
+				report = await self._run_verification()
+				if not report.overall_passed:
+					logger.warning("Verification failed for %s: %s", branch_name, report.raw_output[-500:])
 					await self._run_git("checkout", gb.green_branch)
 					return UnitMergeResult(
 						verification_passed=False,
-						failure_output=verify_output,
+						failure_output=report.raw_output,
 						failure_stage="verification",
+						verification_report=report,
 					)
 
 				# Fast-forward mc/green to the merge commit
@@ -278,6 +281,7 @@ class GreenBranchManager:
 					merge_commit_hash=merge_commit_hash,
 					changed_files=changed_files,
 					sync_ok=sync_ok,
+					verification_report=report,
 				)
 			finally:
 				# Clean up remote, temp branch, and rebase branch
@@ -383,16 +387,16 @@ class GreenBranchManager:
 		ok, output = await self._run_fixup_session(full_prompt)
 
 		# Run verification on the candidate branch
-		verify_ok, verify_output = await self._run_command(
-			self.config.target.verification.command,
-		)
-		candidate.verification_passed = verify_ok
+		report = await self._run_verification()
+		candidate.verification_passed = report.overall_passed
+		candidate.failed_kinds = [k.value for k in report.failed_kinds()]
 
-		# Parse test and lint results
-		pytest_data = _parse_pytest(verify_output)
-		ruff_data = _parse_ruff(verify_output)
-		candidate.tests_passed = pytest_data["test_passed"]
-		candidate.lint_errors = ruff_data["lint_errors"]
+		# Extract test and lint metrics from report
+		for r in report.results:
+			if r.kind == VerificationNodeKind.PYTEST:
+				candidate.tests_passed = r.metrics.get("test_passed", 0)
+			elif r.kind == VerificationNodeKind.RUFF:
+				candidate.lint_errors = r.metrics.get("lint_errors", 0)
 
 		# Measure diff size
 		diff_ok, diff_output = await self._run_git(
@@ -621,8 +625,8 @@ class GreenBranchManager:
 		"""
 		gb = self.config.green_branch
 		await self._run_git("checkout", gb.green_branch)
-		verify_cmd = self.config.target.verification.command
-		return await self._run_command(verify_cmd)
+		report = await self._run_verification()
+		return (report.overall_passed, report.raw_output)
 
 	async def get_green_hash(self) -> str:
 		"""Return the current commit hash of mc/green."""
@@ -655,6 +659,22 @@ class GreenBranchManager:
 		stdout, _ = await proc.communicate()
 		output = stdout.decode() if stdout else ""
 		return (proc.returncode == 0, output)
+
+	async def _run_verification(self) -> VerificationReport:
+		"""Run verification nodes and return a structured report.
+
+		Uses self._run_command for single-command fallback (backward compat
+		with tests that mock _run_command). Delegates to run_verification_nodes
+		only when explicit nodes are configured.
+		"""
+		from mission_control.state import _build_result_from_single_command
+
+		nodes = self.config.target.verification.nodes
+		if nodes:
+			return await run_verification_nodes(self.config, self.workspace)
+		# Single-command fallback using self._run_command
+		ok, output = await self._run_command(self.config.target.verification.command)
+		return _build_result_from_single_command(output, 0 if ok else 1)
 
 	async def _run_command(self, cmd: str | list[str]) -> tuple[bool, str]:
 		"""Run a command in self.workspace using shell for string commands."""
