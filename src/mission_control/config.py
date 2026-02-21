@@ -12,6 +12,17 @@ from typing import Any
 
 
 @dataclass
+class VerificationNodeConfig:
+	"""Configuration for a single verification node."""
+
+	kind: str = "custom"  # maps to VerificationNodeKind
+	command: str = ""
+	weight: float = 1.0
+	timeout: int = 300
+	required: bool = True
+
+
+@dataclass
 class VerificationConfig:
 	"""Target project verification settings."""
 
@@ -19,6 +30,7 @@ class VerificationConfig:
 	timeout: int = 300
 	setup_command: str = ""
 	setup_timeout: int = 120
+	nodes: list[VerificationNodeConfig] = field(default_factory=list)
 
 
 @dataclass
@@ -298,6 +310,16 @@ class ToolSynthesisConfig:
 
 
 @dataclass
+class TracingConfig:
+	"""OpenTelemetry tracing settings."""
+
+	enabled: bool = False
+	service_name: str = "mission-control"
+	exporter: str = "console"  # console | otlp | none
+	otlp_endpoint: str = "http://localhost:4317"
+
+
+@dataclass
 class SecurityConfig:
 	"""Security settings for worker subprocess isolation."""
 
@@ -326,6 +348,7 @@ class MissionConfig:
 	specialist: SpecialistConfig = field(default_factory=SpecialistConfig)
 	tool_synthesis: ToolSynthesisConfig = field(default_factory=ToolSynthesisConfig)
 	security: SecurityConfig = field(default_factory=SecurityConfig)
+	tracing: TracingConfig = field(default_factory=TracingConfig)
 
 
 def _build_dashboard(data: dict[str, Any]) -> DashboardConfig:
@@ -335,6 +358,24 @@ def _build_dashboard(data: dict[str, Any]) -> DashboardConfig:
 	if "port" in data:
 		dc.port = int(data["port"])
 	return dc
+
+
+def _build_verification_nodes(data: list[dict[str, Any]]) -> list[VerificationNodeConfig]:
+	nodes: list[VerificationNodeConfig] = []
+	for item in data:
+		nc = VerificationNodeConfig()
+		if "kind" in item:
+			nc.kind = str(item["kind"])
+		if "command" in item:
+			nc.command = str(item["command"])
+		if "weight" in item:
+			nc.weight = float(item["weight"])
+		if "timeout" in item:
+			nc.timeout = int(item["timeout"])
+		if "required" in item:
+			nc.required = bool(item["required"])
+		nodes.append(nc)
+	return nodes
 
 
 def _build_verification(data: dict[str, Any]) -> VerificationConfig:
@@ -347,6 +388,8 @@ def _build_verification(data: dict[str, Any]) -> VerificationConfig:
 		vc.setup_command = str(data["setup_command"])
 	if "setup_timeout" in data:
 		vc.setup_timeout = int(data["setup_timeout"])
+	if "nodes" in data:
+		vc.nodes = _build_verification_nodes(data["nodes"])
 	return vc
 
 
@@ -631,6 +674,19 @@ def _build_tool_synthesis(data: dict[str, Any]) -> ToolSynthesisConfig:
 	return tc
 
 
+def _build_tracing(data: dict[str, Any]) -> TracingConfig:
+	tc = TracingConfig()
+	if "enabled" in data:
+		tc.enabled = bool(data["enabled"])
+	if "service_name" in data:
+		tc.service_name = str(data["service_name"])
+	if "exporter" in data:
+		tc.exporter = str(data["exporter"])
+	if "otlp_endpoint" in data:
+		tc.otlp_endpoint = str(data["otlp_endpoint"])
+	return tc
+
+
 def _build_security(data: dict[str, Any]) -> SecurityConfig:
 	sc = SecurityConfig()
 	if "extra_env_keys" in data:
@@ -759,6 +815,8 @@ def load_config(path: str | Path) -> MissionConfig:
 		mc.tool_synthesis = _build_tool_synthesis(data["tool_synthesis"])
 	if "security" in data:
 		mc.security = _build_security(data["security"])
+	if "tracing" in data:
+		mc.tracing = _build_tracing(data["tracing"])
 	# Populate module-level extra env keys for claude_subprocess_env()
 	global _extra_env_keys
 	_extra_env_keys = set(mc.security.extra_env_keys) - _ENV_DENYLIST

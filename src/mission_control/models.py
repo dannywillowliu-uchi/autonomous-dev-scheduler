@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Literal
 from uuid import uuid4
 
@@ -96,6 +97,54 @@ class SnapshotDelta:
 	@property
 	def regressed(self) -> bool:
 		return self.tests_broken > 0 or self.security_delta > 0
+
+
+# -- Verification node models --
+
+
+class VerificationNodeKind(str, Enum):
+	"""Kind of verification tool."""
+
+	PYTEST = "pytest"
+	RUFF = "ruff"
+	MYPY = "mypy"
+	BANDIT = "bandit"
+	CUSTOM = "custom"
+
+
+@dataclass
+class VerificationResult:
+	"""Result of a single verification node execution."""
+
+	kind: VerificationNodeKind = VerificationNodeKind.CUSTOM
+	passed: bool = False
+	exit_code: int = 0
+	output: str = ""
+	metrics: dict[str, int] = field(default_factory=dict)
+	duration_seconds: float = 0.0
+	required: bool = True
+	weight: float = 1.0
+
+
+@dataclass
+class VerificationReport:
+	"""Aggregate report from all verification nodes."""
+
+	results: list[VerificationResult] = field(default_factory=list)
+	raw_output: str = ""
+
+	@property
+	def overall_passed(self) -> bool:
+		return all(r.passed for r in self.results if r.required)
+
+	@property
+	def weighted_score(self) -> float:
+		if not self.results:
+			return 0.0
+		return sum(r.weight * (1.0 if r.passed else 0.0) for r in self.results)
+
+	def failed_kinds(self) -> list[VerificationNodeKind]:
+		return [r.kind for r in self.results if not r.passed]
 
 
 # -- Parallel mode models --
