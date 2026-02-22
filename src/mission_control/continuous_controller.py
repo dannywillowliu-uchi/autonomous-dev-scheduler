@@ -70,6 +70,7 @@ class WorkerCompletion:
 	handoff: Handoff | None
 	workspace: str
 	epoch: Epoch
+	prompt_variant_id: str = ""
 
 
 @dataclass
@@ -184,6 +185,13 @@ class ContinuousController:
 				self._mcp_registry = MCPToolRegistry(db, config.mcp_registry)
 		except Exception:
 			logger.warning("Failed to initialize MCP registry", exc_info=True)
+		self._prompt_evolution: Any = None
+		try:
+			if config.prompt_evolution.enabled is True:
+				from mission_control.prompt_evolution import PromptEvolutionEngine
+				self._prompt_evolution = PromptEvolutionEngine(db, config.prompt_evolution)
+		except Exception:
+			logger.warning("Failed to initialize prompt evolution", exc_info=True)
 		budget = config.scheduler.budget
 		self._ema: ExponentialMovingAverage = ExponentialMovingAverage(
 			alpha=budget.ema_alpha,
@@ -583,6 +591,23 @@ class ContinuousController:
 				)
 			except Exception as exc:
 				logger.error("Failed to append strategic context: %s", exc, exc_info=True)
+
+			# Prompt evolution: propose mutations for components with high failure rates
+			if self._prompt_evolution is not None:
+				try:
+					total_units = result.total_units_merged + result.total_units_failed
+					if total_units > 0:
+						fail_rate = result.total_units_failed / total_units
+						if fail_rate > 0.2:
+							failure_summaries = [
+								s for s in (failed_summaries if "failed_summaries" in dir() else [])
+							][:5]
+							if failure_summaries:
+								await self._prompt_evolution.propose_mutation(
+									"worker", failure_summaries,
+								)
+				except Exception as exc:
+					logger.debug("Prompt mutation failed: %s", exc)
 
 			if self._notifier:
 				await self._notifier.send_mission_end(
@@ -1768,6 +1793,16 @@ class ContinuousController:
 			# Track round outcomes for all-fail detection
 			self._record_round_outcome(unit, epoch, merged)
 
+			# Prompt evolution: record outcome
+			if self._prompt_evolution is not None and completion.prompt_variant_id:
+				try:
+					self._prompt_evolution.record_outcome(
+						completion.prompt_variant_id,
+						"pass" if merged else "fail",
+					)
+				except Exception as exc:
+					logger.debug("Failed to record prompt outcome: %s", exc)
+
 			# Circuit breaker: record success/failure per workspace
 			if self.config.continuous.circuit_breaker_enabled and workspace:
 				if merged:
@@ -2268,6 +2303,17 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 			context = load_context_for_mission_worker(unit, self.config)
 			experience_context = get_worker_context(self.db, unit)
 
+			# Prompt evolution: select variant and prepend to context
+			selected_variant_id = ""
+			if self._prompt_evolution is not None:
+				try:
+					variant = self._prompt_evolution.select_variant("worker")
+					if variant is not None:
+						selected_variant_id = variant.variant_id
+						context = variant.content + "\n\n" + context if context else variant.content
+				except Exception as exc:
+					logger.debug("Prompt variant selection failed: %s", exc)
+
 			# Append per-unit causal risk factors
 			try:
 				models_cfg = getattr(self.config, "models", None)
@@ -2493,6 +2539,7 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 			await self._completion_queue.put(
 				WorkerCompletion(
 					unit=unit, handoff=handoff, workspace=workspace, epoch=epoch,
+					prompt_variant_id=selected_variant_id,
 				),
 			)
 
