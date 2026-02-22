@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-from mission_control.config import MissionConfig
+import asyncio
+import logging
+
+from mission_control.config import EpisodicMemoryConfig, MissionConfig, claude_subprocess_env
 from mission_control.db import Database
-from mission_control.models import ContextItem, Session, WorkUnit
+from mission_control.models import ContextItem, EpisodicMemory, SemanticMemory, Session, WorkUnit, _new_id, _now_iso
 from mission_control.reviewer import ReviewVerdict
+
+logger = logging.getLogger(__name__)
 
 CONTEXT_BUDGET = 16000  # ~4000 tokens
 
@@ -191,3 +196,136 @@ def _read_project_claude_md(config: MissionConfig) -> str:
 		return claude_md_path.read_text()
 	except (FileNotFoundError, PermissionError):
 		return ""
+
+
+class MemoryManager:
+	"""Three-layer memory system: episodic storage, retrieval with access tracking, and semantic distillation."""
+
+	def __init__(self, db: Database, config: EpisodicMemoryConfig) -> None:
+		self.db = db
+		self.config = config
+
+	def store_episode(
+		self,
+		event_type: str,
+		content: str,
+		outcome: str,
+		scope_tokens: list[str],
+	) -> EpisodicMemory:
+		"""Create and persist an episodic memory."""
+		mem = EpisodicMemory(
+			id=_new_id(),
+			event_type=event_type,
+			content=content,
+			outcome=outcome,
+			scope_tokens=",".join(scope_tokens),
+			ttl_days=self.config.default_ttl_days,
+			created_at=_now_iso(),
+			last_accessed=_now_iso(),
+		)
+		self.db.insert_episodic_memory(mem)
+		return mem
+
+	def retrieve_relevant(
+		self, query_tokens: list[str], limit: int = 10,
+	) -> list[EpisodicMemory]:
+		"""Retrieve relevant episodes and bump access counters."""
+		episodes = self.db.get_episodic_memories_by_scope(query_tokens, limit=limit)
+		now = _now_iso()
+		for ep in episodes:
+			ep.access_count += 1
+			ep.last_accessed = now
+			self.db.update_episodic_memory(ep)
+		return episodes
+
+	async def distill_to_semantic(
+		self, episodes: list[EpisodicMemory],
+	) -> SemanticMemory | None:
+		"""Use LLM to distill a generalized rule from multiple episodes.
+
+		Skips if fewer than min_episodes_for_distill episodes provided.
+		Confidence is the average of source episode confidences.
+		"""
+		if len(episodes) < self.config.min_episodes_for_distill:
+			return None
+
+		episode_texts = []
+		for ep in episodes:
+			episode_texts.append(
+				f"[{ep.event_type}] {ep.content} -> {ep.outcome}"
+			)
+		episodes_block = "\n".join(episode_texts)
+
+		prompt = (
+			f"You are analyzing patterns from past development events. "
+			f"Here are {len(episodes)} episodes:\n\n{episodes_block}\n\n"
+			f"Extract ONE concise, actionable rule or pattern that generalizes "
+			f"across these episodes. Output ONLY the rule, nothing else."
+		)
+
+		try:
+			proc = await asyncio.create_subprocess_exec(
+				"claude", "-p", "--model", self.config.distill_model,
+				"--output-format", "text",
+				stdin=asyncio.subprocess.PIPE,
+				stdout=asyncio.subprocess.PIPE,
+				stderr=asyncio.subprocess.PIPE,
+				env=claude_subprocess_env(),
+			)
+			stdout, _ = await asyncio.wait_for(proc.communicate(prompt.encode()), timeout=120)
+			rule_content = stdout.decode().strip()
+		except (asyncio.TimeoutError, OSError) as exc:
+			logger.warning("Distillation LLM call failed: %s", exc)
+			return None
+
+		if not rule_content:
+			return None
+
+		avg_confidence = sum(ep.confidence for ep in episodes) / len(episodes)
+		source_ids = ",".join(ep.id for ep in episodes)
+
+		semantic = SemanticMemory(
+			id=_new_id(),
+			content=rule_content,
+			source_episode_ids=source_ids,
+			confidence=avg_confidence,
+			created_at=_now_iso(),
+		)
+		self.db.insert_semantic_memory(semantic)
+		logger.info("Distilled semantic memory: %s", rule_content[:80])
+		return semantic
+
+	def decay_tick(self) -> tuple[int, int]:
+		"""Decrement TTL for all episodes; extend frequently accessed ones; evict expired.
+
+		Returns (evicted_count, extended_count).
+		"""
+		all_episodes = self.db.get_all_episodic_memories()
+		evicted = 0
+		extended = 0
+
+		for ep in all_episodes:
+			# Extend TTL for frequently accessed episodes
+			if ep.access_count >= 3:
+				ep.ttl_days += self.config.access_boost_days
+				ep.access_count = 0  # reset counter after boost
+				extended += 1
+
+			# Decay
+			ep.ttl_days -= 1
+
+			if ep.ttl_days <= 0:
+				self.db.delete_episodic_memory(ep.id)
+				evicted += 1
+			else:
+				self.db.update_episodic_memory(ep)
+
+		return evicted, extended
+
+	def get_promote_candidates(self) -> list[EpisodicMemory]:
+		"""Get episodes with high confidence nearing expiration -- candidates for distillation."""
+		all_episodes = self.db.get_all_episodic_memories()
+		return [
+			ep for ep in all_episodes
+			if ep.confidence >= 0.7 and ep.ttl_days <= 3
+		]

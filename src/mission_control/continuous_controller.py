@@ -192,6 +192,13 @@ class ContinuousController:
 				self._prompt_evolution = PromptEvolutionEngine(db, config.prompt_evolution)
 		except Exception:
 			logger.warning("Failed to initialize prompt evolution", exc_info=True)
+		self._memory_manager: Any = None
+		try:
+			if config.episodic_memory.enabled is True:
+				from mission_control.memory import MemoryManager
+				self._memory_manager = MemoryManager(db, config.episodic_memory)
+		except Exception:
+			logger.warning("Failed to initialize memory manager", exc_info=True)
 		budget = config.scheduler.budget
 		self._ema: ExponentialMovingAverage = ExponentialMovingAverage(
 			alpha=budget.ema_alpha,
@@ -608,6 +615,18 @@ class ContinuousController:
 								)
 				except Exception as exc:
 					logger.debug("Prompt mutation failed: %s", exc)
+
+			# Episodic memory: decay tick and distill high-confidence candidates
+			if self._memory_manager is not None:
+				try:
+					evicted, extended = self._memory_manager.decay_tick()
+					if evicted or extended:
+						logger.info("Memory decay: evicted=%d, extended=%d", evicted, extended)
+					candidates = self._memory_manager.get_promote_candidates()
+					if candidates:
+						await self._memory_manager.distill_to_semantic(candidates)
+				except Exception as exc:
+					logger.debug("Memory decay/distill failed: %s", exc)
 
 			if self._notifier:
 				await self._notifier.send_mission_end(
@@ -1802,6 +1821,25 @@ class ContinuousController:
 					)
 				except Exception as exc:
 					logger.debug("Failed to record prompt outcome: %s", exc)
+
+			# Episodic memory: store episode for this completion
+			if self._memory_manager is not None:
+				try:
+					event_type = "merge_success" if merged else "test_failure"
+					scope_tokens = [
+						t.strip() for t in (unit.files_hint or "").split(",") if t.strip()
+					]
+					summary = (
+						handoff.summary[:200] if handoff and handoff.summary else unit.output_summary[:200]
+					)
+					self._memory_manager.store_episode(
+						event_type=event_type,
+						content=summary,
+						outcome="pass" if merged else "fail",
+						scope_tokens=scope_tokens,
+					)
+				except Exception as exc:
+					logger.debug("Failed to store episodic memory: %s", exc)
 
 			# Circuit breaker: record success/failure per workspace
 			if self.config.continuous.circuit_breaker_enabled and workspace:

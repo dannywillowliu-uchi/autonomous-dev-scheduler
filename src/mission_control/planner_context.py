@@ -140,6 +140,17 @@ def build_planner_context(db: Database, mission_id: str) -> str:
 	except Exception:
 		pass
 
+	# Inject learned rules from semantic memory
+	try:
+		semantic_memories = db.get_top_semantic_memories(limit=5)
+		if semantic_memories:
+			lines.append("\n## Learned Rules (from past missions)")
+			for sm in semantic_memories:
+				conf = f" (confidence: {sm.confidence:.1f})" if sm.confidence < 1.0 else ""
+				lines.append(f"- {sm.content}{conf}")
+	except Exception:
+		pass
+
 	return "\n".join(lines)
 
 
