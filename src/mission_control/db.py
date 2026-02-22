@@ -39,6 +39,7 @@ from mission_control.models import (
 	Session,
 	Signal,
 	Snapshot,
+	SpeculationResult,
 	StrategicContext,
 	TrajectoryRating,
 	UnitEvent,
@@ -580,6 +581,21 @@ CREATE TABLE IF NOT EXISTS semantic_memories (
 	created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_semantic_memories_confidence ON semantic_memories(confidence DESC);
+
+CREATE TABLE IF NOT EXISTS speculation_results (
+	id TEXT PRIMARY KEY,
+	parent_unit_id TEXT NOT NULL,
+	winner_branch_id TEXT NOT NULL DEFAULT '',
+	mission_id TEXT NOT NULL,
+	epoch_id TEXT NOT NULL DEFAULT '',
+	branch_count INTEGER NOT NULL DEFAULT 0,
+	branch_ids TEXT NOT NULL DEFAULT '',
+	branch_scores TEXT NOT NULL DEFAULT '',
+	total_speculation_cost_usd REAL NOT NULL DEFAULT 0.0,
+	selection_metric TEXT NOT NULL DEFAULT 'review_score',
+	timestamp TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_speculation_results_parent ON speculation_results(parent_unit_id);
 """
 
 
@@ -633,6 +649,7 @@ class Database:
 		self._migrate_acceptance_criteria_columns()
 		self._migrate_specialist_column()
 		self._migrate_degradation_level_column()
+		self._migrate_speculation_columns()
 
 	def _migrate_degradation_level_column(self) -> None:
 		"""Add degradation_level column to missions table (idempotent)."""
@@ -647,6 +664,25 @@ class Database:
 			else:
 				logger.warning("Migration failed for missions.degradation_level: %s", exc)
 				raise
+
+	def _migrate_speculation_columns(self) -> None:
+		"""Add speculation_score and speculation_parent_id to work_units (idempotent)."""
+		migrations = [
+			("work_units", "speculation_score", "REAL DEFAULT 0.0"),
+			("work_units", "speculation_parent_id", "TEXT DEFAULT ''"),
+		]
+		for table, column, col_type in migrations:
+			self._validate_identifier(table)
+			self._validate_identifier(column)
+			try:
+				self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")  # noqa: S608
+				logger.debug("Migration: added column %s.%s", table, column)
+			except sqlite3.OperationalError as exc:
+				if "duplicate column name" in str(exc):
+					pass
+				else:
+					logger.warning("Migration failed for %s.%s: %s", table, column, exc)
+					raise
 
 	def _migrate_specialist_column(self) -> None:
 		"""Add specialist column to work_units table (idempotent)."""
@@ -1080,9 +1116,10 @@ class Database:
 			 exit_code, commit_hash, output_summary, attempt, max_attempts,
 			 unit_type, timeout, verification_command,
 			 epoch_id, input_tokens, output_tokens, cost_usd, experiment_mode,
-			 acceptance_criteria, specialist)
+			 acceptance_criteria, specialist,
+			 speculation_score, speculation_parent_id)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-			 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+			 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
 			(
 				unit.id, unit.plan_id, unit.title, unit.description,
 				unit.files_hint, unit.verification_hint, unit.priority,
@@ -1094,6 +1131,7 @@ class Database:
 				unit.unit_type, unit.timeout, unit.verification_command,
 				unit.epoch_id, unit.input_tokens, unit.output_tokens, unit.cost_usd,
 				int(unit.experiment_mode), unit.acceptance_criteria, unit.specialist,
+				unit.speculation_score, unit.speculation_parent_id,
 			),
 		)
 		self.conn.commit()
@@ -1110,7 +1148,8 @@ class Database:
 			output_summary=?, attempt=?, max_attempts=?,
 			unit_type=?, timeout=?, verification_command=?,
 			epoch_id=?, input_tokens=?, output_tokens=?, cost_usd=?,
-			experiment_mode=?, acceptance_criteria=?, specialist=?
+			experiment_mode=?, acceptance_criteria=?, specialist=?,
+			speculation_score=?, speculation_parent_id=?
 			WHERE id=?""",
 			(
 				unit.plan_id, unit.title, unit.description, unit.files_hint,
@@ -1123,6 +1162,7 @@ class Database:
 				unit.unit_type, unit.timeout, unit.verification_command,
 				unit.epoch_id, unit.input_tokens, unit.output_tokens, unit.cost_usd,
 				int(unit.experiment_mode), unit.acceptance_criteria, unit.specialist,
+				unit.speculation_score, unit.speculation_parent_id,
 				unit.id,
 			),
 		)
@@ -1302,6 +1342,8 @@ class Database:
 			experiment_mode=bool(row["experiment_mode"]) if "experiment_mode" in keys else False,
 			acceptance_criteria=row["acceptance_criteria"] if "acceptance_criteria" in keys else "",
 			specialist=row["specialist"] if "specialist" in keys else "",
+			speculation_score=float(row["speculation_score"]) if "speculation_score" in keys else 0.0,
+			speculation_parent_id=row["speculation_parent_id"] if "speculation_parent_id" in keys else "",
 		)
 
 	# -- Workers --
@@ -2586,6 +2628,48 @@ class Database:
 			comparison_report=row["comparison_report"],
 			recommended_approach=row["recommended_approach"],
 			created_at=row["created_at"],
+		)
+
+	# -- Speculation Results --
+
+	def insert_speculation_result(self, result: SpeculationResult) -> None:
+		self.conn.execute(
+			"""INSERT INTO speculation_results
+			(id, parent_unit_id, winner_branch_id, mission_id, epoch_id,
+			 branch_count, branch_ids, branch_scores,
+			 total_speculation_cost_usd, selection_metric, timestamp)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+			(
+				result.id, result.parent_unit_id, result.winner_branch_id,
+				result.mission_id, result.epoch_id,
+				result.branch_count, result.branch_ids, result.branch_scores,
+				result.total_speculation_cost_usd, result.selection_metric,
+				result.timestamp,
+			),
+		)
+		self.conn.commit()
+
+	def get_speculation_results_for_mission(self, mission_id: str) -> list[SpeculationResult]:
+		rows = self.conn.execute(
+			"SELECT * FROM speculation_results WHERE mission_id=? ORDER BY timestamp DESC",
+			(mission_id,),
+		).fetchall()
+		return [self._row_to_speculation_result(r) for r in rows]
+
+	@staticmethod
+	def _row_to_speculation_result(row: sqlite3.Row) -> SpeculationResult:
+		return SpeculationResult(
+			id=row["id"],
+			parent_unit_id=row["parent_unit_id"],
+			winner_branch_id=row["winner_branch_id"],
+			mission_id=row["mission_id"],
+			epoch_id=row["epoch_id"],
+			branch_count=row["branch_count"],
+			branch_ids=row["branch_ids"],
+			branch_scores=row["branch_scores"],
+			total_speculation_cost_usd=row["total_speculation_cost_usd"],
+			selection_metric=row["selection_metric"],
+			timestamp=row["timestamp"],
 		)
 
 	# -- Unit Reviews --

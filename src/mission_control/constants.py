@@ -15,6 +15,7 @@ UNIT_EVENT_REJECTED = "rejected"
 UNIT_EVENT_RETRY_QUEUED = "retry_queued"
 UNIT_EVENT_RESEARCH_COMPLETED = "research_completed"
 UNIT_EVENT_EXPERIMENT_COMPLETED = "experiment_completed"
+UNIT_EVENT_SPECULATION_COMPLETED = "speculation_completed"
 UNIT_EVENT_DEGRADATION_TRANSITION = "degradation_transition"
 
 UNIT_EVENT_TYPES: frozenset[str] = frozenset({
@@ -29,6 +30,7 @@ UNIT_EVENT_TYPES: frozenset[str] = frozenset({
 	UNIT_EVENT_RETRY_QUEUED,
 	UNIT_EVENT_RESEARCH_COMPLETED,
 	UNIT_EVENT_EXPERIMENT_COMPLETED,
+	UNIT_EVENT_SPECULATION_COMPLETED,
 })
 
 EVENT_TO_STATUS: dict[str, str] = {
@@ -43,6 +45,7 @@ EVENT_TO_STATUS: dict[str, str] = {
 	UNIT_EVENT_RETRY_QUEUED: "pending",
 	UNIT_EVENT_RESEARCH_COMPLETED: "completed",
 	UNIT_EVENT_EXPERIMENT_COMPLETED: "completed",
+	UNIT_EVENT_SPECULATION_COMPLETED: "completed",
 }
 
 # Evaluator round-scoring weights (test_improvement, lint_improvement, completion_rate, no_regression)
