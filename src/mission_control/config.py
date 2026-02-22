@@ -363,6 +363,20 @@ class PromptEvolutionConfig:
 
 
 @dataclass
+class EpisodicMemoryConfig:
+	"""Episodic-to-semantic memory system settings."""
+
+	enabled: bool = False
+	default_ttl_days: int = 30
+	decay_alpha: float = 0.1
+	access_boost_days: int = 5
+	distill_model: str = "sonnet"
+	distill_budget_usd: float = 0.30
+	min_episodes_for_distill: int = 3
+	max_semantic_per_query: int = 5
+
+
+@dataclass
 class MCPRegistryConfig:
 	"""MCP tool registry settings."""
 
@@ -434,6 +448,7 @@ class MissionConfig:
 	a2a: A2AConfig = field(default_factory=A2AConfig)
 	mcp_registry: MCPRegistryConfig = field(default_factory=MCPRegistryConfig)
 	prompt_evolution: PromptEvolutionConfig = field(default_factory=PromptEvolutionConfig)
+	episodic_memory: EpisodicMemoryConfig = field(default_factory=EpisodicMemoryConfig)
 
 
 def _build_dashboard(data: dict[str, Any]) -> DashboardConfig:
@@ -862,6 +877,27 @@ def _build_prompt_evolution(data: dict[str, Any]) -> PromptEvolutionConfig:
 	return pc
 
 
+def _build_episodic_memory(data: dict[str, Any]) -> EpisodicMemoryConfig:
+	ec = EpisodicMemoryConfig()
+	if "enabled" in data:
+		ec.enabled = bool(data["enabled"])
+	if "default_ttl_days" in data:
+		ec.default_ttl_days = int(data["default_ttl_days"])
+	if "decay_alpha" in data:
+		ec.decay_alpha = float(data["decay_alpha"])
+	if "access_boost_days" in data:
+		ec.access_boost_days = int(data["access_boost_days"])
+	if "distill_model" in data:
+		ec.distill_model = str(data["distill_model"])
+	if "distill_budget_usd" in data:
+		ec.distill_budget_usd = float(data["distill_budget_usd"])
+	if "min_episodes_for_distill" in data:
+		ec.min_episodes_for_distill = int(data["min_episodes_for_distill"])
+	if "max_semantic_per_query" in data:
+		ec.max_semantic_per_query = int(data["max_semantic_per_query"])
+	return ec
+
+
 def _build_degradation(data: dict[str, Any]) -> DegradationConfig:
 	dc = DegradationConfig()
 	float_keys = (
@@ -1016,6 +1052,8 @@ def load_config(path: str | Path) -> MissionConfig:
 		mc.mcp_registry = _build_mcp_registry(data["mcp_registry"])
 	if "prompt_evolution" in data:
 		mc.prompt_evolution = _build_prompt_evolution(data["prompt_evolution"])
+	if "episodic_memory" in data:
+		mc.episodic_memory = _build_episodic_memory(data["episodic_memory"])
 	# Populate module-level extra env keys for claude_subprocess_env()
 	global _extra_env_keys
 	_extra_env_keys = set(mc.security.extra_env_keys) - _ENV_DENYLIST

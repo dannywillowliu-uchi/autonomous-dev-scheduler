@@ -637,3 +637,31 @@ class PromptOutcome:
 	context: str = ""  # JSON str
 	recorded_at: str = field(default_factory=_now_iso)
 
+
+@dataclass
+class EpisodicMemory:
+	"""A single episodic memory from a mission event."""
+
+	id: str = field(default_factory=_new_id)
+	event_type: str = ""  # merge_success / merge_conflict / test_failure / fixup_success
+	content: str = ""
+	outcome: str = ""
+	scope_tokens: str = ""  # comma-separated
+	confidence: float = 1.0
+	access_count: int = 0
+	last_accessed: str = field(default_factory=_now_iso)
+	created_at: str = field(default_factory=_now_iso)
+	ttl_days: int = 30
+
+
+@dataclass
+class SemanticMemory:
+	"""A generalized rule distilled from multiple episodes."""
+
+	id: str = field(default_factory=_new_id)
+	content: str = ""
+	source_episode_ids: str = ""  # comma-separated
+	confidence: float = 1.0
+	application_count: int = 0
+	created_at: str = field(default_factory=_now_iso)
+
