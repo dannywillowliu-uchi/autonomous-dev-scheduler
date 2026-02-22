@@ -7,7 +7,9 @@ import asyncio
 import logging
 import subprocess
 import sys
+import threading
 from pathlib import Path
+from typing import Any
 
 from mission_control.config import MissionConfig, load_config, validate_config
 from mission_control.db import Database
@@ -116,6 +118,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 	# mc mcp
 	sub.add_parser("mcp", help="Start the MCP server (stdio)")
+
+	# mc a2a
+	a2a = sub.add_parser("a2a", help="Start the A2A protocol server")
+	a2a.add_argument("--config", default=DEFAULT_CONFIG, help="Config file path")
 
 	# mc validate-config
 	vc = sub.add_parser("validate-config", help="Validate config file semantically")
@@ -900,6 +906,41 @@ def cmd_mcp(args: argparse.Namespace) -> int:
 	return 0
 
 
+def cmd_a2a(args: argparse.Namespace) -> int:
+	"""Start the A2A protocol server."""
+	import signal
+
+	try:
+		from mission_control.a2a import A2AServer
+	except ImportError:
+		print("FastAPI/uvicorn not installed. Run: pip install mission-control[dashboard]")
+		return 1
+
+	config = load_config(args.config)
+	db_path = _get_db_path(args.config)
+
+	with Database(db_path) as db:
+		server = A2AServer(config.a2a, db)
+		server.start()
+		print(f"A2A server running on {config.a2a.host}:{config.a2a.port}")
+		print("Press Ctrl-C to stop.")
+
+		stop_event = threading.Event()
+		original_handler = signal.getsignal(signal.SIGINT)
+
+		def _handle_sigint(signum: int, frame: Any) -> None:
+			stop_event.set()
+
+		signal.signal(signal.SIGINT, _handle_sigint)
+		try:
+			stop_event.wait()
+		finally:
+			signal.signal(signal.SIGINT, original_handler)
+			server.stop()
+
+	return 0
+
+
 
 
 def cmd_priority_list(args: argparse.Namespace) -> int:
@@ -1144,6 +1185,7 @@ COMMANDS = {
 	"unregister": cmd_unregister,
 	"projects": cmd_projects,
 	"mcp": cmd_mcp,
+	"a2a": cmd_a2a,
 	"validate-config": cmd_validate_config,
 	"priority": cmd_priority,
 }
