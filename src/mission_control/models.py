@@ -205,6 +205,8 @@ class WorkUnit:
 	input_tokens: int = 0
 	output_tokens: int = 0
 	cost_usd: float = 0.0
+	speculation_score: float = 0.0
+	speculation_parent_id: str = ""
 
 
 @dataclass
@@ -479,6 +481,23 @@ class ExperimentResult:
 	comparison_report: str = ""  # JSON blob
 	recommended_approach: str = ""
 	created_at: str = field(default_factory=_now_iso)
+
+
+@dataclass
+class SpeculationResult:
+	"""Result of a speculation branching execution with winner selection."""
+
+	id: str = field(default_factory=_new_id)
+	parent_unit_id: str = ""
+	winner_branch_id: str = ""
+	mission_id: str = ""
+	epoch_id: str = ""
+	branch_count: int = 0
+	branch_ids: str = ""  # comma-separated
+	branch_scores: str = ""  # JSON: {branch_id: score}
+	total_speculation_cost_usd: float = 0.0
+	selection_metric: str = "review_score"
+	timestamp: str = field(default_factory=_now_iso)
 
 
 # -- Discovery models --

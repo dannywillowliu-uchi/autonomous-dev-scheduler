@@ -377,6 +377,17 @@ class EpisodicMemoryConfig:
 
 
 @dataclass
+class SpeculationConfig:
+	"""Speculation branching settings for high-uncertainty work units."""
+
+	enabled: bool = False
+	uncertainty_threshold: float = 0.7
+	branch_count: int = 2
+	selection_metric: str = "review_score"  # review_score | cost | status
+	cost_limit_multiplier: float = 1.5
+
+
+@dataclass
 class MCPRegistryConfig:
 	"""MCP tool registry settings."""
 
@@ -449,6 +460,7 @@ class MissionConfig:
 	mcp_registry: MCPRegistryConfig = field(default_factory=MCPRegistryConfig)
 	prompt_evolution: PromptEvolutionConfig = field(default_factory=PromptEvolutionConfig)
 	episodic_memory: EpisodicMemoryConfig = field(default_factory=EpisodicMemoryConfig)
+	speculation: SpeculationConfig = field(default_factory=SpeculationConfig)
 
 
 def _build_dashboard(data: dict[str, Any]) -> DashboardConfig:
@@ -877,6 +889,21 @@ def _build_prompt_evolution(data: dict[str, Any]) -> PromptEvolutionConfig:
 	return pc
 
 
+def _build_speculation(data: dict[str, Any]) -> SpeculationConfig:
+	sc = SpeculationConfig()
+	if "enabled" in data:
+		sc.enabled = bool(data["enabled"])
+	if "uncertainty_threshold" in data:
+		sc.uncertainty_threshold = float(data["uncertainty_threshold"])
+	if "branch_count" in data:
+		sc.branch_count = int(data["branch_count"])
+	if "selection_metric" in data:
+		sc.selection_metric = str(data["selection_metric"])
+	if "cost_limit_multiplier" in data:
+		sc.cost_limit_multiplier = float(data["cost_limit_multiplier"])
+	return sc
+
+
 def _build_episodic_memory(data: dict[str, Any]) -> EpisodicMemoryConfig:
 	ec = EpisodicMemoryConfig()
 	if "enabled" in data:
@@ -1054,6 +1081,8 @@ def load_config(path: str | Path) -> MissionConfig:
 		mc.prompt_evolution = _build_prompt_evolution(data["prompt_evolution"])
 	if "episodic_memory" in data:
 		mc.episodic_memory = _build_episodic_memory(data["episodic_memory"])
+	if "speculation" in data:
+		mc.speculation = _build_speculation(data["speculation"])
 	# Populate module-level extra env keys for claude_subprocess_env()
 	global _extra_env_keys
 	_extra_env_keys = set(mc.security.extra_env_keys) - _ENV_DENYLIST
