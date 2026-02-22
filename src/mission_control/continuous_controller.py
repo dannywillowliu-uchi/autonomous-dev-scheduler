@@ -170,6 +170,13 @@ class ContinuousController:
 		)
 		self._causal_attributor: CausalAttributor = CausalAttributor(db)
 		self._tracer: MissionTracer = MissionTracer(config.tracing)
+		self._a2a_server: Any = None
+		if config.a2a.enabled:
+			try:
+				from mission_control.a2a import A2AServer
+				self._a2a_server = A2AServer(config.a2a, db)
+			except ImportError:
+				logger.warning("A2A server requested but fastapi/uvicorn not installed")
 		budget = config.scheduler.budget
 		self._ema: ExponentialMovingAverage = ExponentialMovingAverage(
 			alpha=budget.ema_alpha,
@@ -333,6 +340,12 @@ class ContinuousController:
 
 		try:
 			await self._init_components()
+			if self._a2a_server is not None:
+				try:
+					self._a2a_server.start()
+				except Exception as exc:
+					logger.warning("Failed to start A2A server: %s", exc)
+					self._a2a_server = None
 			self._mission_span_ctx = self._tracer.start_mission_span(mission.id)
 			self._mission_span = self._mission_span_ctx.__enter__()
 
@@ -496,6 +509,12 @@ class ContinuousController:
 				logger.error(
 					"Failed to update mission in finally: %s", exc, exc_info=True,
 				)
+
+			if self._a2a_server is not None:
+				try:
+					self._a2a_server.stop()
+				except Exception as exc:
+					logger.debug("Failed to stop A2A server: %s", exc)
 
 			if self._backend:
 				await self._backend.cleanup()
