@@ -219,6 +219,24 @@ class GreenBranchManager:
 					logger.info("Rebase retry succeeded for %s", branch_name)
 				logger.info("Rebased %s onto %s", branch_name, gb.green_branch)
 
+				# Sanity check: ensure the rebased branch actually has commits
+				# ahead of mc/green. If the worker workspace was released and
+				# reset before we fetched, the unit branch ref gets destroyed
+				# and the rebase collapses to a no-op.
+				_, ahead_count = await self._run_git(
+					"rev-list", "--count", f"{gb.green_branch}..{rebase_branch}",
+				)
+				if ahead_count.strip() in ("", "0"):
+					logger.error(
+						"Rebased %s has 0 commits ahead of %s -- "
+						"unit branch was likely destroyed by workspace reset",
+						branch_name, gb.green_branch,
+					)
+					return UnitMergeResult(
+						failure_output="Unit branch empty after rebase (workspace reset race)",
+						failure_stage="empty_rebase",
+					)
+
 				# Create temp branch from mc/green
 				await self._run_git("checkout", gb.green_branch)
 				await self._run_git("branch", "-D", temp_branch)  # clean up stale
