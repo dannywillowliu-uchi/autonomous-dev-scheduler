@@ -115,6 +115,30 @@ class TestLocalBackend:
 		assert branch_call[1]["cwd"] == "/pool/clone-1"
 
 	@patch("mission_control.backends.local.asyncio.create_subprocess_exec")
+	async def test_provision_creates_marker_file(
+		self, mock_exec: AsyncMock, backend: LocalBackend, tmp_path: Path,
+	) -> None:
+		"""provision_workspace creates .editable-install-protected marker."""
+		workspace = tmp_path / "clone-1"
+		workspace.mkdir()
+		backend._pool.acquire.return_value = workspace
+
+		# Create a source .venv so the symlink code path runs
+		source_venv = tmp_path / "source" / ".venv"
+		source_venv.mkdir(parents=True)
+
+		mock_proc = AsyncMock()
+		mock_proc.returncode = 0
+		mock_proc.communicate = AsyncMock(return_value=(b"", None))
+		mock_exec.return_value = mock_proc
+
+		await backend.provision_workspace("w1", str(tmp_path / "source"), "main")
+
+		marker = workspace / ".editable-install-protected"
+		assert marker.exists()
+		assert "Do not run pip install" in marker.read_text()
+
+	@patch("mission_control.backends.local.asyncio.create_subprocess_exec")
 	async def test_provision_workspace_uses_force_create_branch(
 		self, mock_exec: AsyncMock, backend: LocalBackend,
 	) -> None:

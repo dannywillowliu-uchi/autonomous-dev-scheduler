@@ -76,6 +76,7 @@ Files likely involved: {files_hint}
 4. If verification passes, commit with a descriptive message
 5. If verification fails after 3 attempts, stop and report what went wrong
 6. Do NOT modify unrelated files or tests
+- Do NOT run `pip install`, `uv pip install`, or modify the Python environment -- it is pre-configured via symlink
 
 ## Output
 When done, write a summary as the LAST line of output:
@@ -154,6 +155,7 @@ You are a research agent for {target_name} at {workspace_path}.
 - Do NOT commit code changes -- your output is the research itself
 - Document findings thoroughly in your MC_RESULT discoveries field
 - Note any risks, dependencies, or blockers you find in concerns
+- Do NOT run `pip install`, `uv pip install`, or modify the Python environment -- it is pre-configured via symlink
 
 ## Scope
 Files to investigate: {files_hint}
@@ -187,6 +189,7 @@ You are an experiment agent for {target_name} at {workspace_path}.
 - After testing all approaches, produce a JSON comparison report in your MC_RESULT
 - The comparison report should include: approach names, metrics, pros/cons, and a recommendation
 - Clean up any experimental code changes before finishing (git checkout -- .)
+- Do NOT run `pip install`, `uv pip install`, or modify the Python environment -- it is pre-configured via symlink
 
 ## Scope
 Files to investigate: {files_hint}
@@ -221,6 +224,7 @@ You are working on {target_name} at {workspace_path}.
 - No modifications to unrelated files
 - No refactoring beyond the task scope
 - Add tests to existing test files (tests/test_<module>.py), not new files.
+- Do NOT run `pip install`, `uv pip install`, or modify the Python environment -- it is pre-configured via symlink
 - Commit when done or explain why blocked
 
 ## Verification
@@ -256,6 +260,7 @@ Run (read-only check): {verification_command}
 ## Instructions
 Analyze the codebase and describe exactly what changes are needed, which files to modify, and why.
 Do NOT write code. Do NOT modify any files. Do NOT commit anything.
+Do NOT run `pip install`, `uv pip install`, or modify the Python environment -- it is pre-configured via symlink.
 
 For each change, specify:
 1. The file path
@@ -289,6 +294,7 @@ The following analysis describes exactly what changes to make:
 - No modifications to unrelated files
 - No refactoring beyond the task scope
 - Add tests to existing test files (tests/test_<module>.py), not new files.
+- Do NOT run `pip install`, `uv pip install`, or modify the Python environment -- it is pre-configured via symlink
 - Commit when done or explain why blocked
 
 ## Verification

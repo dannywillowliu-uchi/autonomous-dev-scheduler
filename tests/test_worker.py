@@ -1288,3 +1288,39 @@ class TestBraceSanitizationInPrompts:
 		prompt = render_worker_prompt(unit, config, "/tmp/clone", "mc/unit-x")
 		assert "make test ARGS" in prompt
 		assert "verbose" in prompt
+
+
+class TestPipInstallConstraint:
+	"""All worker prompt templates forbid pip install to protect symlinked venvs."""
+
+	_PIP_CONSTRAINT = "Do NOT run `pip install`"
+
+	def test_worker_prompt_forbids_pip(self, config: MissionConfig) -> None:
+		unit = WorkUnit(title="X", description="Y")
+		prompt = render_worker_prompt(unit, config, "/tmp/ws", "mc/unit-x")
+		assert self._PIP_CONSTRAINT in prompt
+
+	def test_mission_worker_prompt_forbids_pip(self, config: MissionConfig) -> None:
+		unit = WorkUnit(title="X", description="Y")
+		prompt = render_mission_worker_prompt(unit, config, "/tmp/ws", "mc/unit-x")
+		assert self._PIP_CONSTRAINT in prompt
+
+	def test_research_prompt_forbids_pip(self, config: MissionConfig) -> None:
+		unit = WorkUnit(title="X", description="Y", unit_type="research")
+		prompt = render_mission_worker_prompt(unit, config, "/tmp/ws", "mc/unit-x")
+		assert self._PIP_CONSTRAINT in prompt
+
+	def test_experiment_prompt_forbids_pip(self, config: MissionConfig) -> None:
+		unit = WorkUnit(title="X", description="Y", unit_type="experiment")
+		prompt = render_mission_worker_prompt(unit, config, "/tmp/ws", "mc/unit-x")
+		assert self._PIP_CONSTRAINT in prompt
+
+	def test_architect_prompt_forbids_pip(self, config: MissionConfig) -> None:
+		unit = WorkUnit(title="X", description="Y")
+		prompt = render_architect_prompt(unit, config, "/tmp/ws")
+		assert self._PIP_CONSTRAINT in prompt
+
+	def test_editor_prompt_forbids_pip(self, config: MissionConfig) -> None:
+		unit = WorkUnit(title="X", description="Y")
+		prompt = render_editor_prompt(unit, config, "/tmp/ws", architect_output="Do Z")
+		assert self._PIP_CONSTRAINT in prompt
