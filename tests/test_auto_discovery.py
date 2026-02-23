@@ -503,3 +503,84 @@ class TestDiscoveryToBacklog:
 		# The new one should be inserted
 		new = [i for i in backlog if i.title == "New item"]
 		assert len(new) == 1
+
+
+# -- Capability track --
+
+
+class TestCapabilityTrack:
+	def test_format_track_includes_capability(self) -> None:
+		config = _config()
+		db = Database(":memory:")
+		engine = DiscoveryEngine(config, db)
+		text = engine._format_track_instructions(["feature", "quality", "security", "capability"])
+		assert "Track D - Capability Expansion" in text
+		assert "web research" in text.lower()
+
+	def test_format_track_without_capability(self) -> None:
+		config = _config()
+		db = Database(":memory:")
+		engine = DiscoveryEngine(config, db)
+		text = engine._format_track_instructions(["feature", "quality", "security"])
+		assert "Capability Expansion" not in text
+
+	def test_parse_accepts_capability_track(self) -> None:
+		config = _config()
+		db = Database(":memory:")
+		engine = DiscoveryEngine(config, db)
+		item = {
+			"track": "capability",
+			"title": "Add web research",
+			"description": "Workers can search the web",
+			"rationale": "Expand system capabilities",
+			"files_hint": "src/worker.py",
+			"impact": 9,
+			"effort": 5,
+		}
+		output = _discovery_json([item])
+		result, items = engine._parse_discovery_output(output)
+		assert result.item_count == 1
+		assert items[0].track == "capability"
+		assert items[0].title == "Add web research"
+
+	def test_parse_rejects_unknown_track(self) -> None:
+		config = _config()
+		db = Database(":memory:")
+		engine = DiscoveryEngine(config, db)
+		item = _sample_item(track="nonexistent")
+		output = _discovery_json([item])
+		result, items = engine._parse_discovery_output(output)
+		assert result.item_count == 0
+
+	def test_synthesize_prompt_includes_capability_track(self) -> None:
+		config = _config()
+		db = Database(":memory:")
+		engine = DiscoveryEngine(config, db)
+		analysis = AnalysisOutput(architecture="modular", gaps=[])
+		prompt = engine._build_synthesize_prompt(analysis, None)
+		assert "Capability Expansion" in prompt
+		assert "capability" in prompt.lower()
+
+	def test_analyze_prompt_includes_capability_category(self) -> None:
+		config = _config()
+		db = Database(":memory:")
+		engine = DiscoveryEngine(config, db)
+		prompt = engine._build_analyze_prompt()
+		assert "capability" in prompt.lower()
+		assert "Capability Gaps" in prompt
+
+	def test_compose_objective_handles_capability_track(self) -> None:
+		config = _config()
+		db = Database(":memory:")
+		engine = DiscoveryEngine(config, db)
+		items = [
+			BacklogItem(
+				track="capability",
+				title="Add web research",
+				description="Workers can search the web for docs",
+				priority_score=8.0,
+			),
+		]
+		obj = engine.compose_objective(items)
+		assert "Add web research" in obj
+		assert "Capability Expansion" in obj

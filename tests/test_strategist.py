@@ -18,8 +18,11 @@ from mission_control.continuous_controller import ContinuousController, Continuo
 from mission_control.db import Database
 from mission_control.models import BacklogItem, Epoch, Mission, Plan, StrategicContext, WorkUnit
 from mission_control.strategist import (
+	AMBITION_LEVEL_DESCRIPTIONS,
+	CAPABILITY_DOMAINS,
 	FOLLOWUP_RESULT_MARKER,
 	STRATEGY_RESULT_MARKER,
+	AmbitionLevel,
 	Strategist,
 	_build_strategy_prompt,
 )
@@ -1781,3 +1784,317 @@ class TestPostMissionStrategicContext:
 		# Currently Mission doesn't have these fields, so hasattr returns False
 		# This test verifies the guard works without error
 		assert mission.status == "completed"
+
+
+# -- Ambition Level enum --
+
+
+class TestAmbitionLevel:
+	def test_four_levels_exist(self) -> None:
+		assert len(AmbitionLevel) == 4
+
+	def test_level_ordering(self) -> None:
+		assert AmbitionLevel.BUGS_QUALITY < AmbitionLevel.IMPROVE_FEATURES
+		assert AmbitionLevel.IMPROVE_FEATURES < AmbitionLevel.NEW_CAPABILITIES
+		assert AmbitionLevel.NEW_CAPABILITIES < AmbitionLevel.META_IMPROVEMENTS
+
+	def test_level_values(self) -> None:
+		assert AmbitionLevel.BUGS_QUALITY == 1
+		assert AmbitionLevel.IMPROVE_FEATURES == 2
+		assert AmbitionLevel.NEW_CAPABILITIES == 3
+		assert AmbitionLevel.META_IMPROVEMENTS == 4
+
+	def test_all_levels_have_descriptions(self) -> None:
+		for level in AmbitionLevel:
+			assert level in AMBITION_LEVEL_DESCRIPTIONS
+			assert len(AMBITION_LEVEL_DESCRIPTIONS[level]) > 0
+
+	def test_capability_domains_exist(self) -> None:
+		assert len(CAPABILITY_DOMAINS) > 0
+		for domain in CAPABILITY_DOMAINS:
+			assert "name" in domain
+			assert "level" in domain
+			assert "description" in domain
+			assert "keywords" in domain
+
+	def test_capability_domains_have_valid_levels(self) -> None:
+		for domain in CAPABILITY_DOMAINS:
+			level = domain["level"]
+			assert level in (AmbitionLevel.NEW_CAPABILITIES, AmbitionLevel.META_IMPROVEMENTS)
+
+
+# -- Capability gap analysis --
+
+
+class TestCapabilityGapAnalysis:
+	def test_all_gaps_when_no_context(self) -> None:
+		s = _strategist()
+		s.db.get_pending_backlog.return_value = []
+		s.db.get_all_missions.return_value = []
+		gaps = s.analyze_capability_gaps()
+		assert len(gaps) == len(CAPABILITY_DOMAINS)
+
+	def test_gap_removed_when_keyword_in_backlog(self) -> None:
+		s = _strategist()
+		item = BacklogItem(
+			title="Add web research capability",
+			description="Workers can web search for docs",
+			priority_score=8.0,
+		)
+		s.db.get_pending_backlog.return_value = [item]
+		s.db.get_all_missions.return_value = []
+		gaps = s.analyze_capability_gaps()
+		gap_names = [g["name"] for g in gaps]
+		assert "Web Research" not in gap_names
+
+	def test_gap_removed_when_keyword_in_mission_objective(self) -> None:
+		s = _strategist()
+		s.db.get_pending_backlog.return_value = []
+		m = Mission(objective="Add browser automation testing", status="completed")
+		s.db.get_all_missions.return_value = [m]
+		gaps = s.analyze_capability_gaps()
+		gap_names = [g["name"] for g in gaps]
+		assert "Browser Automation" not in gap_names
+
+	def test_gap_structure(self) -> None:
+		s = _strategist()
+		s.db.get_pending_backlog.return_value = []
+		s.db.get_all_missions.return_value = []
+		gaps = s.analyze_capability_gaps()
+		for gap in gaps:
+			assert "name" in gap
+			assert "level" in gap
+			assert "description" in gap
+			assert isinstance(gap["level"], int)
+
+	def test_compute_gaps_partial_match(self) -> None:
+		"""Only matching domains are excluded, rest remain as gaps."""
+		s = _strategist()
+		item = BacklogItem(
+			title="Implement playwright end-to-end test suite",
+			description="Browser automation for UI testing",
+			priority_score=7.0,
+		)
+		s.db.get_pending_backlog.return_value = [item]
+		s.db.get_all_missions.return_value = []
+		gaps = s.analyze_capability_gaps()
+		gap_names = [g["name"] for g in gaps]
+		assert "Browser Automation" not in gap_names
+		# Other gaps should still be present
+		assert "Web Research" in gap_names
+
+
+# -- Ambition level determination --
+
+
+class TestDetermineAmbitionLevel:
+	def test_level_1_when_quality_items_exist(self) -> None:
+		s = _strategist()
+		pending = [
+			BacklogItem(title="Fix auth bug", track="quality", priority_score=7.0, status="pending"),
+		]
+		level = s._determine_ambition_level(pending, [])
+		assert level == AmbitionLevel.BUGS_QUALITY
+
+	def test_level_1_when_security_items_exist(self) -> None:
+		s = _strategist()
+		pending = [
+			BacklogItem(title="SQL injection vulnerability", track="security", priority_score=9.0, status="pending"),
+		]
+		level = s._determine_ambition_level(pending, [])
+		assert level == AmbitionLevel.BUGS_QUALITY
+
+	def test_level_1_from_title_keywords(self) -> None:
+		s = _strategist()
+		pending = [
+			BacklogItem(title="Fix broken tests", track="feature", priority_score=6.0, status="pending"),
+		]
+		level = s._determine_ambition_level(pending, [])
+		assert level == AmbitionLevel.BUGS_QUALITY
+
+	def test_level_2_when_feature_items_exist(self) -> None:
+		s = _strategist()
+		pending = [
+			BacklogItem(title="Add retry logic to API", track="feature", priority_score=7.0, status="pending"),
+		]
+		level = s._determine_ambition_level(pending, [])
+		assert level == AmbitionLevel.IMPROVE_FEATURES
+
+	def test_level_2_from_improve_keywords(self) -> None:
+		s = _strategist()
+		pending = [
+			BacklogItem(title="Improve error handling", track="", priority_score=6.0, status="pending"),
+		]
+		level = s._determine_ambition_level(pending, [])
+		assert level == AmbitionLevel.IMPROVE_FEATURES
+
+	def test_level_3_when_no_lower_items_and_gaps_exist(self) -> None:
+		s = _strategist()
+		gaps = [{"name": "Web Research", "level": int(AmbitionLevel.NEW_CAPABILITIES), "description": "..."}]
+		level = s._determine_ambition_level([], gaps)
+		assert level == AmbitionLevel.NEW_CAPABILITIES
+
+	def test_level_4_when_no_lower_items_and_no_level_3_gaps(self) -> None:
+		s = _strategist()
+		gaps = [{"name": "Self-Improving", "level": int(AmbitionLevel.META_IMPROVEMENTS), "description": "..."}]
+		level = s._determine_ambition_level([], gaps)
+		assert level == AmbitionLevel.META_IMPROVEMENTS
+
+	def test_level_4_when_no_items_and_no_gaps(self) -> None:
+		s = _strategist()
+		level = s._determine_ambition_level([], [])
+		assert level == AmbitionLevel.META_IMPROVEMENTS
+
+	def test_ignores_low_priority_items(self) -> None:
+		"""Items below priority 3.0 don't count toward any level."""
+		s = _strategist()
+		pending = [
+			BacklogItem(title="Fix trivial lint", track="quality", priority_score=1.0, status="pending"),
+		]
+		gaps = [{"name": "Web Research", "level": int(AmbitionLevel.NEW_CAPABILITIES), "description": "..."}]
+		level = s._determine_ambition_level(pending, gaps)
+		assert level == AmbitionLevel.NEW_CAPABILITIES
+
+	def test_ignores_non_pending_items(self) -> None:
+		"""Completed/deferred items don't count."""
+		s = _strategist()
+		pending = [
+			BacklogItem(title="Fix auth bug", track="quality", priority_score=8.0, status="completed"),
+		]
+		gaps = [{"name": "Web Research", "level": int(AmbitionLevel.NEW_CAPABILITIES), "description": "..."}]
+		level = s._determine_ambition_level(pending, gaps)
+		assert level == AmbitionLevel.NEW_CAPABILITIES
+
+	def test_level_1_takes_priority_over_level_2(self) -> None:
+		"""When both Level 1 and Level 2 items exist, Level 1 wins."""
+		s = _strategist()
+		pending = [
+			BacklogItem(title="Add caching", track="feature", priority_score=8.0, status="pending"),
+			BacklogItem(title="Fix race condition", track="security", priority_score=7.0, status="pending"),
+		]
+		level = s._determine_ambition_level(pending, [])
+		assert level == AmbitionLevel.BUGS_QUALITY
+
+
+# -- Web research context hook --
+
+
+class TestWebResearchContextHook:
+	def test_returns_empty_by_default(self) -> None:
+		s = _strategist()
+		assert s._get_web_research_context() == ""
+
+
+# -- Strategy prompt with ambition level --
+
+
+class TestStrategyPromptAmbitionLevel:
+	def test_prompt_includes_ambition_level(self) -> None:
+		prompt = _build_strategy_prompt(
+			"", "", "", "", "",
+			ambition_level=AmbitionLevel.NEW_CAPABILITIES,
+		)
+		assert "Level 3" in prompt
+		assert "NEW_CAPABILITIES" in prompt
+		assert "MUST propose" in prompt
+
+	def test_prompt_includes_capability_gaps(self) -> None:
+		gaps = "- [Level 3] Web Research: Search the web for docs"
+		prompt = _build_strategy_prompt(
+			"", "", "", "", "",
+			capability_gaps=gaps,
+		)
+		assert "Capability Gap Analysis" in prompt
+		assert "Web Research" in prompt
+
+	def test_prompt_includes_web_research_context(self) -> None:
+		prompt = _build_strategy_prompt(
+			"", "", "", "", "",
+			web_research_context="Latest Claude API supports tool use",
+		)
+		assert "Web Research Context" in prompt
+		assert "Claude API" in prompt
+
+	def test_prompt_escalation_instruction_at_level_3(self) -> None:
+		prompt = _build_strategy_prompt(
+			"", "", "", "", "",
+			ambition_level=AmbitionLevel.NEW_CAPABILITIES,
+		)
+		assert "lower-level work has been exhausted" in prompt
+
+	def test_prompt_no_escalation_at_level_1(self) -> None:
+		prompt = _build_strategy_prompt(
+			"", "", "", "", "",
+			ambition_level=AmbitionLevel.BUGS_QUALITY,
+		)
+		assert "lower-level work has been exhausted" not in prompt
+
+	def test_prompt_all_level_descriptions_present(self) -> None:
+		prompt = _build_strategy_prompt(
+			"", "", "", "", "",
+			ambition_level=AmbitionLevel.IMPROVE_FEATURES,
+		)
+		assert "Level 1:" in prompt
+		assert "Level 2:" in prompt
+		assert "Level 3:" in prompt
+		assert "Level 4:" in prompt
+
+	def test_prompt_without_ambition_level_unchanged(self) -> None:
+		"""Without ambition_level, prompt doesn't include ambition sections."""
+		prompt = _build_strategy_prompt("", "", "", "", "")
+		assert "Target Ambition Level" not in prompt
+		assert "Capability Gap Analysis" not in prompt
+
+
+# -- propose_objective with ambition level --
+
+
+class TestProposeObjectiveAmbition:
+	@pytest.mark.asyncio
+	async def test_propose_includes_ambition_context(self) -> None:
+		s = _strategist()
+		s.db.get_pending_backlog.return_value = []
+		s.db.get_all_missions.return_value = []
+		strategy_output = _make_strategy_output("Add web research", "Expand capabilities", 8)
+
+		git_proc = AsyncMock()
+		git_proc.communicate.return_value = (b"abc123 commit", b"")
+		git_proc.returncode = 0
+
+		llm_proc = AsyncMock()
+		llm_proc.communicate.return_value = (strategy_output.encode(), b"")
+		llm_proc.returncode = 0
+
+		with patch("mission_control.strategist.asyncio.create_subprocess_exec", side_effect=[git_proc, llm_proc]):
+			obj, _, score = await s.propose_objective()
+
+		assert obj == "Add web research"
+		# Verify the LLM prompt included ambition context
+		call_args = llm_proc.communicate.call_args
+		prompt_bytes = call_args[1].get("input") or call_args[0][0] if call_args[0] else call_args[1]["input"]
+		prompt = prompt_bytes.decode()
+		assert "Target Ambition Level" in prompt
+
+	@pytest.mark.asyncio
+	async def test_propose_escalates_when_backlog_empty(self) -> None:
+		s = _strategist()
+		s.db.get_pending_backlog.return_value = []
+		s.db.get_all_missions.return_value = []
+		strategy_output = _make_strategy_output("Build new system", "Level 3 escalation", 9)
+
+		git_proc = AsyncMock()
+		git_proc.communicate.return_value = (b"", b"")
+		git_proc.returncode = 0
+
+		llm_proc = AsyncMock()
+		llm_proc.communicate.return_value = (strategy_output.encode(), b"")
+		llm_proc.returncode = 0
+
+		with patch("mission_control.strategist.asyncio.create_subprocess_exec", side_effect=[git_proc, llm_proc]):
+			await s.propose_objective()
+
+		call_args = llm_proc.communicate.call_args
+		prompt_bytes = call_args[1].get("input") or call_args[0][0] if call_args[0] else call_args[1]["input"]
+		prompt = prompt_bytes.decode()
+		# Should escalate to Level 3+ when no pending items
+		assert "lower-level work has been exhausted" in prompt
