@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.resources
 import json
 import logging
 import time
@@ -23,7 +24,7 @@ from mission_control.models import BacklogItem, Signal, TrajectoryRating, _now_i
 
 logger = logging.getLogger(__name__)
 
-_UI_PATH = Path(__file__).parent / "live_ui.html"
+_UI_PATH = importlib.resources.files("mission_control.dashboard").joinpath("live_ui.html")
 
 VALID_SIGNAL_TYPES = {"stop", "pause", "resume", "cancel_unit", "adjust_workers"}
 
@@ -94,7 +95,9 @@ class LiveDashboard:
 		self.auth_token = auth_token
 		self._connections: set[WebSocket] = set()
 		self._broadcast_task: asyncio.Task[None] | None = None
-		self._ui_mtime: float = _UI_PATH.stat().st_mtime if _UI_PATH.exists() else 0.0
+		# Resolve to a concrete Path for mtime tracking (hot-reload support)
+		self._ui_concrete = Path(str(_UI_PATH)) if _UI_PATH.is_file() else None
+		self._ui_mtime: float = self._ui_concrete.stat().st_mtime if self._ui_concrete else 0.0
 		self._signal_timestamps: dict[str, list[float]] = defaultdict(list)
 
 		@asynccontextmanager
@@ -166,7 +169,7 @@ class LiveDashboard:
 
 		@self.app.get("/", response_class=HTMLResponse)
 		async def index() -> HTMLResponse:
-			if _UI_PATH.exists():
+			if _UI_PATH.is_file():
 				return HTMLResponse(_UI_PATH.read_text())
 			return HTMLResponse("<h1>Mission Control Live</h1><p>UI file not found.</p>")
 
@@ -359,8 +362,8 @@ class LiveDashboard:
 			if self._connections:
 				snapshot = self._build_snapshot()
 				# Check if the UI file has changed on disk (e.g. from auto-push)
-				if _UI_PATH.exists():
-					current_mtime = _UI_PATH.stat().st_mtime
+				if self._ui_concrete and self._ui_concrete.exists():
+					current_mtime = self._ui_concrete.stat().st_mtime
 					if current_mtime != self._ui_mtime:
 						self._ui_mtime = current_mtime
 						snapshot["reload"] = True

@@ -460,3 +460,18 @@ class TestDeriveWorkersFromPlan:
 		assert len(snap.workers) == 2
 		titles = {w.current_unit_title for w in snap.workers}
 		assert titles == {"Building API", "Writing tests"}
+
+
+class TestLiveUIPath:
+	def test_ui_path_uses_importlib_resources(self) -> None:
+		"""_UI_PATH resolves via importlib.resources, not __file__."""
+		from mission_control.dashboard.live import _UI_PATH
+		# Should be a Traversable from importlib.resources, not a raw Path
+		assert _UI_PATH.name == "live_ui.html"
+		assert _UI_PATH.is_file()
+
+	def test_ui_path_readable(self) -> None:
+		"""_UI_PATH can be read as text (the HTML file exists in the package)."""
+		from mission_control.dashboard.live import _UI_PATH
+		content = _UI_PATH.read_text()
+		assert len(content) > 0

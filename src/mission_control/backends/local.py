@@ -95,10 +95,21 @@ class LocalBackend(WorkerBackend):
 		# Symlink source .venv into worker workspace for verification commands.
 		# _reset_clone() runs git clean -fdx which deletes symlinks, so this
 		# must be recreated on every provision.
+		# IMPORTANT: Workers must NOT run `pip install` or `uv pip install` --
+		# doing so overwrites the editable install to point at the clone instead
+		# of the source tree, breaking imports after mc/green reset.
 		source_venv = Path(source_repo) / ".venv"
 		workspace_venv = Path(workspace) / ".venv"
 		if source_venv.exists() and not workspace_venv.exists():
 			workspace_venv.symlink_to(source_venv)
+
+		# Drop a marker so tooling can detect a protected symlinked venv
+		marker = Path(workspace) / ".editable-install-protected"
+		try:
+			if not marker.exists():
+				marker.write_text("This venv is symlinked from the source repo. Do not run pip install.\n")
+		except OSError:
+			pass
 
 		return str(workspace)
 
