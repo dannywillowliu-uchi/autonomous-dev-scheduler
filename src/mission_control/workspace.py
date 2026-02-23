@@ -112,8 +112,24 @@ class WorkspacePool:
 		return clone_path
 
 	async def _reset_clone(self, clone_path: Path) -> None:
-		"""Reset a clone to clean state: fetch, reset --hard, clean -fdx."""
+		"""Reset a clone to clean state: checkout base, fetch, reset --hard, clean -fdx.
+
+		IMPORTANT: checkout base_branch first so that `git reset --hard` only
+		moves the base branch ref, not the current (unit) branch.  Without
+		this, resetting while on mc/unit-X moves that branch ref to
+		origin/main, destroying the worker's commit before the green-branch
+		merge processor can fetch it.
+		"""
 		cwd = str(clone_path)
+
+		# Detach from unit branch so reset doesn't destroy its ref
+		checkout = await asyncio.create_subprocess_exec(
+			"git", "checkout", self.base_branch,
+			cwd=cwd,
+			stdout=asyncio.subprocess.PIPE,
+			stderr=asyncio.subprocess.STDOUT,
+		)
+		await checkout.communicate()
 
 		fetch = await asyncio.create_subprocess_exec(
 			"git", "fetch", "origin",
