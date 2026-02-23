@@ -128,7 +128,7 @@ class DiscoveryEngine:
 		target = self.config.target
 		categories = (
 			"testing, error_handling, performance, security, "
-			"documentation, architecture, code_quality, observability"
+			"documentation, architecture, code_quality, observability, capability"
 		)
 		return f"""You are a senior software architect performing a deep analysis \
 of the codebase at the current directory.
@@ -137,11 +137,14 @@ Analyze the codebase thoroughly and identify:
 1. **Architecture**: How the project is structured (modules, layers, patterns)
 2. **Patterns**: Key design patterns and conventions used
 3. **Gaps**: Areas where the codebase falls short of best practices
+4. **Capability Gaps**: What the system COULD do but currently CANNOT \
+(e.g., web research, browser testing, external integrations, self-improvement)
 
 Look beyond code quality gaps -- identify missing features, architectural \
 improvements, and strategic enhancements that would make this project \
 significantly more capable. Prioritize high-impact opportunities even if \
-they require significant effort.
+they require significant effort. Actively look for capability-expanding \
+opportunities that would compound over time.
 
 For each gap, classify it into one of these categories: {categories}.
 
@@ -321,10 +324,15 @@ RESEARCH_RESULT:
 		tracks = dc.tracks
 		max_per_track = dc.max_items_per_track
 
+		# Always include capability track for capability-expanding items
+		all_tracks = list(tracks)
+		if "capability" not in all_tracks:
+			all_tracks.append("capability")
+
 		# Build context sections
 		handoff_section = self._build_handoff_section()
 		past_section = self._build_past_section()
-		track_text = self._format_track_instructions(tracks)
+		track_text = self._format_track_instructions(all_tracks)
 
 		# Analysis context
 		analysis_section = ""
@@ -390,7 +398,7 @@ DISCOVERY_RESULT:
 ```
 
 Field definitions:
-- track: one of {json.dumps(tracks)}
+- track: one of {json.dumps(all_tracks)}
 - title: short actionable title (imperative form)
 - description: detailed explanation of what to change and how
 - rationale: why this matters
@@ -462,6 +470,14 @@ Target path: {target.resolved_path}
 				"**Track C - Security/Reliability**: Security vulnerabilities, "
 				"input validation gaps, error handling weaknesses, race conditions, "
 				"dependency issues, logging gaps."
+			)
+		if "capability" in tracks:
+			track_instructions.append(
+				"**Track D - Capability Expansion**: New capabilities that would "
+				"significantly expand what the system can do. Think: web research, "
+				"browser automation, multi-repo coordination, external integrations, "
+				"self-improvement mechanisms. These are high-ambition items that "
+				"compound over time and make the system fundamentally more capable."
 			)
 		return "\n".join(track_instructions)
 
@@ -586,12 +602,15 @@ Target path: {target.resolved_path}
 		if not isinstance(raw_items, list):
 			return result, []
 
+		# Accept configured tracks plus "capability" for capability-expanding items
+		valid_tracks = set(dc.tracks) | {"capability"}
+
 		items: list[BacklogItem] = []
 		for raw in raw_items:
 			if not isinstance(raw, dict):
 				continue
 			track = str(raw.get("track", ""))
-			if track not in dc.tracks:
+			if track not in valid_tracks:
 				continue
 
 			impact = int(raw.get("impact", 5))
@@ -633,6 +652,7 @@ Target path: {target.resolved_path}
 			"feature": "Features",
 			"quality": "Code Quality",
 			"security": "Security/Reliability",
+			"capability": "Capability Expansion",
 		}
 
 		for track, track_items in by_track.items():
