@@ -71,3 +71,4 @@ Do NOT re-target files in the 'Files Modified' list unless fixing a failure.
 - 2026-02-23T05:46:30.443223+00:00 | 02cdec96 merged (commit: 31681db) -- Added on_state_change callback parameter to CircuitBreakerManager.__init__. Call
 - 2026-02-23T05:46:51.064821+00:00 | 1bb6ad0f merged (commit: ee1b1c7) -- Removed _migrate_unit_type_column (duplicate of migration in _migrate_token_colu
 - 2026-02-23T05:46:51.162355+00:00 | ab961ee5 merged (commit: 3b6c598) -- Removed duplicate specialist field from WorkUnit dataclass in models.py. The fir
+- 2026-02-23T05:48:11.309034+00:00 | cd8a6db3 merged (commit: cca704e) -- Added set_causal_context() public API to RecursivePlanner and ContinuousPlanner,
