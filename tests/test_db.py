@@ -13,6 +13,7 @@ from mission_control.models import (
 	Decision,
 	DecompositionGrade,
 	Epoch,
+	KnowledgeItem,
 	MergeRequest,
 	Mission,
 	Plan,
@@ -690,26 +691,6 @@ class TestMissionChainId:
 		assert result == []
 
 
-class TestMissionAmbitionScore:
-	def test_insert_mission_with_ambition_score(self, db: Database) -> None:
-		"""Mission with ambition_score round-trips through insert/get."""
-		m = Mission(id="m1", objective="Build new system", ambition_score=7)
-		db.insert_mission(m)
-		result = db.get_mission("m1")
-		assert result is not None
-		assert result.ambition_score == 7
-
-	def test_update_mission_ambition_score(self, db: Database) -> None:
-		"""ambition_score can be updated after insert."""
-		m = Mission(id="m3", objective="Refactor")
-		db.insert_mission(m)
-		m.ambition_score = 5
-		db.update_mission(m)
-		result = db.get_mission("m3")
-		assert result is not None
-		assert result.ambition_score == 5
-
-
 class TestUnitReviews:
 	def _setup(self, db: Database) -> None:
 		db.insert_mission(Mission(id="m1", objective="Build API"))
@@ -900,3 +881,43 @@ class TestGetRunningUnits:
 		assert len(units) == 1
 		assert units[0].title == "Task A"
 		assert isinstance(units[0], WorkUnit)
+
+
+class TestKnowledgeItems:
+	def _setup(self, db: Database) -> None:
+		db.insert_mission(Mission(id="m1", objective="Build API"))
+
+	def test_insert_and_get(self, db: Database) -> None:
+		self._setup(db)
+		item = KnowledgeItem(
+			id="k1", mission_id="m1", source_unit_id="wu1",
+			source_unit_type="research", title="Auth pattern",
+			content="Use JWT tokens for auth", scope="src/auth.py",
+		)
+		db.insert_knowledge_item(item)
+		items = db.get_knowledge_for_mission("m1")
+		assert len(items) == 1
+		assert items[0].id == "k1"
+		assert items[0].title == "Auth pattern"
+		assert items[0].content == "Use JWT tokens for auth"
+		assert items[0].source_unit_type == "research"
+		assert items[0].scope == "src/auth.py"
+		assert items[0].confidence == 1.0
+
+	def test_multiple_items_ordered_by_created_at(self, db: Database) -> None:
+		self._setup(db)
+		db.insert_knowledge_item(KnowledgeItem(
+			id="k1", mission_id="m1", title="First",
+			created_at="2025-01-01T00:00:00",
+		))
+		db.insert_knowledge_item(KnowledgeItem(
+			id="k2", mission_id="m1", title="Second",
+			created_at="2025-01-02T00:00:00",
+		))
+		items = db.get_knowledge_for_mission("m1")
+		assert len(items) == 2
+		assert items[0].id == "k1"
+		assert items[1].id == "k2"
+
+	def test_empty_for_nonexistent_mission(self, db: Database) -> None:
+		assert db.get_knowledge_for_mission("nonexistent") == []

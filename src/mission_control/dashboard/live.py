@@ -628,8 +628,6 @@ def _serialize_mission(m: Any) -> dict[str, Any]:
 		"finished_at": m.finished_at,
 		"total_cost_usd": m.total_cost_usd,
 		"stopped_reason": m.stopped_reason,
-		"ambition_score": getattr(m, "ambition_score", 0),
-		"proposed_by_strategist": getattr(m, "proposed_by_strategist", False),
 	}
 
 

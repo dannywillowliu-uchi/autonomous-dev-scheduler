@@ -420,7 +420,6 @@ def cmd_mission(args: argparse.Namespace) -> int:
 		print(f"Workers: {config.scheduler.parallel.num_workers}")
 		cont = config.continuous
 		print(f"Max wall time: {cont.max_wall_time_seconds}s")
-		print(f"Backlog min size: {cont.backlog_min_size}")
 		print(f"Planner max depth: {config.planner.max_depth}")
 		gb = config.green_branch
 		print(f"Green branch: {gb.green_branch}")
@@ -539,8 +538,6 @@ def cmd_mission(args: argparse.Namespace) -> int:
 
 			with Database(db_path) as db:
 				controller = ContinuousController(config, db, chain_id=chain_id)
-				if args.strategist:
-					controller.proposed_by_strategist = True
 				result = asyncio.run(controller.run())
 
 			print(f"Mission: {result.mission_id}")
@@ -560,15 +557,19 @@ def cmd_mission(args: argparse.Namespace) -> int:
 
 			if not args.chain:
 				break
-			if not result.next_objective:
-				break
 			if chain_depth >= max_chain_depth:
 				print(f"Chain depth limit reached ({max_chain_depth}). Stopping.")
 				break
-
-			print(f"\n--- Chaining mission {chain_depth + 1}/{max_chain_depth} ---")
-			print(f"Next objective: {result.next_objective}")
-			config.target.objective = result.next_objective
+			# Re-invoke strategist for next objective if chaining
+			if args.strategist:
+				with Database(db_path) as chain_db:
+					chain_strat = Strategist(config, chain_db)
+					obj, _rat, _amb = asyncio.run(chain_strat.propose_objective())
+				config.target.objective = obj
+				print(f"\n--- Chaining mission {chain_depth + 1}/{max_chain_depth} ---")
+				print(f"Next objective: {obj}")
+			else:
+				break
 	finally:
 		if dashboard_server is not None:
 			dashboard_server.should_exit = True
@@ -726,7 +727,6 @@ fixup_max_attempts = 3
 
 [continuous]
 max_wall_time_seconds = 7200
-backlog_min_size = 2
 timeout_multiplier = 1.2
 
 [discovery]

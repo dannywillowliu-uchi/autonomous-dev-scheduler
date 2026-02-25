@@ -187,7 +187,7 @@ def db_runtime(tmp_path: Path) -> Database:
 
 
 class TestControllerExperimentCompletion:
-	"""Test experiment unit handling in _process_completions()."""
+	"""Test experiment unit handling in _process_single_completion()."""
 
 	def _insert_plan(self, db: Database, plan_id: str) -> None:
 		"""Insert a Plan record to satisfy FK constraints for work units."""
@@ -210,7 +210,6 @@ class TestControllerExperimentCompletion:
 		controller._planner = MagicMock()
 		controller._notifier = None
 		controller._event_stream = None
-		controller._completion_queue = asyncio.Queue()
 		controller._total_merged = 0
 		controller._total_failed = 0
 		controller._completed_unit_ids = set()
@@ -261,15 +260,11 @@ class TestControllerExperimentCompletion:
 			epoch=epoch,
 		)
 
-		# Put completion on queue and process
-		controller._completion_queue.put_nowait(completion)
-		controller.running = False  # Process just one item
-
 		result = MagicMock()
 		result.objective_met = False
 
 		asyncio.run(
-			controller._process_completions(mission, result)
+			controller._process_single_completion(completion, mission, result)
 		)
 
 		# merge_unit should NOT have been called
@@ -316,12 +311,9 @@ class TestControllerExperimentCompletion:
 			epoch=epoch,
 		)
 
-		controller._completion_queue.put_nowait(completion)
-		controller.running = False
-
 		result = MagicMock()
 		asyncio.run(
-			controller._process_completions(mission, result)
+			controller._process_single_completion(completion, mission, result)
 		)
 
 		# Check experiment_result was stored
@@ -371,12 +363,9 @@ class TestControllerExperimentCompletion:
 			epoch=epoch,
 		)
 
-		controller._completion_queue.put_nowait(completion)
-		controller.running = False
-
 		result = MagicMock()
 		asyncio.run(
-			controller._process_completions(mission, result)
+			controller._process_single_completion(completion, mission, result)
 		)
 
 		assert controller._total_failed == 1

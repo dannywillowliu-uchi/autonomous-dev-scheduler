@@ -20,7 +20,9 @@ from mission_control.causal import CausalAttributor, CausalSignal
 from mission_control.circuit_breaker import CircuitBreakerManager
 from mission_control.config import ContinuousConfig, MissionConfig, claude_subprocess_env
 from mission_control.constants import (
+	UNIT_EVENT_AUDIT_COMPLETED,
 	UNIT_EVENT_DEGRADATION_TRANSITION,
+	UNIT_EVENT_DESIGN_COMPLETED,
 	UNIT_EVENT_DISPATCHED,
 	UNIT_EVENT_MERGE_FAILED,
 	UNIT_EVENT_MERGED,
@@ -126,23 +128,6 @@ class WorkerCompletion:
 
 
 @dataclass
-class _RoundTracker:
-	"""Tracks unit outcomes within a single dispatch round."""
-
-	unit_ids: set[str]
-	completed_ids: set[str]
-	failed_ids: set[str]
-
-	@property
-	def all_resolved(self) -> bool:
-		return self.completed_ids | self.failed_ids == self.unit_ids
-
-	@property
-	def all_failed(self) -> bool:
-		return self.all_resolved and self.failed_ids == self.unit_ids
-
-
-@dataclass
 class ContinuousMissionResult:
 	"""Summary of a completed continuous mission."""
 
@@ -160,9 +145,6 @@ class ContinuousMissionResult:
 	evaluator_evidence: list[str] = field(default_factory=list)
 	evaluator_gaps: list[str] = field(default_factory=list)
 	backlog_item_ids: list[str] | None = None
-	ambition_score: int = 0
-	next_objective: str = ""
-	proposed_by_strategist: bool = False
 	db_errors: int = 0
 	units_failed_unrecovered: int = 0
 	sync_failures: int = 0
@@ -188,7 +170,6 @@ class ContinuousController:
 		self._planner: ContinuousPlanner | None = None
 		self._notifier: TelegramNotifier | None = None
 		self._heartbeat: Heartbeat | None = None
-		self._completion_queue: asyncio.Queue[WorkerCompletion] = asyncio.Queue()
 		self._active_tasks: set[asyncio.Task[None]] = set()
 		self._unit_tasks: dict[str, asyncio.Task[None]] = {}  # unit_id -> task
 		self._semaphore: DynamicSemaphore | None = None
@@ -199,18 +180,10 @@ class ContinuousController:
 		self._total_merged: int = 0
 		self._total_failed: int = 0
 		self._event_stream: EventStream | None = None
-		self._consecutive_all_fail_rounds: int = 0
-		self._round_tracker: dict[str, _RoundTracker] = {}  # epoch_id -> tracker
-		self._failure_backoff_until: float = 0.0
-		self._all_fail_stop_reason: str = ""
 		self._in_flight_count: int = 0
-		self._deferred_units: list[tuple[WorkUnit, Epoch, Mission]] = []
 		self._merged_files: set[str] = set()  # files covered by merged units
 		self._completed_unit_ids: set[str] = set()  # units that completed/merged successfully
-		self._retrying_unit_files: dict[str, set[str]] = {}  # unit_id -> files for units awaiting retry
 		self._last_reconcile_count: int = 0
-		self.ambition_score: float = 0.0
-		self.proposed_by_strategist: bool = False
 		self._objective_check_count: int = 0
 		self._failed_unit_replan_count: int = 0
 		self._strategist: Strategist | None = None
@@ -436,11 +409,6 @@ class ContinuousController:
 					except Exception as exc:
 						logger.error("Failed to update mission objective: %s", exc)
 
-			# Pass loaded backlog items to planner for richer planning context
-			if self._planner and self._backlog_manager.backlog_item_ids:
-				items = [self.db.get_backlog_item(bid) for bid in self._backlog_manager.backlog_item_ids]
-				self._planner.set_backlog_items([i for i in items if i is not None])
-
 			# Initialize JSONL event stream
 			target_dir = Path(self.config.target.resolved_path)
 			self._event_stream = EventStream(target_dir / "events.jsonl")
@@ -460,44 +428,7 @@ class ContinuousController:
 					self.config.scheduler.parallel.num_workers,
 				)
 
-			# Two concurrent tasks
-			dispatch_task = asyncio.create_task(
-				self._dispatch_loop(mission, result),
-			)
-			processor_task = asyncio.create_task(
-				self._process_completions(mission, result),
-			)
-
-			done, pending = await asyncio.wait(
-				[dispatch_task, processor_task],
-				return_when=asyncio.FIRST_COMPLETED,
-			)
-
-			# Cancel pending tasks
-			for task in pending:
-				task.cancel()
-				try:
-					await task
-				except asyncio.CancelledError:
-					pass
-
-			# Cancel any active worker tasks
-			for task in list(self._active_tasks):
-				task.cancel()
-				try:
-					await task
-				except asyncio.CancelledError:
-					pass
-
-			# Check for exceptions from completed tasks
-			for task in done:
-				if task.exception():
-					logger.error(
-						"Controller task failed: %s",
-						task.exception(), exc_info=task.exception(),
-					)
-					if not result.stopped_reason:
-						result.stopped_reason = "error"
+			await self._orchestration_loop(mission, result)
 
 		except (RuntimeError, OSError) as exc:
 			logger.error("Mission infrastructure error: %s", exc, exc_info=True)
@@ -588,12 +519,6 @@ class ContinuousController:
 			mission.status = "completed" if result.objective_met else "stopped"
 			mission.finished_at = _now_iso()
 			mission.stopped_reason = result.stopped_reason
-
-			# Set strategist metadata on mission if fields exist
-			if hasattr(mission, "ambition_score"):
-				mission.ambition_score = self.ambition_score
-			if hasattr(mission, "proposed_by_strategist"):
-				mission.proposed_by_strategist = self.proposed_by_strategist
 
 			try:
 				self.db.update_mission(mission)
@@ -706,26 +631,6 @@ class ContinuousController:
 			# Post-mission re-discovery
 			if self.config.discovery.enabled and result.objective_met:
 				await self._run_post_mission_discovery(mission.id)
-
-			# Determine if follow-up work is needed (mission chaining)
-			# Runs after discovery so newly-found backlog items are visible.
-			try:
-				remaining_backlog = self.db.get_pending_backlog(limit=5)
-				if remaining_backlog:
-					top_items = remaining_backlog[:3]
-					descriptions = [
-						f"[{item.track}] {item.title} (priority={item.priority_score:.1f})"
-						for item in top_items
-					]
-					prefix = "Objective met. " if result.objective_met else ""
-					result.next_objective = (
-						f"{prefix}Continue with {len(remaining_backlog)} remaining backlog items. "
-						f"Top priorities: {'; '.join(descriptions)}"
-					)
-					mission.next_objective = result.next_objective
-					logger.info("Next objective set for mission chaining: %s", result.next_objective[:100])
-			except Exception as exc:
-				logger.error("Failed to determine next objective: %s", exc, exc_info=True)
 
 			# Close the mission span
 			if hasattr(self, "_mission_span_ctx") and self._mission_span_ctx:
@@ -963,640 +868,27 @@ class ContinuousController:
 			enable_recovery=hb.enable_recovery,
 		)
 
-	async def _get_locked_files(self) -> dict[str, list[str]]:
-		"""Return files locked by running units and already merged.
-
-		Keys are file paths, values are lists of reasons (e.g. "in-flight: Build API").
-		"""
-		locked: dict[str, list[str]] = {}
-		# In-flight files
-		running_units = await self.db.locked_call("get_running_units")
-		for ru in running_units:
-			files = _parse_files_hint(ru.files_hint)
-			for f in files:
-				locked.setdefault(f, []).append(f"in-flight: {ru.title}")
-		# Merged files
-		for f in self._merged_files:
-			locked.setdefault(f, []).append("already merged")
-		return locked
-
-	def _check_already_merged(self, unit: WorkUnit) -> bool:
-		"""Check if a deferred unit's files have already been covered by a merged unit.
-
-		Returns True if the unit should be dropped (work already done).
-		"""
-		if not self._merged_files:
-			return False
-		unit_files = _parse_files_hint(unit.files_hint)
-		if not unit_files:
-			return False
-		# Drop if all of this unit's files are already covered by merged work
-		return unit_files <= self._merged_files
-
-	async def _check_in_flight_overlap(self, unit: WorkUnit) -> bool:
-		"""Check if a unit overlaps with any currently running or retrying units.
-
-		Returns True if the unit should be deferred (overlap detected).
-		"""
-		running_units = await self.db.locked_call("get_running_units", unit.id)
-
-		unit_files = _parse_files_hint(unit.files_hint)
-
-		for other in running_units:
-			other_files = _parse_files_hint(other.files_hint)
-
-			if unit_files and other_files:
-				if unit_files & other_files:
-					return True
-			elif not unit_files and not other_files:
-				return True
-
-		# Also check units awaiting retry (pending status but logically in-flight)
-		for retry_id, retry_files in self._retrying_unit_files.items():
-			if retry_id == unit.id:
-				continue
-			if unit_files and retry_files:
-				if unit_files & retry_files:
-					return True
-			elif not unit_files and not retry_files:
-				return True
-
-		return False
-
-	def _check_dependencies_met(self, unit: WorkUnit) -> bool:
-		"""Return True if all depends_on IDs have completed (or if there are none)."""
-		if not unit.depends_on:
-			return True
-		dep_ids = [d.strip() for d in unit.depends_on.split(",") if d.strip()]
-		return all(dep_id in self._completed_unit_ids for dep_id in dep_ids)
-
-	async def _dispatch_deferred(
+	async def _process_single_completion(
 		self,
-		mission: Mission,
-		epoch_map: dict[str, Epoch],
-	) -> None:
-		"""Try to dispatch previously deferred units that no longer overlap."""
-		if not self._deferred_units:
-			return
-
-		still_deferred: list[tuple[WorkUnit, Epoch, Mission]] = []
-		for unit, epoch, mission_ref in self._deferred_units:
-			# Drop deferred units whose files are already covered by merged work
-			if self._check_already_merged(unit):
-				logger.info(
-					"Dropping deferred unit %s (%s): files already covered by merged work",
-					unit.id[:12], unit.title[:50],
-				)
-				continue
-			if not self._check_dependencies_met(unit):
-				still_deferred.append((unit, epoch, mission_ref))
-				continue
-			if await self._check_in_flight_overlap(unit):
-				still_deferred.append((unit, epoch, mission_ref))
-				continue
-
-			# No longer overlapping -- dispatch
-			logger.info(
-				"Dispatching previously deferred unit %s: %s",
-				unit.id[:12], unit.title[:60],
-			)
-			await self._semaphore.acquire()
-			self._in_flight_count += 1
-			try:
-				self.db.insert_work_unit(unit)
-			except Exception as exc:
-				logger.error(
-					"Failed to insert deferred work unit: %s", exc, exc_info=True,
-				)
-				self._in_flight_count -= 1
-				self._semaphore.release()
-				continue
-
-			self._log_unit_event(
-				mission_id=mission_ref.id,
-				epoch_id=epoch.id,
-				work_unit_id=unit.id,
-				event_type=UNIT_EVENT_DISPATCHED,
-				stream_details={"title": unit.title, "files": unit.files_hint, "deferred": True},
-			)
-			self._total_dispatched += 1
-
-			task = asyncio.create_task(
-				self._execute_single_unit(unit, epoch, mission_ref),
-			)
-			self._active_tasks.add(task)
-			self._unit_tasks[unit.id] = task
-
-			def _on_task_done(t: asyncio.Task[None], uid: str = unit.id) -> None:
-				self._active_tasks.discard(t)
-				self._unit_tasks.pop(uid, None)
-				if not t.cancelled():
-					exc = t.exception()
-					if exc is not None:
-						logger.error("Fire-and-forget task failed: %s", exc, exc_info=exc)
-
-			task.add_done_callback(_on_task_done)
-
-		self._deferred_units = still_deferred
-
-	async def _dispatch_loop(
-		self,
+		completion: WorkerCompletion,
 		mission: Mission,
 		result: ContinuousMissionResult,
 	) -> None:
-		"""Dispatch work units to free workers as they become available."""
-		if self._planner is None:
-			raise RuntimeError("Controller not initialized: call start() first")
-		if self._backend is None:
-			raise RuntimeError("Controller not initialized: call start() first")
-
-		num_workers = self.config.scheduler.parallel.num_workers
-		self._semaphore = DynamicSemaphore(num_workers)
-		cooldown = self.config.continuous.cooldown_between_units
-		epoch_map: dict[str, Epoch] = {}
-
-		while self.running:
-			# READ_ONLY guard: skip dispatch, wait for in-flight to drain
-			if self._degradation.is_read_only:
-				self._degradation.check_in_flight_drained(self._in_flight_count)
-				await asyncio.sleep(1)
-				continue
-
-			# Try to dispatch previously deferred units before planning new ones
-			await self._dispatch_deferred(mission, epoch_map)
-
-			# Honor pause state
-			if self._paused:
-				await asyncio.sleep(1)
-				# Still check signals while paused (for resume/stop)
-				reason = self._check_signals(mission.id)
-				if reason:
-					result.stopped_reason = reason
-					self.running = False
-					break
-				continue
-
-			# Honor failure backoff (auto-pause after all-fail round)
-			if self._failure_backoff_until > 0 and time.monotonic() < self._failure_backoff_until:
-				await asyncio.sleep(1)
-				continue
-			self._failure_backoff_until = 0.0
-
-			# Expire stale signals
-			try:
-				self.db.expire_stale_signals(timeout_minutes=10)
-			except Exception as exc:
-				logger.debug("Failed to expire stale signals: %s", exc)
-
-			# Check stopping conditions before dispatching
-			reason = self._should_stop(mission)
-			if not reason and self._heartbeat:
-				reason = await self._heartbeat.check(
-					self._total_merged, self._total_failed,
-				)
-			if reason == "heartbeat_recovered":
-				# Recovery was already attempted in check() -- kill stuck workers and allow one more cycle
-				for task in list(self._active_tasks):
-					task.cancel()
-				logger.warning(
-					"Heartbeat recovery: killed %d active tasks, allowing one more cycle",
-					len(self._active_tasks),
-				)
-				self._heartbeat._consecutive_idle = 0
-				continue
-			if reason:
-				result.stopped_reason = reason
-				self.running = False
-				break
-
-			# Build feedback context for the planner
-			feedback_context = build_planner_context(self.db, mission.id)
-
-			# Gather locked files for the planner
-			locked_files = await self._get_locked_files()
-
-			# Compute causal risk table for planner
-			try:
-				causal_risks = self._compute_planner_risks()
-				if self._planner and causal_risks:
-					self._planner._inner._causal_risks = causal_risks
-			except Exception:
-				pass
-
-			# Inject project structure snapshot for planner
-			try:
-				from mission_control.snapshot import get_project_snapshot
-
-				snapshot = get_project_snapshot(self.config.target.resolved_path)
-				if self._planner and snapshot:
-					self._planner._inner._project_snapshot = snapshot
-			except Exception:
-				pass
-
-			# Get next batch of units from the planner
-			try:
-				plan, units, epoch = await self._planner.get_next_units(
-					mission,
-					max_units=num_workers,
-					feedback_context=feedback_context,
-					locked_files=locked_files,
-				)
-			except Exception as exc:
-				logger.error("Planner failed: %s", exc, exc_info=True)
-				await asyncio.sleep(5)
-				continue
-
-			if not units:
-				running_tasks = {uid: t for uid, t in self._unit_tasks.items() if not t.done()}
-				if running_tasks:
-					logger.info(
-						"Planner returned no new units, but %d units still in-flight -- waiting",
-						len(running_tasks),
-					)
-					await asyncio.gather(*running_tasks.values(), return_exceptions=True)
-					continue
-
-				# Gate: if units failed to merge, inform planner before accepting completion
-				cont = self.config.continuous
-				if self._total_failed > 0 and self._failed_unit_replan_count < cont.max_objective_checks:
-					self._failed_unit_replan_count += 1
-					try:
-						all_units = await self.db.locked_call(
-							"get_work_units_for_mission", mission.id,
-						)
-					except Exception as exc:
-						logger.warning("Failed to query units for failure gate: %s", exc)
-						all_units = []
-					failed_units = [u for u in all_units if u.status == "failed"]
-					if failed_units:
-						rejection_summary = "\n".join(
-							f"- {u.title} (files: {u.files_hint}): FAILED after {u.attempt} attempts"
-							for u in failed_units
-						)
-						feedback_context += (
-							f"\n\nWARNING: {len(failed_units)} work unit(s) FAILED and their changes "
-							"are NOT in mc/green:\n"
-							f"{rejection_summary}\n"
-							"You MUST create replacement units for this unfinished work, or the objective "
-							"is NOT complete. If you believe the work is truly unnecessary, return empty units "
-							"to confirm."
-						)
-						logger.warning(
-							"%d failed units detected, re-entering planner (attempt %d/%d)",
-							len(failed_units), self._failed_unit_replan_count, cont.max_objective_checks,
-						)
-						continue
-
-				# Optional: verify the objective is actually met before declaring done
-				if cont.verify_objective_completion:
-					check = await self._verify_objective(
-						mission, feedback_context,
-					)
-					if check is not None and not check["met"]:
-						feedback_context += (
-							f"\n\nOBJECTIVE NOT MET: {check['reason']}. "
-							"Continue working toward the objective."
-						)
-						logger.warning(
-							"Objective verification failed: %s -- re-entering planning loop",
-							check["reason"],
-						)
-						continue
-
-				if self._total_failed > 0:
-					logger.warning(
-						"Completing with %d unrecovered failed units after %d replan attempts",
-						self._total_failed, self._failed_unit_replan_count,
-					)
-
-				logger.info("Planner returned no units and no in-flight work -- objective complete")
-				result.objective_met = True
-				result.stopped_reason = "planner_completed"
-				self.running = False
-				if self._notifier:
-					notify_msg = "Mission complete: planner returned no more work units."
-					if self._total_failed > 0:
-						notify_msg += (
-							f" WARNING: {self._total_failed} unit(s) failed and were not recovered."
-						)
-					await self._notifier.send(notify_msg)
-				break
-
-			# Score ambition of planned work -- enforce minimum
-			if self._strategist:
-				ambition = await self._strategist.evaluate_ambition(units)
-			else:
-				ambition = self._score_ambition(units)
-			self.ambition_score = ambition
-			mission.ambition_score = ambition
-			result.ambition_score = ambition
-			logger.info("Ambition score for planned units: %d/10", ambition)
-
-			min_ambition = self.config.continuous.min_ambition_score
-			max_replans = self.config.continuous.max_replan_attempts
-			replan_attempts = 0
-
-			while ambition < min_ambition and replan_attempts < max_replans:
-				replan_attempts += 1
-				logger.warning(
-					"Ambition score %d < minimum %d (attempt %d/%d) -- replanning",
-					ambition, min_ambition, replan_attempts, max_replans,
-				)
-				rejection_feedback = (
-					f"PREVIOUS PLAN REJECTED: ambition score {ambition}/10 is below the "
-					f"minimum threshold of {min_ambition}. Plan more impactful work -- "
-					f"avoid trivial lint/quality fixes and target architecture improvements "
-					f"or feature additions instead."
-				)
-				enriched_context = feedback_context + "\n\n" + rejection_feedback
-				try:
-					plan, units, epoch = await self._planner.get_next_units(
-						mission,
-						max_units=num_workers,
-						feedback_context=enriched_context,
-						locked_files=locked_files,
-					)
-				except Exception as exc:
-					logger.error("Replan failed: %s", exc, exc_info=True)
-					break
-
-				if not units:
-					break
-
-				if self._strategist:
-					ambition = await self._strategist.evaluate_ambition(units)
-				else:
-					ambition = self._score_ambition(units)
-				self.ambition_score = ambition
-				mission.ambition_score = ambition
-				result.ambition_score = ambition
-				logger.info("Replanned ambition score: %d/10", ambition)
-
-			if ambition < min_ambition:
-				logger.info(
-					"Proceeding with ambition %d after %d replan attempts (max %d)",
-					ambition, replan_attempts, max_replans,
-				)
-
-			try:
-				self.db.update_mission(mission)
-			except Exception as exc:
-				logger.error("Failed to persist ambition score: %s", exc)
-
-			# Persist plan and tree
-			try:
-				self.db.insert_plan(plan)
-			except Exception as exc:
-				logger.error("Failed to insert plan: %s", exc, exc_info=True)
-				continue
-
-			# Persist epoch
-			try:
-				self.db.insert_epoch(epoch)
-			except Exception as exc:
-				logger.error("Failed to insert epoch: %s", exc, exc_info=True)
-
-			epoch_map[epoch.id] = epoch
-
-			# Compute topological layers for observability
-			layers = topological_layers(units)
-			if layers:
-				max_concurrent = max(len(lv) for lv in layers)
-				logger.info(
-					"Plan has %d layer(s), max %d concurrent units in layer 0",
-					len(layers), max_concurrent,
-				)
-
-			# Track this round for all-fail detection
-			self._round_tracker[epoch.id] = _RoundTracker(
-				unit_ids={u.id for u in units},
-				completed_ids=set(),
-				failed_ids=set(),
-			)
-
-			# Build unit->layer index mapping for event metadata
-			unit_layer_map: dict[str, int] = {}
-			for layer_idx, layer_units in enumerate(layers):
-				for lu in layer_units:
-					unit_layer_map[lu.id] = layer_idx
-
-			# Dispatch units layer-by-layer with gather barrier between layers
-			for layer_idx, layer in enumerate(layers):
-				logger.info(
-					"Dispatching layer %d/%d (%d units)",
-					layer_idx, len(layers) - 1, len(layer),
-				)
-
-				layer_tasks: list[asyncio.Task[None]] = []
-				pre_layer_total = self._total_merged + self._total_failed
-
-				for unit in layer:
-					unit.epoch_id = epoch.id
-
-					# Dependency gate: defer if depends_on IDs haven't completed
-					if not self._check_dependencies_met(unit):
-						logger.info(
-							"Deferring unit %s: dependencies not yet met",
-							unit.id[:12],
-						)
-						self._deferred_units.append((unit, epoch, mission))
-						continue
-
-					# Skip units whose files are already covered by merged work
-					if self._check_already_merged(unit):
-						logger.info(
-							"Skipping unit %s (%s): files already covered by merged work",
-							unit.id[:12], unit.title[:50],
-						)
-						continue
-
-					# Cross-epoch overlap check: defer if overlapping with in-flight work
-					if await self._check_in_flight_overlap(unit):
-						logger.warning(
-							"Deferring unit %s: overlaps with in-flight work",
-							unit.id[:12],
-						)
-						self._deferred_units.append((unit, epoch, mission))
-						continue
-
-					# Speculation: fork into N branches for high-uncertainty units
-					if (
-						self.config.speculation.enabled
-						and unit.speculation_score >= self.config.speculation.uncertainty_threshold
-					):
-						dispatched = await self._dispatch_speculated_unit(
-							unit, epoch, mission, unit_layer_map,
-						)
-						if dispatched:
-							continue
-
-					logger.info("Waiting for semaphore to dispatch unit %s: %s", unit.id[:12], unit.title[:60])
-					await self._semaphore.acquire()
-					self._in_flight_count += 1
-					logger.info("Semaphore acquired, dispatching unit %s", unit.id[:12])
-					try:
-						self.db.insert_work_unit(unit)
-					except Exception as exc:
-						logger.error(
-							"Failed to insert work unit: %s", exc, exc_info=True,
-						)
-						self._in_flight_count -= 1
-						self._semaphore.release()
-						continue
-
-					# Log dispatch event with layer index metadata
-					self._log_unit_event(
-						mission_id=mission.id,
-						epoch_id=epoch.id,
-						work_unit_id=unit.id,
-						event_type=UNIT_EVENT_DISPATCHED,
-						stream_details={
-							"title": unit.title,
-							"files": unit.files_hint,
-							"layer": layer_idx,
-						},
-					)
-
-					self._total_dispatched += 1
-
-					task = asyncio.create_task(
-						self._execute_single_unit(
-							unit, epoch, mission,
-						),
-					)
-					self._active_tasks.add(task)
-					self._unit_tasks[unit.id] = task
-					layer_tasks.append(task)
-
-					def _on_task_done(t: asyncio.Task[None], uid: str = unit.id) -> None:
-						self._active_tasks.discard(t)
-						self._unit_tasks.pop(uid, None)
-						if not t.cancelled():
-							exc = t.exception()
-							if exc is not None:
-								logger.error("Fire-and-forget task failed: %s", exc, exc_info=exc)
-
-					task.add_done_callback(_on_task_done)
-
-				# Barrier: wait for all units in this layer before starting next layer
-				if layer_tasks:
-					expected = pre_layer_total + len(layer_tasks)
-					logger.info(
-						"Layer %d: waiting for %d tasks to complete",
-						layer_idx, len(layer_tasks),
-					)
-					await asyncio.gather(*layer_tasks, return_exceptions=True)
-					# Wait for completion processor to finish merging this layer's
-					# results so _completed_unit_ids is current for the next layer
-					drain_deadline = time.monotonic() + 5.0
-					while (self._total_merged + self._total_failed) < expected:
-						if time.monotonic() > drain_deadline:
-							logger.warning(
-								"Layer %d: completion drain timeout (%d/%d processed)",
-								layer_idx,
-								self._total_merged + self._total_failed - pre_layer_total,
-								len(layer_tasks),
-							)
-							break
-						await asyncio.sleep(0.01)
-					logger.info("Layer %d complete", layer_idx)
-
-			if cooldown > 0:
-				await asyncio.sleep(cooldown)
-
-			# Degradation: check budget fraction for worker reduction
-			budget_limit = self.config.scheduler.budget.max_per_run_usd
-			if budget_limit > 0 and mission.total_cost_usd > 0:
-				self._degradation.check_budget_fraction(mission.total_cost_usd, budget_limit)
-
-			# Adaptive cooldown: increase sleep when costs approach budget
-			if budget_limit > 0 and mission.total_cost_usd > 0:
-				budget_fraction = mission.total_cost_usd / budget_limit
-				if budget_fraction > 0.8:
-					adaptive_sleep = cooldown + 30
-					logger.info(
-						"Adaptive cooldown: %.0f%% of budget used, sleeping %ds",
-						budget_fraction * 100, adaptive_sleep,
-					)
-					await asyncio.sleep(adaptive_sleep)
-				elif budget_fraction > 0.5:
-					adaptive_sleep = cooldown + 10
-					await asyncio.sleep(adaptive_sleep)
-
-	async def _process_completions(
-		self,
-		mission: Mission,
-		result: ContinuousMissionResult,
-	) -> None:
-		"""Process completed units: verify, merge, record feedback."""
+		"""Process a single completed unit: verify, merge, record feedback."""
 		if self._green_branch is None:
 			raise RuntimeError("Controller not initialized: call start() first")
 
 		cont = self.config.continuous
+		unit = completion.unit
+		handoff = completion.handoff
+		epoch = completion.epoch
+		workspace = completion.workspace
 
-		while self.running or not self._completion_queue.empty():
-			try:
-				completion = await asyncio.wait_for(
-					self._completion_queue.get(), timeout=2.0,
-				)
-			except asyncio.TimeoutError:
-				if not self.running and self._completion_queue.empty():
-					break
-				continue
-
-			unit = completion.unit
-			handoff = completion.handoff
-			epoch = completion.epoch
-			workspace = completion.workspace
-
-			# Research units: skip merge, just record findings
-			if unit.unit_type == "research":
-				if unit.status != "completed":
-					self._total_failed += 1
-					logger.info("Research unit %s failed", unit.id)
-					if handoff and self._planner:
-						self._planner.ingest_handoff(handoff)
-					mission.total_cost_usd += unit.cost_usd
-					if unit.cost_usd > 0:
-						self._ema.update(unit.cost_usd)
-					try:
-						self.db.update_mission(mission)
-					except Exception as exc:
-						logger.error("Failed to update mission cost for unit %s: %s", unit.id, exc)
-					self._record_round_outcome(unit, epoch, merged=False)
-					try:
-						signal = self._build_causal_signal(unit, epoch, mission, merged=False)
-						self._causal_attributor.record(signal)
-					except Exception:
-						pass
-					continue
-				logger.info("Research unit %s completed -- skipping merge", unit.id)
-				self._total_merged += 1
-				self._completed_unit_ids.add(unit.id)
-				self._log_unit_event(
-					mission_id=mission.id,
-					epoch_id=epoch.id,
-					work_unit_id=unit.id,
-					event_type=UNIT_EVENT_RESEARCH_COMPLETED,
-				)
-
-				if handoff and self._planner:
-					self._planner.ingest_handoff(handoff)
-
-				timestamp = unit.finished_at or _now_iso()
-				summary = (handoff.summary[:80] if handoff and handoff.summary else unit.output_summary[:80])
-				self._state_changelog.append(
-					f"- {timestamp} | {unit.id[:8]} research completed -- {summary}"
-				)
-
-				try:
-					update_mission_state(
-						self.db, mission, self.config, self._state_changelog,
-						degradation_status=self._degradation.get_status_dict(),
-					)
-				except Exception as exc:
-					logger.warning("Failed to update MISSION_STATE.md: %s", exc)
-
+		# Research units: skip merge, just record findings
+		if unit.unit_type == "research":
+			if unit.status != "completed":
+				self._total_failed += 1
+				logger.info("Research unit %s failed", unit.id)
 				mission.total_cost_usd += unit.cost_usd
 				if unit.cost_usd > 0:
 					self._ema.update(unit.cost_usd)
@@ -1604,287 +896,29 @@ class ContinuousController:
 					self.db.update_mission(mission)
 				except Exception as exc:
 					logger.error("Failed to update mission cost for unit %s: %s", unit.id, exc)
-				self._record_round_outcome(unit, epoch, merged=True)
 				try:
-					signal = self._build_causal_signal(unit, epoch, mission, merged=True)
+					signal = self._build_causal_signal(unit, epoch, mission, merged=False)
 					self._causal_attributor.record(signal)
 				except Exception:
 					pass
-				continue
+				return
+			logger.info("Research unit %s completed -- skipping merge", unit.id)
+			self._total_merged += 1
+			self._completed_unit_ids.add(unit.id)
+			self._log_unit_event(
+				mission_id=mission.id,
+				epoch_id=epoch.id,
+				work_unit_id=unit.id,
+				event_type=UNIT_EVENT_RESEARCH_COMPLETED,
+			)
+			self._extract_knowledge(unit, handoff, mission)
 
-			# Experiment units: skip merge, store comparison report
-			if unit.unit_type == "experiment":
-				if unit.status != "completed":
-					self._total_failed += 1
-					logger.info("Experiment unit %s failed", unit.id)
-					if handoff and self._planner:
-						self._planner.ingest_handoff(handoff)
-					mission.total_cost_usd += unit.cost_usd
-					if unit.cost_usd > 0:
-						self._ema.update(unit.cost_usd)
-					try:
-						self.db.update_mission(mission)
-					except Exception as exc:
-						logger.error("Failed to update mission cost for unit %s: %s", unit.id, exc)
-					self._record_round_outcome(unit, epoch, merged=False)
-					try:
-						signal = self._build_causal_signal(unit, epoch, mission, merged=False)
-						self._causal_attributor.record(signal)
-					except Exception:
-						pass
-					continue
-				logger.info("Experiment unit %s completed -- skipping merge", unit.id)
-				self._total_merged += 1
-				self._completed_unit_ids.add(unit.id)
-
-				# Parse comparison report from handoff and store as ExperimentResult
-				comparison_report = ""
-				recommended_approach = ""
-				approach_count = 2
-				if handoff:
-					try:
-						for item in handoff.discoveries:
-							if isinstance(item, str) and "approach" in item.lower():
-								comparison_report = item
-								break
-					except (json.JSONDecodeError, TypeError):
-						pass
-					# Also check the handoff summary for report data
-					if handoff.summary:
-						if not comparison_report:
-							comparison_report = handoff.summary
-						recommended_approach = handoff.summary[:200]
-
-				try:
-					experiment_result = ExperimentResult(
-						work_unit_id=unit.id,
-						epoch_id=epoch.id,
-						mission_id=mission.id,
-						approach_count=approach_count,
-						comparison_report=comparison_report,
-						recommended_approach=recommended_approach,
-					)
-					self.db.insert_experiment_result(experiment_result)
-				except Exception as exc:
-					logger.warning("Failed to insert experiment result for unit %s: %s", unit.id, exc)
-
-				self._log_unit_event(
-					mission_id=mission.id,
-					epoch_id=epoch.id,
-					work_unit_id=unit.id,
-					event_type="experiment_completed",
-				)
-
-				if handoff and self._planner:
-					self._planner.ingest_handoff(handoff)
-
-				timestamp = unit.finished_at or _now_iso()
-				summary = (handoff.summary[:80] if handoff and handoff.summary else unit.output_summary[:80])
-				self._state_changelog.append(
-					f"- {timestamp} | {unit.id[:8]} experiment completed -- {summary}"
-				)
-
-				try:
-					update_mission_state(
-						self.db, mission, self.config, self._state_changelog,
-						degradation_status=self._degradation.get_status_dict(),
-					)
-				except Exception as exc:
-					logger.warning("Failed to update MISSION_STATE.md: %s", exc)
-
-				mission.total_cost_usd += unit.cost_usd
-				if unit.cost_usd > 0:
-					self._ema.update(unit.cost_usd)
-				try:
-					self.db.update_mission(mission)
-				except Exception as exc:
-					logger.error("Failed to update mission cost for unit %s: %s", unit.id, exc)
-				self._record_round_outcome(unit, epoch, merged=True)
-				try:
-					signal = self._build_causal_signal(unit, epoch, mission, merged=True)
-					self._causal_attributor.record(signal)
-				except Exception:
-					pass
-				continue
-
-			# Speculation branch: collect and run selection gate when all done
-			if unit.unit_type == "speculation_branch" and unit.speculation_parent_id:
-				parent_id = unit.speculation_parent_id
-				if parent_id in self._speculation_completions:
-					self._speculation_completions[parent_id].append(completion)
-					if len(self._speculation_completions[parent_id]) >= self.config.speculation.branch_count:
-						await self._speculation_select_winner(parent_id, mission, epoch)
-				else:
-					logger.warning("Orphan speculation branch %s", unit.id)
-					self._total_failed += 1
-				mission.total_cost_usd += unit.cost_usd
-				if unit.cost_usd > 0:
-					self._ema.update(unit.cost_usd)
-				try:
-					self.db.update_mission(mission)
-				except Exception:
-					pass
-				continue
-
-			# Merge if the unit completed with commits
-			merged = False
-			if unit.status == "completed" and unit.commit_hash:
-				try:
-					merge_result = await self._green_branch.merge_unit(
-						workspace, unit.branch_name,
-						acceptance_criteria=unit.acceptance_criteria,
-					)
-					self._degradation.record_merge_attempt(conflict=not merge_result.merged)
-
-					# Fixup path: resume worker for fixable failures
-					if not merge_result.merged:
-						logger.warning(
-							"Unit %s failed merge: %s",
-							unit.id, merge_result.failure_output[-200:],
-						)
-						fixup_stages = ("pre_merge_verification", "acceptance_criteria", "merge_conflict")
-						if (
-							merge_result.failure_stage in fixup_stages
-							and workspace
-						):
-							fixed = await self._resume_worker_for_fixup(
-								unit, workspace, merge_result, cont,
-							)
-							if fixed:
-								merge_result = fixed
-								logger.info("Unit %s merged after worker fixup", unit.id)
-
-					# Post-merge bookkeeping (review, counters, sync)
-					if merge_result.merged:
-						self._accept_merge(
-							unit, merge_result, workspace,
-							mission, epoch, result,
-						)
-						merged = True
-
-					if not merged:
-						# Log merge_failed event
-						_fail_details = {
-							"failure_output": merge_result.failure_output[-2000:],
-							"failure_stage": merge_result.failure_stage,
-						}
-						self._log_unit_event(
-							mission_id=mission.id,
-							epoch_id=epoch.id,
-							work_unit_id=unit.id,
-							event_type=UNIT_EVENT_MERGE_FAILED,
-							details=json.dumps(_fail_details),
-							stream_details=_fail_details,
-						)
-
-						# Append merge failure to handoff concerns
-						if handoff:
-							handoff.concerns.append(
-								f"Merge failed: {merge_result.failure_output[-500:]}",
-							)
-
-						failure_reason = merge_result.failure_output[-1000:]
-
-						# Check if retryable
-						if unit.attempt < unit.max_attempts:
-							self._schedule_retry(unit, epoch, mission, failure_reason, cont)
-						else:
-							self._total_failed += 1
-							self._log_unit_event(
-								mission_id=mission.id,
-								epoch_id=epoch.id,
-								work_unit_id=unit.id,
-								event_type=UNIT_EVENT_REJECTED,
-								details=merge_result.failure_output[-2000:],
-								stream_details={"failure_output": merge_result.failure_output[-2000:]},
-							)
-							if self._notifier:
-								await self._notifier.send_merge_conflict(
-									unit.title, merge_result.failure_output[-500:],
-								)
-				except Exception as exc:
-					logger.error(
-						"merge_unit failed for %s: %s",
-						unit.id, exc, exc_info=True,
-					)
-					# Log merge_failed event for exception path
-					_exc_details = {
-						"failure_output": str(exc)[:500],
-						"failure_stage": "exception",
-					}
-					self._log_unit_event(
-						mission_id=mission.id,
-						epoch_id=epoch.id,
-						work_unit_id=unit.id,
-						event_type=UNIT_EVENT_MERGE_FAILED,
-						details=json.dumps(_exc_details),
-						stream_details=_exc_details,
-					)
-					failure_reason = str(exc)[:300]
-					if unit.attempt < unit.max_attempts:
-						self._schedule_retry(unit, epoch, mission, failure_reason, cont)
-					else:
-						self._total_failed += 1
-			elif unit.status == "completed":
-				# Completed but no commits
-				self._total_merged += 1
-				merged = True
-			else:
-				# Unit failed during execution
-				failure_reason = (unit.output_summary or "unknown error")[:300]
-				if unit.attempt < unit.max_attempts:
-					self._schedule_retry(unit, epoch, mission, failure_reason, cont)
-				else:
-					self._total_failed += 1
-
-			# Update backlog items based on this unit's outcome
-			try:
-				self._backlog_manager.update_backlog_from_completion(
-					unit, merged, handoff, mission.id,
-				)
-			except Exception as exc:
-				logger.warning(
-					"Failed to update backlog from completion for unit %s: %s",
-					unit.id, exc,
-				)
-
-			# Feed handoff to planner for adaptive replanning
-			if handoff and self._planner:
-				self._planner.ingest_handoff(handoff)
-
-			# Promote synthesized tools to MCP registry after merge
-			if merged and self._mcp_registry and handoff:
-				try:
-					tools_created = handoff.discoveries  # tools reported via handoff
-					if isinstance(tools_created, list):
-						from mission_control.tool_synthesis import ToolEntry, promote_to_mcp_registry
-						review = self.db.get_unit_review_for_unit(unit.id)
-						score = review.avg_score / 10.0 if review else 0.5
-						for item in tools_created:
-							if isinstance(item, dict) and "name" in item:
-								tool = ToolEntry(
-									name=item["name"],
-									description=item.get("description", ""),
-									script_path=Path(item.get("script_path", "")),
-								)
-								promote_to_mcp_registry(tool, score, mission.id, self._mcp_registry)
-				except Exception as exc:
-					logger.debug("Failed to promote tools to MCP registry: %s", exc)
-
-			# Append changelog entry before updating state file
 			timestamp = unit.finished_at or _now_iso()
 			summary = (handoff.summary[:80] if handoff and handoff.summary else unit.output_summary[:80])
-			if merged:
-				commit_str = unit.commit_hash or "no-commit"
-				self._state_changelog.append(
-					f"- {timestamp} | {unit.id[:8]} merged (commit: {commit_str}) -- {summary}"
-				)
-			elif unit.status == "failed":
-				self._state_changelog.append(
-					f"- {timestamp} | {unit.id[:8]} failed -- {summary}"
-				)
+			self._state_changelog.append(
+				f"- {timestamp} | {unit.id[:8]} research completed -- {summary}"
+			)
 
-			# Update MISSION_STATE.md in target repo
 			try:
 				update_mission_state(
 					self.db, mission, self.config, self._state_changelog,
@@ -1893,141 +927,614 @@ class ContinuousController:
 			except Exception as exc:
 				logger.warning("Failed to update MISSION_STATE.md: %s", exc)
 
-			# Accumulate cost and feed EMA tracker
 			mission.total_cost_usd += unit.cost_usd
 			if unit.cost_usd > 0:
 				self._ema.update(unit.cost_usd)
-
 			try:
 				self.db.update_mission(mission)
-				self._record_db_success()
-			except Exception:
-				self._record_db_error()
-
-			# Track round outcomes for all-fail detection
-			self._record_round_outcome(unit, epoch, merged)
-
-			# Prompt evolution: record outcome
-			if self._prompt_evolution is not None and completion.prompt_variant_id:
-				try:
-					self._prompt_evolution.record_outcome(
-						completion.prompt_variant_id,
-						"pass" if merged else "fail",
-					)
-				except Exception as exc:
-					logger.debug("Failed to record prompt outcome: %s", exc)
-
-			# Episodic memory: store episode for this completion
-			if self._memory_manager is not None:
-				try:
-					event_type = "merge_success" if merged else "test_failure"
-					scope_tokens = [
-						t.strip() for t in (unit.files_hint or "").split(",") if t.strip()
-					]
-					summary = (
-						handoff.summary[:200] if handoff and handoff.summary else unit.output_summary[:200]
-					)
-					self._memory_manager.store_episode(
-						event_type=event_type,
-						content=summary,
-						outcome="pass" if merged else "fail",
-						scope_tokens=scope_tokens,
-					)
-				except Exception as exc:
-					logger.debug("Failed to store episodic memory: %s", exc)
-
-			# Circuit breaker: record success/failure per workspace
-			if self.config.continuous.circuit_breaker_enabled and workspace:
-				if merged:
-					self._circuit_breakers.record_success(workspace)
-				else:
-					self._circuit_breakers.record_failure(workspace)
-
-			# Causal attribution: record signal for this unit outcome
-			try:
-				signal = self._build_causal_signal(unit, epoch, mission, merged)
-				self._causal_attributor.record(signal)
 			except Exception as exc:
-				logger.debug("Failed to record causal signal: %s", exc)
+				logger.error("Failed to update mission cost for unit %s: %s", unit.id, exc)
+			try:
+				signal = self._build_causal_signal(unit, epoch, mission, merged=True)
+				self._causal_attributor.record(signal)
+			except Exception:
+				pass
+			return
 
-			# Reconciler sweep: verify combined green state after new merges
-			# Skip when verify_before_merge is on -- each merge already verified
-			if merged and self._total_merged > self._last_reconcile_count and not cont.verify_before_merge:
+		# Experiment units: skip merge, store comparison report
+		if unit.unit_type == "experiment":
+			if unit.status != "completed":
+				self._total_failed += 1
+				logger.info("Experiment unit %s failed", unit.id)
+				mission.total_cost_usd += unit.cost_usd
+				if unit.cost_usd > 0:
+					self._ema.update(unit.cost_usd)
 				try:
-					reconcile_ok, reconcile_output = await self._green_branch.run_reconciliation_check()
-					if not reconcile_ok:
-						logger.warning(
-							"Reconciler sweep failed: %s", reconcile_output[-500:],
-						)
-						fixup_result = await self._green_branch.run_fixup(reconcile_output)
-						if not fixup_result.success:
-							logger.warning("Reconciler fixup failed")
-							if self._notifier:
-								await self._notifier.send(
-									f"Reconciler fixup failed: {reconcile_output[-200:]}",
-								)
-					self._last_reconcile_count = self._total_merged
+					self.db.update_mission(mission)
 				except Exception as exc:
-					logger.warning("Reconciler sweep error: %s", exc)
+					logger.error("Failed to update mission cost for unit %s: %s", unit.id, exc)
+				try:
+					signal = self._build_causal_signal(unit, epoch, mission, merged=False)
+					self._causal_attributor.record(signal)
+				except Exception:
+					pass
+				return
+			logger.info("Experiment unit %s completed -- skipping merge", unit.id)
+			self._total_merged += 1
+			self._completed_unit_ids.add(unit.id)
 
-	def _record_round_outcome(self, unit: WorkUnit, epoch: Epoch, merged: bool) -> None:
-		"""Record a unit outcome in its round tracker and handle all-fail rounds."""
-		round_tracker = getattr(self, "_round_tracker", None)
-		if round_tracker is None:
-			return
-		tracker = round_tracker.get(epoch.id)
-		if tracker is None or unit.id not in tracker.unit_ids:
-			return
+			# Parse comparison report from handoff and store as ExperimentResult
+			comparison_report = ""
+			recommended_approach = ""
+			approach_count = 2
+			if handoff:
+				try:
+					for item in handoff.discoveries:
+						if isinstance(item, str) and "approach" in item.lower():
+							comparison_report = item
+							break
+				except (json.JSONDecodeError, TypeError):
+					pass
+				# Also check the handoff summary for report data
+				if handoff.summary:
+					if not comparison_report:
+						comparison_report = handoff.summary
+					recommended_approach = handoff.summary[:200]
 
-		if merged:
-			tracker.completed_ids.add(unit.id)
-		else:
-			tracker.failed_ids.add(unit.id)
-
-		if not tracker.all_resolved:
-			return
-
-		# Round fully resolved -- check if all failed
-		if tracker.all_failed:
-			self._consecutive_all_fail_rounds += 1
-			cont = self.config.continuous
-			logger.warning(
-				"All %d units in round %s failed (consecutive all-fail rounds: %d/%d)",
-				len(tracker.unit_ids), epoch.id[:12],
-				self._consecutive_all_fail_rounds, cont.max_consecutive_failures,
-			)
-			if self._consecutive_all_fail_rounds >= cont.max_consecutive_failures:
-				logger.error(
-					"Stopping mission: %d consecutive all-fail rounds",
-					self._consecutive_all_fail_rounds,
+			try:
+				experiment_result = ExperimentResult(
+					work_unit_id=unit.id,
+					epoch_id=epoch.id,
+					mission_id=mission.id,
+					approach_count=approach_count,
+					comparison_report=comparison_report,
+					recommended_approach=recommended_approach,
 				)
-				self._all_fail_stop_reason = "repeated_total_failure"
+				self.db.insert_experiment_result(experiment_result)
+			except Exception as exc:
+				logger.warning("Failed to insert experiment result for unit %s: %s", unit.id, exc)
+
+			self._log_unit_event(
+				mission_id=mission.id,
+				epoch_id=epoch.id,
+				work_unit_id=unit.id,
+				event_type="experiment_completed",
+			)
+
+			timestamp = unit.finished_at or _now_iso()
+			summary = (handoff.summary[:80] if handoff and handoff.summary else unit.output_summary[:80])
+			self._state_changelog.append(
+				f"- {timestamp} | {unit.id[:8]} experiment completed -- {summary}"
+			)
+
+			try:
+				update_mission_state(
+					self.db, mission, self.config, self._state_changelog,
+					degradation_status=self._degradation.get_status_dict(),
+				)
+			except Exception as exc:
+				logger.warning("Failed to update MISSION_STATE.md: %s", exc)
+
+			mission.total_cost_usd += unit.cost_usd
+			if unit.cost_usd > 0:
+				self._ema.update(unit.cost_usd)
+			try:
+				self.db.update_mission(mission)
+			except Exception as exc:
+				logger.error("Failed to update mission cost for unit %s: %s", unit.id, exc)
+			try:
+				signal = self._build_causal_signal(unit, epoch, mission, merged=True)
+				self._causal_attributor.record(signal)
+			except Exception:
+				pass
+			return
+
+		# Audit units: skip merge, extract knowledge
+		if unit.unit_type == "audit":
+			if unit.status != "completed":
+				self._total_failed += 1
+				logger.info("Audit unit %s failed", unit.id)
+				mission.total_cost_usd += unit.cost_usd
+				if unit.cost_usd > 0:
+					self._ema.update(unit.cost_usd)
+				try:
+					self.db.update_mission(mission)
+				except Exception as exc:
+					logger.error("Failed to update mission cost for unit %s: %s", unit.id, exc)
+				try:
+					signal = self._build_causal_signal(unit, epoch, mission, merged=False)
+					self._causal_attributor.record(signal)
+				except Exception:
+					pass
+				return
+			logger.info("Audit unit %s completed -- skipping merge", unit.id)
+			self._total_merged += 1
+			self._completed_unit_ids.add(unit.id)
+			self._log_unit_event(
+				mission_id=mission.id,
+				epoch_id=epoch.id,
+				work_unit_id=unit.id,
+				event_type=UNIT_EVENT_AUDIT_COMPLETED,
+			)
+			self._extract_knowledge(unit, handoff, mission)
+			timestamp = unit.finished_at or _now_iso()
+			summary = (handoff.summary[:80] if handoff and handoff.summary else unit.output_summary[:80])
+			self._state_changelog.append(
+				f"- {timestamp} | {unit.id[:8]} audit completed -- {summary}"
+			)
+			try:
+				update_mission_state(
+					self.db, mission, self.config, self._state_changelog,
+					degradation_status=self._degradation.get_status_dict(),
+				)
+			except Exception as exc:
+				logger.warning("Failed to update MISSION_STATE.md: %s", exc)
+			mission.total_cost_usd += unit.cost_usd
+			if unit.cost_usd > 0:
+				self._ema.update(unit.cost_usd)
+			try:
+				self.db.update_mission(mission)
+			except Exception as exc:
+				logger.error("Failed to update mission cost for unit %s: %s", unit.id, exc)
+			try:
+				signal = self._build_causal_signal(unit, epoch, mission, merged=True)
+				self._causal_attributor.record(signal)
+			except Exception:
+				pass
+			return
+
+		# Design units: skip merge, store design decisions
+		if unit.unit_type == "design":
+			if unit.status != "completed":
+				self._total_failed += 1
+				logger.info("Design unit %s failed", unit.id)
+				mission.total_cost_usd += unit.cost_usd
+				if unit.cost_usd > 0:
+					self._ema.update(unit.cost_usd)
+				try:
+					self.db.update_mission(mission)
+				except Exception as exc:
+					logger.error("Failed to update mission cost for unit %s: %s", unit.id, exc)
+				try:
+					signal = self._build_causal_signal(unit, epoch, mission, merged=False)
+					self._causal_attributor.record(signal)
+				except Exception:
+					pass
+				return
+			logger.info("Design unit %s completed -- skipping merge", unit.id)
+			self._total_merged += 1
+			self._completed_unit_ids.add(unit.id)
+			self._log_unit_event(
+				mission_id=mission.id,
+				epoch_id=epoch.id,
+				work_unit_id=unit.id,
+				event_type=UNIT_EVENT_DESIGN_COMPLETED,
+			)
+			self._extract_knowledge(unit, handoff, mission)
+			timestamp = unit.finished_at or _now_iso()
+			summary = (handoff.summary[:80] if handoff and handoff.summary else unit.output_summary[:80])
+			self._state_changelog.append(
+				f"- {timestamp} | {unit.id[:8]} design completed -- {summary}"
+			)
+			try:
+				update_mission_state(
+					self.db, mission, self.config, self._state_changelog,
+					degradation_status=self._degradation.get_status_dict(),
+				)
+			except Exception as exc:
+				logger.warning("Failed to update MISSION_STATE.md: %s", exc)
+			mission.total_cost_usd += unit.cost_usd
+			if unit.cost_usd > 0:
+				self._ema.update(unit.cost_usd)
+			try:
+				self.db.update_mission(mission)
+			except Exception as exc:
+				logger.error("Failed to update mission cost for unit %s: %s", unit.id, exc)
+			try:
+				signal = self._build_causal_signal(unit, epoch, mission, merged=True)
+				self._causal_attributor.record(signal)
+			except Exception:
+				pass
+			return
+
+		# Speculation branch: collect and run selection gate when all done
+		if unit.unit_type == "speculation_branch" and unit.speculation_parent_id:
+			parent_id = unit.speculation_parent_id
+			if parent_id in self._speculation_completions:
+				self._speculation_completions[parent_id].append(completion)
+				if len(self._speculation_completions[parent_id]) >= self.config.speculation.branch_count:
+					await self._speculation_select_winner(parent_id, mission, epoch)
 			else:
-				self._failure_backoff_until = time.monotonic() + cont.failure_backoff_seconds
-				logger.info(
-					"Auto-pausing for %ds before retry (all-fail round %d/%d)",
-					cont.failure_backoff_seconds,
-					self._consecutive_all_fail_rounds, cont.max_consecutive_failures,
+				logger.warning("Orphan speculation branch %s", unit.id)
+				self._total_failed += 1
+			mission.total_cost_usd += unit.cost_usd
+			if unit.cost_usd > 0:
+				self._ema.update(unit.cost_usd)
+			try:
+				self.db.update_mission(mission)
+			except Exception:
+				pass
+			return
+
+		# Merge if the unit completed with commits
+		merged = False
+		if unit.status == "completed" and unit.commit_hash:
+			try:
+				merge_result = await self._green_branch.merge_unit(
+					workspace, unit.branch_name,
+					acceptance_criteria=unit.acceptance_criteria,
 				)
+				self._degradation.record_merge_attempt(conflict=not merge_result.merged)
+
+				# Fixup path: resume worker for fixable failures
+				if not merge_result.merged:
+					logger.warning(
+						"Unit %s failed merge: %s",
+						unit.id, merge_result.failure_output[-200:],
+					)
+					fixup_stages = ("pre_merge_verification", "acceptance_criteria", "merge_conflict")
+					if (
+						merge_result.failure_stage in fixup_stages
+						and workspace
+					):
+						fixed = await self._resume_worker_for_fixup(
+							unit, workspace, merge_result, cont,
+						)
+						if fixed:
+							merge_result = fixed
+							logger.info("Unit %s merged after worker fixup", unit.id)
+
+				# Post-merge bookkeeping (review, counters, sync)
+				if merge_result.merged:
+					self._accept_merge(
+						unit, merge_result, workspace,
+						mission, epoch, result,
+					)
+					merged = True
+
+				if not merged:
+					# Log merge_failed event
+					_fail_details = {
+						"failure_output": merge_result.failure_output[-2000:],
+						"failure_stage": merge_result.failure_stage,
+					}
+					self._log_unit_event(
+						mission_id=mission.id,
+						epoch_id=epoch.id,
+						work_unit_id=unit.id,
+						event_type=UNIT_EVENT_MERGE_FAILED,
+						details=json.dumps(_fail_details),
+						stream_details=_fail_details,
+					)
+
+					# Append merge failure to handoff concerns
+					if handoff:
+						handoff.concerns.append(
+							f"Merge failed: {merge_result.failure_output[-500:]}",
+						)
+
+					failure_reason = merge_result.failure_output[-1000:]
+
+					# Check if retryable
+					if unit.attempt < unit.max_attempts:
+						self._schedule_retry(unit, epoch, mission, failure_reason, cont)
+					else:
+						self._total_failed += 1
+						self._log_unit_event(
+							mission_id=mission.id,
+							epoch_id=epoch.id,
+							work_unit_id=unit.id,
+							event_type=UNIT_EVENT_REJECTED,
+							details=merge_result.failure_output[-2000:],
+							stream_details={"failure_output": merge_result.failure_output[-2000:]},
+						)
+						if self._notifier:
+							await self._notifier.send_merge_conflict(
+								unit.title, merge_result.failure_output[-500:],
+							)
+			except Exception as exc:
+				logger.error(
+					"merge_unit failed for %s: %s",
+					unit.id, exc, exc_info=True,
+				)
+				# Log merge_failed event for exception path
+				_exc_details = {
+					"failure_output": str(exc)[:500],
+					"failure_stage": "exception",
+				}
+				self._log_unit_event(
+					mission_id=mission.id,
+					epoch_id=epoch.id,
+					work_unit_id=unit.id,
+					event_type=UNIT_EVENT_MERGE_FAILED,
+					details=json.dumps(_exc_details),
+					stream_details=_exc_details,
+				)
+				failure_reason = str(exc)[:300]
+				if unit.attempt < unit.max_attempts:
+					self._schedule_retry(unit, epoch, mission, failure_reason, cont)
+				else:
+					self._total_failed += 1
+		elif unit.status == "completed":
+			# Completed but no commits
+			self._total_merged += 1
+			merged = True
 		else:
-			self._consecutive_all_fail_rounds = 0
+			# Unit failed during execution
+			failure_reason = (unit.output_summary or "unknown error")[:300]
+			if unit.attempt < unit.max_attempts:
+				self._schedule_retry(unit, epoch, mission, failure_reason, cont)
+			else:
+				self._total_failed += 1
 
-		# Circuit breaker stall: if all workspaces are open, stop mission
-		if (
-			self.config.continuous.circuit_breaker_enabled
-			and self._circuit_breakers.all_open()
-			and not self._all_fail_stop_reason
-		):
-			open_workspaces = self._circuit_breakers.get_open_workspaces()
-			logger.error(
-				"Stopping mission: all %d workspace circuit breakers are open: %s",
-				len(open_workspaces),
-				{ws: f"{count} failures" for ws, count in open_workspaces.items()},
+		# Update backlog items based on this unit's outcome
+		try:
+			self._backlog_manager.update_backlog_from_completion(
+				unit, merged, handoff, mission.id,
 			)
-			self._all_fail_stop_reason = "all_circuit_breakers_open"
+		except Exception as exc:
+			logger.warning(
+				"Failed to update backlog from completion for unit %s: %s",
+				unit.id, exc,
+			)
 
-		# Clean up resolved round
-		del round_tracker[epoch.id]
+		# Promote synthesized tools to MCP registry after merge
+		if merged and self._mcp_registry and handoff:
+			try:
+				tools_created = handoff.discoveries  # tools reported via handoff
+				if isinstance(tools_created, list):
+					from mission_control.tool_synthesis import ToolEntry, promote_to_mcp_registry
+					review = self.db.get_unit_review_for_unit(unit.id)
+					score = review.avg_score / 10.0 if review else 0.5
+					for item in tools_created:
+						if isinstance(item, dict) and "name" in item:
+							tool = ToolEntry(
+								name=item["name"],
+								description=item.get("description", ""),
+								script_path=Path(item.get("script_path", "")),
+							)
+							promote_to_mcp_registry(tool, score, mission.id, self._mcp_registry)
+			except Exception as exc:
+				logger.debug("Failed to promote tools to MCP registry: %s", exc)
+
+		# Append changelog entry before updating state file
+		timestamp = unit.finished_at or _now_iso()
+		summary = (handoff.summary[:80] if handoff and handoff.summary else unit.output_summary[:80])
+		if merged:
+			commit_str = unit.commit_hash or "no-commit"
+			self._state_changelog.append(
+				f"- {timestamp} | {unit.id[:8]} merged (commit: {commit_str}) -- {summary}"
+			)
+		elif unit.status == "failed":
+			self._state_changelog.append(
+				f"- {timestamp} | {unit.id[:8]} failed -- {summary}"
+			)
+
+		# Update MISSION_STATE.md in target repo
+		try:
+			update_mission_state(
+				self.db, mission, self.config, self._state_changelog,
+				degradation_status=self._degradation.get_status_dict(),
+			)
+		except Exception as exc:
+			logger.warning("Failed to update MISSION_STATE.md: %s", exc)
+
+		# Accumulate cost and feed EMA tracker
+		mission.total_cost_usd += unit.cost_usd
+		if unit.cost_usd > 0:
+			self._ema.update(unit.cost_usd)
+
+		try:
+			self.db.update_mission(mission)
+			self._record_db_success()
+		except Exception:
+			self._record_db_error()
+
+
+		# Prompt evolution: record outcome
+		if self._prompt_evolution is not None and completion.prompt_variant_id:
+			try:
+				self._prompt_evolution.record_outcome(
+					completion.prompt_variant_id,
+					"pass" if merged else "fail",
+				)
+			except Exception as exc:
+				logger.debug("Failed to record prompt outcome: %s", exc)
+
+		# Episodic memory: store episode for this completion
+		if self._memory_manager is not None:
+			try:
+				event_type = "merge_success" if merged else "test_failure"
+				scope_tokens = [
+					t.strip() for t in (unit.files_hint or "").split(",") if t.strip()
+				]
+				summary = (
+					handoff.summary[:200] if handoff and handoff.summary else unit.output_summary[:200]
+				)
+				self._memory_manager.store_episode(
+					event_type=event_type,
+					content=summary,
+					outcome="pass" if merged else "fail",
+					scope_tokens=scope_tokens,
+				)
+			except Exception as exc:
+				logger.debug("Failed to store episodic memory: %s", exc)
+
+		# Circuit breaker: record success/failure per workspace
+		if self.config.continuous.circuit_breaker_enabled and workspace:
+			if merged:
+				self._circuit_breakers.record_success(workspace)
+			else:
+				self._circuit_breakers.record_failure(workspace)
+
+		# Causal attribution: record signal for this unit outcome
+		try:
+			signal = self._build_causal_signal(unit, epoch, mission, merged)
+			self._causal_attributor.record(signal)
+		except Exception as exc:
+			logger.debug("Failed to record causal signal: %s", exc)
+
+		# Reconciler sweep: verify combined green state after new merges
+		# Skip when verify_before_merge is on -- each merge already verified
+		if merged and self._total_merged > self._last_reconcile_count and not cont.verify_before_merge:
+			try:
+				reconcile_ok, reconcile_output = await self._green_branch.run_reconciliation_check()
+				if not reconcile_ok:
+					logger.warning(
+						"Reconciler sweep failed: %s", reconcile_output[-500:],
+					)
+					fixup_result = await self._green_branch.run_fixup(reconcile_output)
+					if not fixup_result.success:
+						logger.warning("Reconciler fixup failed")
+						if self._notifier:
+							await self._notifier.send(
+								f"Reconciler fixup failed: {reconcile_output[-200:]}",
+							)
+				self._last_reconcile_count = self._total_merged
+			except Exception as exc:
+				logger.warning("Reconciler sweep error: %s", exc)
+
+	async def _execute_batch(
+		self,
+		units: list[WorkUnit],
+		epoch: Epoch,
+		mission: Mission,
+	) -> list[WorkerCompletion]:
+		"""Execute a batch of units with topological layering, return completions."""
+		if not units:
+			return []
+
+		layers = topological_layers(units)
+		all_completions: list[WorkerCompletion] = []
+
+		for layer_idx, layer in enumerate(layers):
+			logger.info(
+				"Batch layer %d/%d (%d units)",
+				layer_idx, len(layers) - 1, len(layer),
+			)
+
+			layer_tasks: list[asyncio.Task[WorkerCompletion | None]] = []
+
+			for unit in layer:
+				unit.epoch_id = epoch.id
+				try:
+					self.db.insert_work_unit(unit)
+				except Exception as exc:
+					logger.error("Failed to insert work unit: %s", exc, exc_info=True)
+					continue
+
+				self._log_unit_event(
+					mission_id=mission.id,
+					epoch_id=epoch.id,
+					work_unit_id=unit.id,
+					event_type=UNIT_EVENT_DISPATCHED,
+					stream_details={"title": unit.title, "files": unit.files_hint, "layer": layer_idx},
+				)
+				self._total_dispatched += 1
+
+				await self._semaphore.acquire()
+				self._in_flight_count += 1
+
+				task = asyncio.create_task(
+					self._execute_single_unit(unit, epoch, mission),
+				)
+				layer_tasks.append(task)
+
+			if layer_tasks:
+				results = await asyncio.gather(*layer_tasks, return_exceptions=True)
+				for r in results:
+					if isinstance(r, WorkerCompletion):
+						all_completions.append(r)
+					elif isinstance(r, Exception):
+						logger.error("Unit execution error in batch: %s", r)
+
+		return all_completions
+
+	async def _process_batch(
+		self,
+		completions: list[WorkerCompletion],
+		mission: Mission,
+		result: ContinuousMissionResult,
+	) -> None:
+		"""Process a batch of completions sequentially."""
+		for completion in completions:
+			await self._process_single_completion(completion, mission, result)
+
+	async def _orchestration_loop(
+		self,
+		mission: Mission,
+		result: ContinuousMissionResult,
+	) -> None:
+		"""Sequential orchestration: plan -> execute -> process, repeat."""
+		if self._planner is None:
+			raise RuntimeError("Controller not initialized")
+		if self._backend is None:
+			raise RuntimeError("Controller not initialized")
+
+		num_workers = self.config.scheduler.parallel.num_workers
+		self._semaphore = DynamicSemaphore(num_workers)
+
+		while self.running:
+			reason = self._should_stop(mission)
+			if not reason and self._heartbeat:
+				reason = await self._heartbeat.check(
+					self._total_merged, self._total_failed,
+				)
+			if reason:
+				result.stopped_reason = reason
+				self.running = False
+				break
+
+			state = build_planner_context(self.db, mission.id)
+
+			knowledge_items = self.db.get_knowledge_for_mission(mission.id)
+			knowledge_context = ""
+			if knowledge_items:
+				knowledge_context = "\n".join(
+					f"- [{k.source_unit_type}] {k.title}: {k.content[:200]}"
+					for k in knowledge_items[-20:]
+				)
+
+			try:
+				plan, units, epoch = await self._planner.get_next_units(
+					mission,
+					max_units=num_workers,
+					feedback_context=state,
+					knowledge_context=knowledge_context,
+				)
+			except Exception as exc:
+				logger.error("Planner failed: %s", exc, exc_info=True)
+				await asyncio.sleep(5)
+				continue
+
+			if not units:
+				logger.info("Planner returned no units -- objective complete")
+				result.objective_met = True
+				result.stopped_reason = "planner_completed"
+				self.running = False
+				break
+
+			try:
+				self.db.insert_plan(plan)
+			except Exception as exc:
+				logger.error("Failed to insert plan: %s", exc, exc_info=True)
+				continue
+			try:
+				self.db.insert_epoch(epoch)
+			except Exception as exc:
+				logger.error("Failed to insert epoch: %s", exc, exc_info=True)
+
+			completions = await self._execute_batch(units, epoch, mission)
+
+			await self._process_batch(completions, mission, result)
+
+			try:
+				update_mission_state(
+					self.db, mission, self.config, self._state_changelog,
+					degradation_status=self._degradation.get_status_dict(),
+				)
+			except Exception as exc:
+				logger.warning("Failed to update MISSION_STATE.md: %s", exc)
 
 	# -- Speculation branching --
 
@@ -2256,9 +1763,6 @@ class ContinuousController:
 					"scores": scores,
 				},
 			)
-			# Ingest winner handoff
-			if winner.handoff and self._planner:
-				self._planner.ingest_handoff(winner.handoff)
 		else:
 			parent_unit.status = "failed"
 			parent_unit.cost_usd = total_cost
@@ -2281,7 +1785,6 @@ class ContinuousController:
 			parent_unit, winner_id if merged else "", branch_ids,
 			scores, total_cost, metric, mission, epoch,
 		)
-		self._record_round_outcome(parent_unit, epoch, merged)
 
 	def _record_speculation_result(
 		self,
@@ -2906,9 +2409,6 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 			unit.id, unit.attempt, unit.max_attempts, delay,
 		)
 
-		# Track retrying unit's files so overlap detection blocks new units
-		self._retrying_unit_files[unit.id] = _parse_files_hint(unit.files_hint)
-
 		# Schedule delayed re-dispatch
 		task = asyncio.create_task(
 			self._retry_unit(unit, epoch, mission, delay),
@@ -2925,7 +2425,6 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 	) -> None:
 		"""Wait for backoff delay, then re-dispatch a failed unit."""
 		await asyncio.sleep(delay)
-		self._retrying_unit_files.pop(unit.id, None)
 		if not self.running:
 			return
 		if self._semaphore is None:
@@ -2945,9 +2444,8 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 		epoch: Epoch,
 		reason: str,
 		workspace: str,
-		put_on_queue: bool = True,
 	) -> None:
-		"""Mark a unit as failed, update the worker, and optionally queue completion."""
+		"""Mark a unit as failed and update the worker."""
 		unit.attempt += 1
 		unit.status = "failed"
 		unit.output_summary = reason
@@ -2967,19 +2465,40 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 					self._record_db_success()
 				except Exception:
 					self._record_db_error()
-		if put_on_queue:
-			await self._completion_queue.put(
-				WorkerCompletion(
-					unit=unit, handoff=None, workspace=workspace, epoch=epoch,
-				),
+
+	def _extract_knowledge(self, unit: WorkUnit, handoff: Handoff | None, mission: Mission) -> None:
+		"""Extract and persist knowledge from a non-code unit completion."""
+		if handoff is None:
+			return
+		discoveries = handoff.discoveries or []
+		content = "\n".join(discoveries) if discoveries else handoff.summary
+		if not content:
+			return
+		from mission_control.models import KnowledgeItem
+		item = KnowledgeItem(
+			mission_id=mission.id,
+			source_unit_id=unit.id,
+			source_unit_type=unit.unit_type,
+			title=unit.title[:200],
+			content=content[:2000],
+			rationale=handoff.summary[:500] if handoff.summary else "",
+			scope=unit.files_hint or "",
+		)
+		try:
+			self.db.insert_knowledge_item(item)
+			logger.info(
+				"Extracted knowledge from %s unit %s: %s",
+				unit.unit_type, unit.id[:12], item.title[:60],
 			)
+		except Exception as exc:
+			logger.warning("Failed to insert knowledge item for unit %s: %s", unit.id, exc)
 
 	async def _execute_single_unit(
 		self,
 		unit: WorkUnit,
 		epoch: Epoch,
 		mission: Mission,
-	) -> None:
+	) -> WorkerCompletion | None:
 		"""Execute a single work unit and put completion on queue."""
 		if self._backend is None:
 			raise RuntimeError("Controller not initialized: call start() first")
@@ -3052,6 +2571,23 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 					).strip()
 			except Exception:
 				pass
+
+			# Inject accumulated knowledge into worker context
+			knowledge_items = self.db.get_knowledge_for_mission(mission.id)
+			if knowledge_items:
+				from mission_control.overlap import _parse_files_hint as _parse_scope
+				unit_files = _parse_scope(unit.files_hint)
+				relevant = [
+					k for k in knowledge_items
+					if unit_files and _parse_scope(k.scope) & unit_files
+				]
+				if not relevant:
+					relevant = knowledge_items[-5:]
+				knowledge_section = "\n".join(
+					f"- [{k.source_unit_type}] {k.title}: {k.content[:200]}"
+					for k in relevant
+				)
+				context = (context or "") + f"\n\n## Accumulated Knowledge\n{knowledge_section}"
 
 			# Read MISSION_STATE.md from target repo
 			mission_state = ""
@@ -3251,20 +2787,18 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 					except Exception:
 						self._record_db_error()
 
-			# Put on completion queue for verify+merge
-			await self._completion_queue.put(
-				WorkerCompletion(
-					unit=unit, handoff=handoff, workspace=workspace, epoch=epoch,
-					prompt_variant_id=selected_variant_id,
-				),
+			completion = WorkerCompletion(
+				unit=unit, handoff=handoff, workspace=workspace, epoch=epoch,
+				prompt_variant_id=selected_variant_id,
 			)
+			return completion
 
 		except (RuntimeError, OSError) as e:
 			logger.error("Infrastructure error executing unit %s: %s", unit.id, e)
 			await self._fail_unit(unit, worker, epoch, f"Infrastructure error: {e}", workspace)
 		except asyncio.CancelledError:
 			logger.info("Unit %s execution cancelled", unit.id)
-			await self._fail_unit(unit, worker, epoch, "Cancelled", workspace, put_on_queue=False)
+			await self._fail_unit(unit, worker, epoch, "Cancelled", workspace)
 		except (ValueError, KeyError, json.JSONDecodeError, sqlite3.IntegrityError) as e:
 			logger.error("Data error executing unit %s: %s", unit.id, e)
 			await self._fail_unit(unit, worker, epoch, f"Data error: {e}", workspace)
@@ -3308,10 +2842,6 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 			return signal_reason
 
 		cont = self.config.continuous
-
-		# All-fail stop
-		if self._all_fail_stop_reason:
-			return self._all_fail_stop_reason
 
 		# Wall time limit
 		if self._start_time > 0:

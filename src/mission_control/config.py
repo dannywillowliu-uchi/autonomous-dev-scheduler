@@ -130,9 +130,7 @@ class ContinuousConfig:
 	max_wall_time_seconds: int = 7200  # 2 hour default
 	stall_threshold_units: int = 10  # N units with no improvement -> stop
 	stall_score_epsilon: float = 0.01
-	replan_interval_units: int = 5  # replan after N completions
 	verify_before_merge: bool = True
-	backlog_min_size: int = 2  # replan when backlog drops below this
 	cooldown_between_units: int = 0
 	timeout_multiplier: float = 1.2  # applied to session_timeout for poll deadline
 	retry_base_delay_seconds: int = 30
@@ -141,13 +139,10 @@ class ContinuousConfig:
 	chain_max_depth: int = 3
 	max_consecutive_failures: int = 3
 	failure_backoff_seconds: int = 60
-	min_ambition_score: int = 4  # replan if ambition below this
-	max_replan_attempts: int = 2  # max replans before proceeding anyway
 	verify_objective_completion: bool = False  # LLM check before declaring mission done
 	max_objective_checks: int = 2  # max verification attempts before accepting
 	cleanup_enabled: bool = True  # run periodic cleanup missions
 	cleanup_interval: int = 3  # run cleanup mission every N missions
-	backlog_max_age_seconds: int = 1800
 	circuit_breaker_enabled: bool = True
 	circuit_breaker_max_failures: int = 3
 	circuit_breaker_cooldown_seconds: int = 120
@@ -427,9 +422,7 @@ class DegradationConfig:
 class ZFCConfig:
 	"""ZFC migration settings -- LLM-backed replacements for hardcoded heuristics."""
 
-	zfc_ambition_scoring: bool = False
 	zfc_fixup_prompts: bool = False
-	zfc_propose_objective: bool = False
 	llm_timeout: int = 60
 	llm_budget_usd: float = 0.10
 	model: str = ""  # empty = inherit scheduler.model
@@ -606,8 +599,7 @@ def _build_planner_config(data: dict[str, Any]) -> PlannerConfig:
 def _build_continuous(data: dict[str, Any]) -> ContinuousConfig:
 	cc = ContinuousConfig()
 	int_keys = (
-		"max_wall_time_seconds", "stall_threshold_units",
-		"replan_interval_units", "backlog_min_size", "cooldown_between_units",
+		"max_wall_time_seconds", "stall_threshold_units", "cooldown_between_units",
 	)
 	for key in int_keys:
 		if key in data:
@@ -618,12 +610,10 @@ def _build_continuous(data: dict[str, Any]) -> ContinuousConfig:
 		cc.verify_before_merge = bool(data["verify_before_merge"])
 	if "timeout_multiplier" in data:
 		cc.timeout_multiplier = float(data["timeout_multiplier"])
-	if "backlog_max_age_seconds" in data:
-		cc.backlog_max_age_seconds = int(data["backlog_max_age_seconds"])
 	for key in (
 		"retry_base_delay_seconds", "retry_max_delay_seconds", "chain_max_depth",
 		"max_consecutive_failures", "failure_backoff_seconds",
-		"min_ambition_score", "max_replan_attempts", "max_objective_checks",
+		"max_objective_checks",
 	):
 		if key in data:
 			setattr(cc, key, int(data[key]))
@@ -864,7 +854,7 @@ def _build_hitl(data: dict[str, Any]) -> HITLConfig:
 
 def _build_zfc(data: dict[str, Any]) -> ZFCConfig:
 	zc = ZFCConfig()
-	for key in ("zfc_ambition_scoring", "zfc_fixup_prompts", "zfc_propose_objective"):
+	for key in ("zfc_fixup_prompts",):
 		if key in data:
 			setattr(zc, key, bool(data[key]))
 	if "llm_timeout" in data:
