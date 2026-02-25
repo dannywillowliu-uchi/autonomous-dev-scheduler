@@ -314,9 +314,7 @@ class TestContinuousConfig:
 		assert cc.max_wall_time_seconds == 7200
 		assert cc.stall_threshold_units == 10
 		assert cc.stall_score_epsilon == 0.01
-		assert cc.replan_interval_units == 5
 		assert cc.verify_before_merge is True
-		assert cc.backlog_min_size == 2
 		assert cc.cooldown_between_units == 0
 
 	def test_toml_parsing(self, tmp_path: Path) -> None:
@@ -330,18 +328,14 @@ path = "/tmp/test"
 max_wall_time_seconds = 3600
 stall_threshold_units = 5
 stall_score_epsilon = 0.02
-replan_interval_units = 3
 verify_before_merge = false
-backlog_min_size = 4
 cooldown_between_units = 10
 """)
 		config = load_config(toml)
 		assert config.continuous.max_wall_time_seconds == 3600
 		assert config.continuous.stall_threshold_units == 5
 		assert config.continuous.stall_score_epsilon == 0.02
-		assert config.continuous.replan_interval_units == 3
 		assert config.continuous.verify_before_merge is False
-		assert config.continuous.backlog_min_size == 4
 		assert config.continuous.cooldown_between_units == 10
 
 
@@ -688,9 +682,7 @@ class TestZFCConfig:
 	def test_zfc_defaults(self) -> None:
 		"""ZFCConfig has correct defaults."""
 		zc = ZFCConfig()
-		assert zc.zfc_ambition_scoring is False
 		assert zc.zfc_fixup_prompts is False
-		assert zc.zfc_propose_objective is False
 		assert zc.llm_timeout == 60
 		assert zc.llm_budget_usd == 0.10
 		assert zc.model == ""
@@ -699,7 +691,7 @@ class TestZFCConfig:
 		"""MissionConfig includes zfc field with defaults."""
 		mc = MissionConfig()
 		assert isinstance(mc.zfc, ZFCConfig)
-		assert mc.zfc.zfc_ambition_scoring is False
+		assert mc.zfc.zfc_fixup_prompts is False
 
 	def test_zfc_parsed_from_toml(self, tmp_path: Path) -> None:
 		"""[zfc] section values are parsed correctly from TOML."""
@@ -710,17 +702,13 @@ name = "test"
 path = "/tmp/test"
 
 [zfc]
-zfc_ambition_scoring = true
 zfc_fixup_prompts = true
-zfc_propose_objective = true
 llm_timeout = 30
 llm_budget_usd = 0.25
 model = "sonnet"
 """)
 		cfg = load_config(toml)
-		assert cfg.zfc.zfc_ambition_scoring is True
 		assert cfg.zfc.zfc_fixup_prompts is True
-		assert cfg.zfc.zfc_propose_objective is True
 		assert cfg.zfc.llm_timeout == 30
 		assert cfg.zfc.llm_budget_usd == 0.25
 		assert cfg.zfc.model == "sonnet"
@@ -734,17 +722,15 @@ name = "test"
 path = "/tmp/test"
 
 [zfc]
-zfc_ambition_scoring = true
+zfc_fixup_prompts = true
 """)
 		cfg = load_config(toml)
-		assert cfg.zfc.zfc_ambition_scoring is True
-		assert cfg.zfc.zfc_fixup_prompts is False
+		assert cfg.zfc.zfc_fixup_prompts is True
 		assert cfg.zfc.model == ""
 
 	def test_zfc_defaults_when_omitted(self, minimal_config: Path) -> None:
 		"""Without [zfc] section, defaults are used."""
 		cfg = load_config(minimal_config)
-		assert cfg.zfc.zfc_ambition_scoring is False
 		assert cfg.zfc.zfc_fixup_prompts is False
 		assert cfg.zfc.llm_timeout == 60
 

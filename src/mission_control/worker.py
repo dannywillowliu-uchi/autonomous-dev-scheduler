@@ -207,6 +207,74 @@ MC_RESULT:{{"status":"completed|failed|blocked","commits":[],\
 """
 
 
+AUDIT_WORKER_PROMPT_TEMPLATE = """\
+You are an audit agent for {target_name} at {workspace_path}.
+
+## Audit Task
+{title}
+
+{description}
+
+## Guidelines
+- Focus on ANALYSIS and EVALUATION, not code changes
+- Audit the codebase against the criteria described in the task
+- Check for correctness, consistency, security issues, and best practice violations
+- Do NOT commit code changes -- your output is the audit findings
+- Document all findings thoroughly in your MC_RESULT discoveries field
+- Rate confidence in each finding (high/medium/low)
+- Do NOT run `pip install`, `uv pip install`, or modify the Python environment -- it is pre-configured via symlink
+
+## Scope
+Files to audit: {files_hint}
+
+## Verification
+Run (read-only check): {verification_command}
+
+## Context
+{context_block}
+{experience_block}{mission_state_block}{overlap_warnings_block}
+## Output
+When done, write a summary as the LAST line of output:
+MC_RESULT:{{"status":"completed|failed|blocked","commits":[],\
+"summary":"audit findings summary","discoveries":["key findings"],\
+"concerns":["issues found"],"files_changed":[]}}
+"""
+
+
+DESIGN_WORKER_PROMPT_TEMPLATE = """\
+You are a design agent for {target_name} at {workspace_path}.
+
+## Design Task
+{title}
+
+{description}
+
+## Guidelines
+- Focus on DESIGN DECISIONS, not code changes
+- Analyze requirements, evaluate trade-offs, and document design choices
+- Consider maintainability, extensibility, and consistency with existing patterns
+- Do NOT commit code changes -- your output is the design document
+- Document decisions with clear rationale in your MC_RESULT discoveries field
+- Note any alternatives considered and why they were rejected
+- Do NOT run `pip install`, `uv pip install`, or modify the Python environment -- it is pre-configured via symlink
+
+## Scope
+Files relevant to design: {files_hint}
+
+## Verification
+Run (read-only check): {verification_command}
+
+## Context
+{context_block}
+{experience_block}{mission_state_block}{overlap_warnings_block}
+## Output
+When done, write a summary as the LAST line of output:
+MC_RESULT:{{"status":"completed|failed|blocked","commits":[],\
+"summary":"design decisions summary","discoveries":["design decisions"],\
+"concerns":["trade-offs and risks"],"files_changed":[]}}
+"""
+
+
 MISSION_WORKER_PROMPT_TEMPLATE = """\
 You are working on {target_name} at {workspace_path}.
 
@@ -341,6 +409,10 @@ def render_mission_worker_prompt(
 		template = RESEARCH_WORKER_PROMPT_TEMPLATE
 	elif unit.unit_type == "experiment":
 		template = EXPERIMENT_WORKER_PROMPT_TEMPLATE
+	elif unit.unit_type == "audit":
+		template = AUDIT_WORKER_PROMPT_TEMPLATE
+	elif unit.unit_type == "design":
+		template = DESIGN_WORKER_PROMPT_TEMPLATE
 	else:
 		template = MISSION_WORKER_PROMPT_TEMPLATE
 	rendered = template.format(

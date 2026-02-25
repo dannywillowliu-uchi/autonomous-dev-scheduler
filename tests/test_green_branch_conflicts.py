@@ -795,10 +795,8 @@ class TestMergedFilesFromGitDiff:
 		completion = WorkerCompletion(
 			unit=unit, handoff=handoff, workspace="/tmp/ws", epoch=epoch,
 		)
-		ctrl._completion_queue.put_nowait(completion)
-		ctrl.running = False
 
-		await ctrl._process_completions(Mission(id="m1"), result)
+		await ctrl._process_single_completion(completion, Mission(id="m1"), result)
 
 		# _merged_files should contain only app.py (from git diff), not index.html
 		assert "src/app.py" in ctrl._merged_files
@@ -838,10 +836,8 @@ class TestMergedFilesFromGitDiff:
 		completion = WorkerCompletion(
 			unit=unit, handoff=None, workspace="/tmp/ws", epoch=epoch,
 		)
-		ctrl._completion_queue.put_nowait(completion)
-		ctrl.running = False
 
-		await ctrl._process_completions(Mission(id="m1"), result)
+		await ctrl._process_single_completion(completion, Mission(id="m1"), result)
 
 		assert "src/models.py" in ctrl._merged_files
 
@@ -851,68 +847,12 @@ class TestMergedFilesFromGitDiff:
 # ---------------------------------------------------------------------------
 
 
-class TestGetLockedFiles:
-	"""ContinuousController._get_locked_files() returns in-flight + merged files."""
-
-	@pytest.mark.asyncio
-	async def test_empty_when_nothing_running(self, config: MissionConfig, db: Database) -> None:
-		ctrl = ContinuousController(config, db)
-		locked = await ctrl._get_locked_files()
-		assert locked == {}
-
-	@pytest.mark.asyncio
-	async def test_includes_merged_files(self, config: MissionConfig, db: Database) -> None:
-		ctrl = ContinuousController(config, db)
-		ctrl._merged_files = {"src/app.py", "src/index.html"}
-		locked = await ctrl._get_locked_files()
-		assert "src/app.py" in locked
-		assert "already merged" in locked["src/app.py"]
-		assert "src/index.html" in locked
-		assert "already merged" in locked["src/index.html"]
-
-	@pytest.mark.asyncio
-	async def test_includes_in_flight_files(self, config: MissionConfig, db: Database) -> None:
-		db.insert_mission(Mission(id="m1", objective="test"))
-		plan = Plan(id="p1", objective="test")
-		db.insert_plan(plan)
-		unit = WorkUnit(
-			id="wu-running", plan_id="p1", title="Build API",
-			status="running", files_hint="src/api.py, src/routes.py",
-		)
-		db.insert_work_unit(unit)
-
-		ctrl = ContinuousController(config, db)
-		locked = await ctrl._get_locked_files()
-
-		assert "src/api.py" in locked
-		assert any("in-flight" in r for r in locked["src/api.py"])
-		assert "src/routes.py" in locked
-
-	@pytest.mark.asyncio
-	async def test_combines_in_flight_and_merged(self, config: MissionConfig, db: Database) -> None:
-		db.insert_mission(Mission(id="m1", objective="test"))
-		plan = Plan(id="p1", objective="test")
-		db.insert_plan(plan)
-		unit = WorkUnit(
-			id="wu-r", plan_id="p1", title="Build API",
-			status="running", files_hint="src/api.py",
-		)
-		db.insert_work_unit(unit)
-
-		ctrl = ContinuousController(config, db)
-		ctrl._merged_files = {"src/app.py"}
-		locked = await ctrl._get_locked_files()
-
-		assert "src/api.py" in locked
-		assert "src/app.py" in locked
-
-
 class TestLockedFilesInPlannerPrompt:
 	"""Locked files section is injected into the planner prompt."""
 
 	@pytest.mark.asyncio
-	async def test_locked_files_passed_to_planner(self) -> None:
-		"""ContinuousPlanner forwards locked_files to RecursivePlanner."""
+	async def test_locked_files_not_forwarded_to_planner(self) -> None:
+		"""ContinuousPlanner no longer forwards locked_files (flat planner uses DB state)."""
 		config = _conflict_config()
 		db = Database(":memory:")
 		planner = ContinuousPlanner(config, db)
@@ -936,8 +876,7 @@ class TestLockedFilesInPlannerPrompt:
 
 		await planner.get_next_units(mission, locked_files=locked)
 
-		assert "locked_files" in captured_kwargs
-		assert captured_kwargs["locked_files"] == locked
+		assert "locked_files" not in captured_kwargs
 
 	@pytest.mark.asyncio
 	async def test_locked_section_in_prompt(self) -> None:
@@ -1153,10 +1092,8 @@ class TestReconcilerSweep:
 		completion = WorkerCompletion(
 			unit=unit, handoff=None, workspace="/tmp/ws", epoch=epoch,
 		)
-		ctrl._completion_queue.put_nowait(completion)
-		ctrl.running = False
 
-		await ctrl._process_completions(Mission(id="m1"), result)
+		await ctrl._process_single_completion(completion, Mission(id="m1"), result)
 
 		mock_gbm.run_reconciliation_check.assert_awaited_once()
 
@@ -1201,10 +1138,8 @@ class TestReconcilerSweep:
 		completion = WorkerCompletion(
 			unit=unit, handoff=None, workspace="/tmp/ws", epoch=epoch,
 		)
-		ctrl._completion_queue.put_nowait(completion)
-		ctrl.running = False
 
-		await ctrl._process_completions(Mission(id="m1"), result)
+		await ctrl._process_single_completion(completion, Mission(id="m1"), result)
 
 		mock_gbm.run_fixup.assert_awaited_once()
 		# Fixup should receive the failure output
@@ -1241,9 +1176,7 @@ class TestReconcilerSweep:
 			status="completed", commit_hash="abc", branch_name="mc/unit-wu1",
 		)
 		db.insert_work_unit(unit1)
-		ctrl._completion_queue.put_nowait(
-			WorkerCompletion(unit=unit1, handoff=None, workspace="/tmp/ws", epoch=epoch),
-		)
+		completion1 = WorkerCompletion(unit=unit1, handoff=None, workspace="/tmp/ws", epoch=epoch)
 
 		# Process a failed unit (no merge)
 		unit2 = WorkUnit(
@@ -1251,12 +1184,10 @@ class TestReconcilerSweep:
 			status="failed",
 		)
 		db.insert_work_unit(unit2)
-		ctrl._completion_queue.put_nowait(
-			WorkerCompletion(unit=unit2, handoff=None, workspace="/tmp/ws", epoch=epoch),
-		)
+		completion2 = WorkerCompletion(unit=unit2, handoff=None, workspace="/tmp/ws", epoch=epoch)
 
-		ctrl.running = False
-		await ctrl._process_completions(Mission(id="m1"), result)
+		await ctrl._process_single_completion(completion1, Mission(id="m1"), result)
+		await ctrl._process_single_completion(completion2, Mission(id="m1"), result)
 
 		# Reconciler should have run once (after first merge) but not again for the failure
 		assert mock_gbm.run_reconciliation_check.await_count == 1

@@ -199,7 +199,7 @@ class WorkUnit:
 	output_summary: str = ""
 	attempt: int = 0
 	max_attempts: int = 3
-	unit_type: str = "implementation"  # implementation/research
+	unit_type: str = "implementation"  # implementation/research/audit/design/experiment
 	experiment_mode: bool = False
 	timeout: int | None = None  # per-unit timeout override (seconds)
 	verification_command: str | None = None  # per-unit verification override
@@ -267,9 +267,6 @@ class Mission:
 	total_cost_usd: float = 0.0
 	final_score: float = 0.0
 	stopped_reason: str = ""
-	ambition_score: int = 0
-	next_objective: str = ""
-	proposed_by_strategist: bool = False
 	chain_id: str = ""
 
 
@@ -454,6 +451,22 @@ class UnitEvent:
 	details: str = ""  # JSON blob for extra info
 	input_tokens: int = 0
 	output_tokens: int = 0
+
+
+@dataclass
+class KnowledgeItem:
+	"""Accumulated knowledge from research/audit/design units."""
+
+	id: str = field(default_factory=_new_id)
+	mission_id: str = ""
+	source_unit_id: str = ""
+	source_unit_type: str = ""  # research/audit/design
+	title: str = ""
+	content: str = ""
+	rationale: str = ""
+	scope: str = ""
+	confidence: float = 1.0
+	created_at: str = field(default_factory=_now_iso)
 
 
 # -- Strategic context models --

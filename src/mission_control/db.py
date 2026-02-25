@@ -26,6 +26,7 @@ from mission_control.models import (
 	Experience,
 	ExperimentResult,
 	Handoff,
+	KnowledgeItem,
 	MergeRequest,
 	Mission,
 	Plan,
@@ -652,6 +653,7 @@ class Database:
 		self._migrate_speculation_columns()
 		self._migrate_session_id_column()
 		self._migrate_chain_id_column()
+		self._migrate_knowledge_items()
 
 	def _migrate_degradation_level_column(self) -> None:
 		"""Add degradation_level column to missions table (idempotent)."""
@@ -859,6 +861,25 @@ class Database:
 			else:
 				logger.warning("Migration failed for missions.chain_id: %s", exc)
 				raise
+
+	def _migrate_knowledge_items(self) -> None:
+		"""Create knowledge_items table (idempotent)."""
+		self.conn.executescript("""
+			CREATE TABLE IF NOT EXISTS knowledge_items (
+				id TEXT PRIMARY KEY,
+				mission_id TEXT NOT NULL,
+				source_unit_id TEXT NOT NULL DEFAULT '',
+				source_unit_type TEXT NOT NULL DEFAULT '',
+				title TEXT NOT NULL DEFAULT '',
+				content TEXT NOT NULL DEFAULT '',
+				rationale TEXT NOT NULL DEFAULT '',
+				scope TEXT NOT NULL DEFAULT '',
+				confidence REAL NOT NULL DEFAULT 1.0,
+				created_at TEXT NOT NULL,
+				FOREIGN KEY (mission_id) REFERENCES missions(id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_knowledge_items_mission ON knowledge_items(mission_id);
+		""")
 
 	def close(self) -> None:
 		logger.debug("Closing database connection")
@@ -1590,16 +1611,14 @@ class Database:
 		self.conn.execute(
 			"""INSERT INTO missions
 			(id, objective, status, started_at, finished_at,
-			 total_rounds, total_cost_usd, final_score, stopped_reason,
-			 ambition_score, next_objective, proposed_by_strategist, chain_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+			 total_rounds, total_cost_usd, final_score, stopped_reason, chain_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
 			(
 				mission.id, mission.objective, mission.status,
 				mission.started_at, mission.finished_at,
 				mission.total_rounds, mission.total_cost_usd,
 				mission.final_score, mission.stopped_reason,
-				mission.ambition_score, mission.next_objective,
-				int(mission.proposed_by_strategist), mission.chain_id,
+				mission.chain_id,
 			),
 		)
 		self.conn.commit()
@@ -1610,14 +1629,13 @@ class Database:
 			"""UPDATE missions SET
 			objective=?, status=?, started_at=?, finished_at=?,
 			total_rounds=?, total_cost_usd=?, final_score=?, stopped_reason=?,
-			ambition_score=?, next_objective=?, proposed_by_strategist=?, chain_id=?
+			chain_id=?
 			WHERE id=?""",
 			(
 				mission.objective, mission.status, mission.started_at,
 				mission.finished_at, mission.total_rounds,
 				mission.total_cost_usd, mission.final_score,
-				mission.stopped_reason, mission.ambition_score,
-				mission.next_objective, int(mission.proposed_by_strategist),
+				mission.stopped_reason,
 				mission.chain_id, mission.id,
 			),
 		)
@@ -1730,9 +1748,6 @@ class Database:
 			total_cost_usd=row["total_cost_usd"],
 			final_score=row["final_score"],
 			stopped_reason=row["stopped_reason"],
-			ambition_score=row["ambition_score"] if "ambition_score" in keys else 0,
-			next_objective=row["next_objective"] if "next_objective" in keys else "",
-			proposed_by_strategist=bool(row["proposed_by_strategist"]) if "proposed_by_strategist" in keys else False,
 			chain_id=row["chain_id"] if "chain_id" in keys else "",
 		)
 
@@ -2600,6 +2615,43 @@ class Database:
 			tags=row["tags"],
 			acceptance_criteria=row["acceptance_criteria"] if "acceptance_criteria" in keys else "",
 		)
+
+	# -- Knowledge Items --
+
+	def insert_knowledge_item(self, item: KnowledgeItem) -> None:
+		self.conn.execute(
+			"""INSERT INTO knowledge_items
+			(id, mission_id, source_unit_id, source_unit_type, title, content,
+			 rationale, scope, confidence, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+			(
+				item.id, item.mission_id, item.source_unit_id,
+				item.source_unit_type, item.title, item.content,
+				item.rationale, item.scope, item.confidence, item.created_at,
+			),
+		)
+		self.conn.commit()
+
+	def get_knowledge_for_mission(self, mission_id: str) -> list[KnowledgeItem]:
+		rows = self.conn.execute(
+			"SELECT * FROM knowledge_items WHERE mission_id=? ORDER BY created_at ASC",
+			(mission_id,),
+		).fetchall()
+		return [
+			KnowledgeItem(
+				id=r["id"],
+				mission_id=r["mission_id"],
+				source_unit_id=r["source_unit_id"],
+				source_unit_type=r["source_unit_type"],
+				title=r["title"],
+				content=r["content"],
+				rationale=r["rationale"],
+				scope=r["scope"],
+				confidence=r["confidence"],
+				created_at=r["created_at"],
+			)
+			for r in rows
+		]
 
 	# -- Strategic Context --
 

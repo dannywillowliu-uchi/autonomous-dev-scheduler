@@ -1,47 +1,26 @@
-"""Continuous planner -- rolling backlog wrapper around RecursivePlanner."""
+"""Continuous planner -- flat impact-focused planning (no backlog, no recursion)."""
 
 from __future__ import annotations
 
 import logging
-import time
 
 from mission_control.config import MissionConfig
 from mission_control.db import Database
-from mission_control.models import BacklogItem, Epoch, Handoff, Mission, Plan, WorkUnit
+from mission_control.models import Epoch, Mission, Plan, WorkUnit
+from mission_control.overlap import resolve_file_overlaps
 from mission_control.recursive_planner import RecursivePlanner
 
 log = logging.getLogger(__name__)
 
 
-def _parse_files_hint(files_hint: str) -> set[str]:
-	"""Parse comma-separated files_hint into a set of file paths."""
-	if not files_hint:
-		return set()
-	return {f.strip() for f in files_hint.split(",") if f.strip()}
-
-
 class ContinuousPlanner:
-	"""Wraps RecursivePlanner to produce small batches of work units on-demand.
-
-	Instead of planning an entire round up-front, this planner maintains a
-	rolling backlog. When the backlog runs low, it invokes the LLM to generate
-	a small batch of 1-3 new units, incorporating discoveries from recent
-	worker feedback.
-	"""
+	"""Flat impact-focused planner: invokes LLM every iteration with full state."""
 
 	def __init__(self, config: MissionConfig, db: Database) -> None:
 		self._inner = RecursivePlanner(config, db)
 		self._config = config
 		self._db = db
-		self._backlog: list[WorkUnit] = []
-		self._discoveries: list[str] = []
-		self._concerns: list[str] = []
 		self._epoch_count: int = 0
-		self._unit_to_backlog: dict[str, str] = {}
-		self._backlog_items: list[BacklogItem] = []
-		self._backlog_queued_at: dict[str, float] = {}
-		self._merged_files: set[str] = set()
-		self._stale_context: list[str] = []
 
 	def set_causal_context(self, risks: str) -> None:
 		"""Set causal risk factors, delegating to the inner planner."""
@@ -51,268 +30,111 @@ class ContinuousPlanner:
 		"""Set project structure snapshot, delegating to the inner planner."""
 		self._inner.set_project_snapshot(snapshot)
 
-	def ingest_handoff(self, handoff: Handoff) -> None:
-		"""Accumulate discoveries and concerns from worker feedback."""
-		if handoff.discoveries:
-			self._discoveries.extend(handoff.discoveries)
-		if handoff.concerns:
-			self._concerns.extend(handoff.concerns)
-
-	def set_backlog_items(self, items: list[BacklogItem]) -> None:
-		"""Store backlog items as context for planning prompts."""
-		self._backlog_items = list(items)
-
-	def set_merged_files(self, files: set[str]) -> None:
-		"""Update the set of files already covered by merged units."""
-		self._merged_files = set(files)
-
-	@property
-	def backlog_size(self) -> int:
-		return len(self._backlog)
-
-	def get_backlog_mapping(self) -> dict[str, str]:
-		"""Return a copy of the unit-to-backlog-item mapping."""
-		return dict(self._unit_to_backlog)
-
-	def _evict_stale_units(self) -> None:
-		"""Remove stale units from the backlog based on age and file divergence.
-
-		Units are evicted if:
-		- They are older than backlog_max_age_seconds (time-based staleness)
-		- More than 50% of their files_hint overlaps with already-merged files
-
-		Evicted unit descriptions are collected into _stale_context so the next
-		replan can regenerate updated versions.
-		"""
-		if not self._backlog:
-			return
-
-		now = time.monotonic()
-		max_age = self._config.continuous.backlog_max_age_seconds
-		surviving: list[WorkUnit] = []
-
-		for unit in self._backlog:
-			queued_at = self._backlog_queued_at.get(unit.id)
-
-			# Time-based eviction
-			if queued_at is not None and (now - queued_at) > max_age:
-				log.warning(
-					"Evicting stale unit %s (%s): age %.0fs exceeds threshold %ds",
-					unit.id, unit.title, now - queued_at, max_age,
-				)
-				self._stale_context.append(unit.description or unit.title)
-				self._backlog_queued_at.pop(unit.id, None)
-				continue
-
-			# File divergence eviction
-			if self._merged_files:
-				unit_files = _parse_files_hint(unit.files_hint)
-				if unit_files:
-					overlap = unit_files & self._merged_files
-					if len(overlap) > len(unit_files) * 0.5:
-						log.warning(
-							"Evicting diverged unit %s (%s): %d/%d files already merged",
-							unit.id, unit.title, len(overlap), len(unit_files),
-						)
-						self._stale_context.append(unit.description or unit.title)
-						self._backlog_queued_at.pop(unit.id, None)
-						continue
-
-			surviving.append(unit)
-
-		evicted_count = len(self._backlog) - len(surviving)
-		if evicted_count:
-			log.info("Evicted %d stale units from backlog", evicted_count)
-		self._backlog = surviving
-
 	async def get_next_units(
 		self,
 		mission: Mission,
 		max_units: int = 3,
 		feedback_context: str = "",
-		backlog_item_ids: list[str] | None = None,
-		decomposition_feedback: str = "",
-		locked_files: dict[str, list[str]] | None = None,
+		knowledge_context: str = "",
+		**kwargs,
 	) -> tuple[Plan, list[WorkUnit], Epoch]:
-		"""Return next work units from backlog, replanning if needed.
-
-		If the backlog has enough units, returns from it without an LLM call.
-		Otherwise, invokes the planner to generate a new batch.
-
-		Args:
-			mission: The current mission.
-			max_units: Maximum units to return.
-			feedback_context: Context from recent worker feedback.
-			backlog_item_ids: Optional backlog item IDs being worked on.
-			decomposition_feedback: Quality feedback from previous epoch grading.
-
-		Returns:
-			(plan, units, epoch) -- the plan, selected work units, and the epoch.
-		"""
-		# Evict stale units before any serving
-		self._evict_stale_units()
-
-		min_size = self._config.continuous.backlog_min_size
-
-		# Merge decomposition feedback into the feedback context
-		if decomposition_feedback:
-			feedback_context = (
-				(feedback_context + "\n\n" + decomposition_feedback)
-				if feedback_context
-				else decomposition_feedback
-			)
-
-		if len(self._backlog) < min_size:
-			# Need to replan
-			plan, units, epoch = await self._replan(
-				mission, max_units, feedback_context, backlog_item_ids,
-				locked_files=locked_files,
-			)
-			# Empty replan + empty backlog = objective complete
-			if not units and not self._backlog:
-				return plan, [], epoch
-			# If replan returned nothing but backlog has items, serve from backlog
-			if not units and self._backlog:
-				serve_count = min(max_units, len(self._backlog))
-				units = self._backlog[:serve_count]
-				self._backlog = self._backlog[serve_count:]
-			return plan, units, epoch
-
-		# Serve from existing backlog
-		serve_count = min(max_units, len(self._backlog))
-		units = self._backlog[:serve_count]
-		self._backlog = self._backlog[serve_count:]
-
-		# Create a lightweight plan record for these units
-		plan = Plan(
-			objective=mission.objective,
-			status="active",
-			total_units=serve_count,
-		)
-
-		# Use the current epoch
-		epoch = Epoch(
-			mission_id=mission.id,
-			number=self._epoch_count,
-		)
-
-		return plan, units, epoch
-
-	async def _replan(
-		self,
-		mission: Mission,
-		max_units: int,
-		feedback_context: str,
-		backlog_item_ids: list[str] | None = None,
-		locked_files: dict[str, list[str]] | None = None,
-	) -> tuple[Plan, list[WorkUnit], Epoch]:
-		"""Invoke the planner LLM to generate new work units."""
+		"""Plan the next batch of units using the flat impact prompt."""
 		self._epoch_count += 1
 		from mission_control.snapshot import clear_snapshot_cache
-
 		clear_snapshot_cache()
+
 		epoch = Epoch(
 			mission_id=mission.id,
 			number=self._epoch_count,
 		)
 
-		# Build discovery context from accumulated feedback
-		curated_discoveries = self._discoveries[-20:]  # last 20
+		# Build structured state from DB
+		structured_state = self._build_structured_state(mission)
 
-		# Build concern context
-		concern_text = ""
-		if self._concerns:
-			concern_items = self._concerns[-10:]
-			concern_text = "\nConcerns from recent work:\n" + "\n".join(
-				f"- {c}" for c in concern_items
-			)
-
+		# Build the enriched context
 		enriched_context = feedback_context
-		if concern_text:
-			enriched_context = (feedback_context + concern_text) if feedback_context else concern_text
-
-		# Add backlog item context if IDs provided
-		if backlog_item_ids:
-			backlog_section = "\nBacklog items being worked on:\n" + "\n".join(
-				f"- {bid}" for bid in backlog_item_ids
+		if knowledge_context:
+			enriched_context = (
+				(enriched_context + "\n\n## Accumulated Knowledge\n" + knowledge_context)
+				if enriched_context
+				else ("## Accumulated Knowledge\n" + knowledge_context)
 			)
-			enriched_context = (enriched_context + backlog_section) if enriched_context else backlog_section
-
-		# Add rich backlog item details from set_backlog_items()
-		if self._backlog_items:
-			items_section = "\nPriority backlog items for this mission:\n" + "\n".join(
-				f"- [{item.track}] {item.title} (priority={item.priority_score:.1f}): {item.description}"
-				for item in self._backlog_items
+		if structured_state:
+			enriched_context = (
+				(enriched_context + "\n\n" + structured_state)
+				if enriched_context
+				else structured_state
 			)
-			enriched_context = (enriched_context + items_section) if enriched_context else items_section
-
-		# Add stale context from evicted units so planner can regenerate
-		if self._stale_context:
-			stale_section = (
-				"\nPreviously planned units were evicted as stale "
-				"(codebase has diverged). Consider regenerating updated versions:\n"
-				+ "\n".join(f"- {desc}" for desc in self._stale_context)
-			)
-			enriched_context = (enriched_context + stale_section) if enriched_context else stale_section
-			self._stale_context = []
 
 		plan, root_node = await self._inner.plan_round(
 			objective=mission.objective,
-			snapshot_hash="",  # continuous mode doesn't use snapshot hash
-			prior_discoveries=curated_discoveries,
+			snapshot_hash="",
+			prior_discoveries=[],
 			round_number=self._epoch_count,
 			feedback_context=enriched_context,
-			locked_files=locked_files,
 		)
 
 		# Extract work units from the plan tree
 		units = self._extract_units_from_tree(root_node)
 
-		# Post-planning: detect file overlaps and inject dependency edges
-		from mission_control.overlap import resolve_file_overlaps
+		# Resolve file overlaps
 		units = resolve_file_overlaps(units)
-
-		# Track unit-to-backlog-item mapping
-		if backlog_item_ids:
-			joined_ids = ",".join(backlog_item_ids)
-			for unit in units:
-				self._unit_to_backlog[unit.id] = joined_ids
 
 		plan.status = "active"
 		plan.total_units = len(units)
-
-		# Split: serve up to max_units, rest goes to backlog
-		serve_count = min(max_units, len(units))
-		serve_units = units[:serve_count]
-		backlogged = units[serve_count:]
-		now = time.monotonic()
-		for unit in backlogged:
-			self._backlog_queued_at[unit.id] = now
-		self._backlog.extend(backlogged)
-
 		epoch.units_planned = len(units)
 
+		# Limit to max_units
+		units = units[:max_units]
+
 		log.info(
-			"Replanned epoch %d: %d units (%d served, %d backlogged)",
-			self._epoch_count, len(units), serve_count, len(units) - serve_count,
+			"Planned epoch %d: %d units",
+			self._epoch_count, len(units),
 		)
 
-		return plan, serve_units, epoch
+		return plan, units, epoch
+
+	def _build_structured_state(self, mission: Mission) -> str:
+		"""Build a structured checklist of completed/failed work from the DB."""
+		try:
+			all_units = self._db.get_work_units_for_mission(mission.id)
+		except Exception:
+			return ""
+
+		if not all_units:
+			return ""
+
+		lines = ["## What's Been Done"]
+
+		completed = [u for u in all_units if u.status == "completed"]
+		failed = [u for u in all_units if u.status == "failed"]
+
+		if completed:
+			for u in completed:
+				files_part = f" (files: {u.files_hint})" if u.files_hint else ""
+				lines.append(f"- [x] {u.title}{files_part}")
+
+		if failed:
+			for u in failed:
+				files_part = f" (files: {u.files_hint})" if u.files_hint else ""
+				lines.append(f"- [FAILED] {u.title}{files_part}")
+
+		if not completed and not failed:
+			return ""
+
+		return "\n".join(lines)
 
 	def _extract_units_from_tree(self, node: object) -> list[WorkUnit]:
 		"""Extract WorkUnit objects from the in-memory plan tree."""
 		units: list[WorkUnit] = []
 
-		# Check for forced unit (leaf at max depth)
 		if hasattr(node, "_forced_unit"):
 			units.append(node._forced_unit)  # type: ignore[union-attr]
 
-		# Check for child leaves
 		if hasattr(node, "_child_leaves"):
 			for _leaf, wu in node._child_leaves:  # type: ignore[union-attr]
 				units.append(wu)
 
-		# Recurse into subdivided children
 		if hasattr(node, "_subdivided_children"):
 			for child in node._subdivided_children:  # type: ignore[union-attr]
 				units.extend(self._extract_units_from_tree(child))

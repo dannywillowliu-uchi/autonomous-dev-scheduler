@@ -74,7 +74,6 @@ budget_per_call_usd = 2.0
 
 [continuous]
 max_wall_time_seconds = 3600
-backlog_min_size = 1
 timeout_multiplier = 1.5
 min_ambition_score = 4
 max_replan_attempts = 2

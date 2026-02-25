@@ -31,7 +31,6 @@ from mission_control.config import (
 	load_config,
 )
 from mission_control.continuous_controller import ContinuousMissionResult
-from mission_control.continuous_planner import ContinuousPlanner
 from mission_control.db import Database
 from mission_control.green_branch import GreenBranchManager
 from mission_control.models import Epoch, Handoff, Mission, Plan, UnitEvent, WorkUnit
@@ -233,9 +232,6 @@ class TestDispatchMergeCompleteCycle:
 		# --- Mock backend ---
 		backend = MockWorkerBackend(source, tmp_path)
 
-		# --- Real planner (used just for ingest_handoff tracking) ---
-		planner = ContinuousPlanner(config, db)
-
 		# --- Create mission, plan, epoch in DB ---
 		mission = Mission(objective="Add two features", status="running")
 		db.insert_mission(mission)
@@ -317,9 +313,6 @@ class TestDispatchMergeCompleteCycle:
 			)
 			db.insert_unit_event(event)
 
-			# Step 6: Ingest handoff into planner (triggers re-plan on next call)
-			planner.ingest_handoff(handoff)
-
 		# ===================================================================
 		# VERIFICATION
 		# ===================================================================
@@ -364,11 +357,6 @@ class TestDispatchMergeCompleteCycle:
 		assert len(events) == 2
 		assert all(e.event_type == "merged" for e in events)
 
-		# --- Planner state: discoveries ingested ---
-		assert len(planner._discoveries) == 2
-		assert any("feature_alpha.py" in d for d in planner._discoveries)
-		assert any("feature_beta.py" in d for d in planner._discoveries)
-
 		# --- Source repo sync: mc/green in source matches workspace ---
 		ws_green = _run(["git", "rev-parse", "mc/green"], workspace)
 		src_green = _run(["git", "rev-parse", "mc/green"], source)
@@ -389,7 +377,6 @@ class TestDispatchMergeCompleteCycle:
 		gbm.workspace = str(workspace)
 
 		backend = MockWorkerBackend(source, tmp_path)
-		planner = ContinuousPlanner(config, db)
 
 		mission = Mission(objective="Add three features", status="running")
 		db.insert_mission(mission)
@@ -473,7 +460,6 @@ class TestDispatchMergeCompleteCycle:
 				event_type="merged",
 			)
 			db.insert_unit_event(event)
-			planner.ingest_handoff(handoff)
 
 			# Track green branch advancing after each merge
 			green_hashes.append(
@@ -502,9 +488,6 @@ class TestDispatchMergeCompleteCycle:
 
 		events = db.get_unit_events_for_mission(mission.id)
 		assert len(events) == 3
-
-		# --- Verify planner ingestion ---
-		assert len(planner._discoveries) == 3
 
 		# --- Verify git log shows merge commits ---
 		log_output = _run(
@@ -817,18 +800,10 @@ class TestContinuousConfigChainMaxDepth:
 		assert cc.chain_max_depth == 3
 
 
-class TestContinuousMissionResultNextObjective:
-	"""Test next_objective field on ContinuousMissionResult."""
+class TestContinuousMissionResultFields:
+	"""Test ContinuousMissionResult fields after cleanup."""
 
-	def test_default_empty(self) -> None:
-		result = ContinuousMissionResult()
-		assert result.next_objective == ""
-
-	def test_set_next_objective(self) -> None:
-		result = ContinuousMissionResult(next_objective="Build feature X")
-		assert result.next_objective == "Build feature X"
-
-	def test_all_fields_present(self) -> None:
+	def test_core_fields_present(self) -> None:
 		result = ContinuousMissionResult(
 			mission_id="abc",
 			objective="Build A",
@@ -838,13 +813,10 @@ class TestContinuousMissionResultNextObjective:
 			total_units_failed=1,
 			wall_time_seconds=120.0,
 			stopped_reason="planner_completed",
-			next_objective="Build B",
-			ambition_score=7,
-			proposed_by_strategist=True,
 		)
-		assert result.next_objective == "Build B"
-		assert result.ambition_score == 7
-		assert result.proposed_by_strategist is True
+		assert result.mission_id == "abc"
+		assert result.objective_met is True
+		assert result.stopped_reason == "planner_completed"
 
 
 class TestChainCLIArgs:
@@ -903,7 +875,7 @@ class TestChainLoopInCLI:
 		mock_load.return_value = config
 
 		result = ContinuousMissionResult(
-			mission_id="m1", objective_met=True, next_objective="Follow up",
+			mission_id="m1", objective_met=True,
 		)
 		mock_ctrl = MagicMock()
 		mock_ctrl.run = MagicMock(return_value=result)
@@ -921,61 +893,17 @@ class TestChainLoopInCLI:
 	@patch("mission_control.continuous_controller.ContinuousController")
 	@patch("mission_control.cli.load_config")
 	@patch("mission_control.cli.Database")
-	def test_chain_runs_multiple(
+	def test_chain_without_strategist_runs_once(
 		self, mock_db_cls: MagicMock, mock_load: MagicMock, mock_ctrl_cls: MagicMock,
 		_mock_dash: MagicMock, tmp_path: Path,
 	) -> None:
+		"""With --chain but no --strategist, breaks after first mission."""
 		_, config = self._make_config(tmp_path)
 		mock_load.return_value = config
 
-		result1 = ContinuousMissionResult(
-			mission_id="m1", objective_met=False, next_objective="Continue X",
-		)
-		result2 = ContinuousMissionResult(
-			mission_id="m2", objective_met=True, next_objective="",
-		)
-
-		call_count = [0]
-
-		def run_side_effect(coro):
-			call_count[0] += 1
-			if call_count[0] == 1:
-				return result1
-			return result2
-
-		mock_ctrl = MagicMock()
-		mock_ctrl_cls.return_value = mock_ctrl
-
-		parser = build_parser()
-		args = parser.parse_args([
-			"mission", "--chain", "--max-chain-depth", "3",
-			"--config", str(tmp_path / "mission-control.toml"),
-		])
-
-		with patch("asyncio.run", side_effect=run_side_effect):
-			ret = cmd_mission(args)
-
-		assert ret == 0
-		assert call_count[0] == 2
-		# Objective should have been updated to the chained one
-		assert config.target.objective == "Continue X"
-
-	@patch("mission_control.cli._start_dashboard_background", return_value=(None, None))
-	@patch("mission_control.continuous_controller.ContinuousController")
-	@patch("mission_control.cli.load_config")
-	@patch("mission_control.cli.Database")
-	def test_chain_respects_max_depth(
-		self, mock_db_cls: MagicMock, mock_load: MagicMock, mock_ctrl_cls: MagicMock,
-		_mock_dash: MagicMock, tmp_path: Path,
-	) -> None:
-		_, config = self._make_config(tmp_path)
-		mock_load.return_value = config
-
-		# Always return a next_objective to force hitting the depth limit
 		result = ContinuousMissionResult(
-			mission_id="m1", objective_met=False, next_objective="Keep going",
+			mission_id="m1", objective_met=True,
 		)
-
 		mock_ctrl = MagicMock()
 		mock_ctrl_cls.return_value = mock_ctrl
 
@@ -987,39 +915,11 @@ class TestChainLoopInCLI:
 
 		parser = build_parser()
 		args = parser.parse_args([
-			"mission", "--chain", "--max-chain-depth", "2",
-			"--config", str(tmp_path / "mission-control.toml"),
-		])
-
-		with patch("asyncio.run", side_effect=run_side_effect):
-			ret = cmd_mission(args)
-
-		# Should stop at max_chain_depth=2
-		assert call_count[0] == 2
-		assert ret == 1  # objective_met=False -> return 1
-
-	@patch("mission_control.cli._start_dashboard_background", return_value=(None, None))
-	@patch("mission_control.continuous_controller.ContinuousController")
-	@patch("mission_control.cli.load_config")
-	@patch("mission_control.cli.Database")
-	def test_chain_stops_on_empty_next_objective(
-		self, mock_db_cls: MagicMock, mock_load: MagicMock, mock_ctrl_cls: MagicMock,
-		_mock_dash: MagicMock, tmp_path: Path,
-	) -> None:
-		_, config = self._make_config(tmp_path)
-		mock_load.return_value = config
-
-		result = ContinuousMissionResult(
-			mission_id="m1", objective_met=False, next_objective="",
-		)
-		mock_ctrl = MagicMock()
-		mock_ctrl_cls.return_value = mock_ctrl
-
-		parser = build_parser()
-		args = parser.parse_args([
 			"mission", "--chain",
 			"--config", str(tmp_path / "mission-control.toml"),
 		])
 
-		with patch("asyncio.run", return_value=result):
+		with patch("asyncio.run", side_effect=run_side_effect):
 			cmd_mission(args)
+
+		assert call_count[0] == 1
