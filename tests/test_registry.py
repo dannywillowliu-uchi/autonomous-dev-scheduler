@@ -29,7 +29,7 @@ def sample_config(tmp_path):
 		"[scheduler.budget]\nmax_per_session_usd = 1.0\nmax_per_run_usd = 10.0\n"
 		"[scheduler.parallel]\nnum_workers = 2\n"
 		"[rounds]\nmax_rounds = 5\nstall_threshold = 3\n"
-		"[planner]\nmax_depth = 2\n"
+		"[planner]\n"
 		"[green_branch]\nworking_branch = \"mc/working\"\ngreen_branch = \"mc/green\"\n"
 		'[backend]\ntype = "local"\n'
 	)

@@ -300,7 +300,7 @@ def cmd_mission(args: argparse.Namespace) -> int:
 		print(f"Workers: {config.scheduler.parallel.num_workers}")
 		cont = config.continuous
 		print(f"Max wall time: {cont.max_wall_time_seconds}s")
-		print(f"Planner max depth: {config.planner.max_depth}")
+		print(f"Planner budget: ${config.planner.budget_per_call_usd}/call")
 		gb = config.green_branch
 		print(f"Green branch: {gb.green_branch}")
 		print(f"Backend: {config.backend.type}")
@@ -558,8 +558,6 @@ stall_threshold = 3
 cooldown_between_rounds = 30
 
 [planner]
-max_depth = 3
-max_children_per_node = 5
 
 [green_branch]
 working_branch = "mc/working"

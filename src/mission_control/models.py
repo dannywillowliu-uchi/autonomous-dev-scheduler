@@ -169,7 +169,6 @@ class Plan:
 	completed_units: int = 0
 	failed_units: int = 0
 	round_id: str | None = None  # link to Round for mission mode
-	root_node_id: str | None = None  # root PlanNode for recursive planning
 
 
 @dataclass
@@ -186,7 +185,6 @@ class WorkUnit:
 	status: str = "pending"  # pending/claimed/running/completed/failed/blocked
 	worker_id: str | None = None
 	round_id: str | None = None  # link to Round for mission mode
-	plan_node_id: str | None = None  # leaf PlanNode that produced this unit
 	handoff_id: str | None = None  # structured handoff from worker
 	depends_on: str = ""  # comma-separated WorkUnit IDs
 	branch_name: str = ""
@@ -289,23 +287,6 @@ class Round:
 	failed_units: int = 0
 	cost_usd: float = 0.0
 	discoveries: str = ""  # JSON array of discovery strings from workers
-
-
-@dataclass
-class PlanNode:
-	"""A node in a recursive plan tree (branch or leaf)."""
-
-	id: str = field(default_factory=_new_id)
-	plan_id: str = ""
-	parent_id: str | None = None  # first parent (backward compat)
-	parent_ids: str = ""  # comma-separated parent IDs for DAG support
-	depth: int = 0
-	scope: str = ""  # what this node is responsible for
-	strategy: str = ""  # subdivide/leaves -- what the planner decided
-	status: str = "pending"  # pending/expanding/expanded/failed
-	node_type: str = "branch"  # branch/leaf
-	work_unit_id: str | None = None  # set if node_type == "leaf"
-	children_ids: str = ""  # comma-separated child PlanNode IDs
 
 
 class Handoff(BaseModel):

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 from mission_control.config import ContinuousConfig, MissionConfig, PlannerConfig, TargetConfig
 from mission_control.continuous_planner import ContinuousPlanner
 from mission_control.db import Database
-from mission_control.models import Epoch, Handoff, Mission, Plan, PlanNode, WorkUnit
+from mission_control.models import Epoch, Handoff, Mission, Plan, WorkUnit
 from mission_control.planner_context import build_planner_context, update_mission_state
 
 # --- Helpers for ContinuousPlanner tests ---
@@ -16,7 +16,7 @@ from mission_control.planner_context import build_planner_context, update_missio
 def _config() -> MissionConfig:
 	mc = MissionConfig()
 	mc.target = TargetConfig(name="test", path="/tmp/test", objective="Build API")
-	mc.planner = PlannerConfig(max_depth=2)
+	mc.planner = PlannerConfig()
 	mc.continuous = ContinuousConfig()
 	return mc
 
@@ -63,11 +63,7 @@ class TestGetNextUnits:
 
 		mock_wu = WorkUnit(id="wu1", plan_id="p1", title="Task 1")
 		mock_plan = Plan(id="p1", objective="test")
-		mock_root = PlanNode(id="root", plan_id="p1", node_type="branch", strategy="leaves")
-		mock_root._child_leaves = [  # type: ignore[attr-defined]
-			(PlanNode(id="leaf1", node_type="leaf"), mock_wu),
-		]
-		planner._inner.plan_round = AsyncMock(return_value=(mock_plan, mock_root))
+		planner._inner.plan_round = AsyncMock(return_value=(mock_plan, [mock_wu]))
 
 		mission = _mission()
 		plan, units, epoch = await planner.get_next_units(mission, max_units=3)
@@ -89,10 +85,8 @@ class TestGetNextUnits:
 			nonlocal call_count
 			call_count += 1
 			plan = Plan(id=f"p{call_count}", objective="test")
-			root = PlanNode(id=f"root{call_count}", plan_id=plan.id, strategy="leaves")
 			wu = WorkUnit(id=f"wu{call_count}", title=f"Task {call_count}")
-			root._child_leaves = [(PlanNode(id=f"l{call_count}", node_type="leaf"), wu)]  # type: ignore[attr-defined]
-			return plan, root
+			return plan, [wu]
 
 		planner._inner.plan_round = AsyncMock(side_effect=mock_plan_round)
 		mission = _mission()
@@ -109,8 +103,7 @@ class TestGetNextUnits:
 		planner = ContinuousPlanner(config, db)
 
 		mock_plan = Plan(id="p1", objective="test")
-		mock_root = PlanNode(id="root", plan_id="p1", strategy="leaves")
-		planner._inner.plan_round = AsyncMock(return_value=(mock_plan, mock_root))
+		planner._inner.plan_round = AsyncMock(return_value=(mock_plan, []))
 
 		mission = _mission()
 		plan, units, epoch = await planner.get_next_units(mission, max_units=3)
@@ -124,12 +117,7 @@ class TestGetNextUnits:
 
 		mock_units = [WorkUnit(id=f"wu{i}", title=f"Task {i}") for i in range(5)]
 		mock_plan = Plan(id="p1", objective="test")
-		mock_root = PlanNode(id="root", plan_id="p1", strategy="leaves")
-		mock_root._child_leaves = [  # type: ignore[attr-defined]
-			(PlanNode(id=f"l{i}", node_type="leaf"), wu)
-			for i, wu in enumerate(mock_units)
-		]
-		planner._inner.plan_round = AsyncMock(return_value=(mock_plan, mock_root))
+		planner._inner.plan_round = AsyncMock(return_value=(mock_plan, mock_units))
 
 		mission = _mission()
 		plan, units, epoch = await planner.get_next_units(mission, max_units=2)
@@ -142,10 +130,8 @@ class TestGetNextUnits:
 		planner = ContinuousPlanner(config, db)
 
 		mock_plan = Plan(id="p1", objective="test")
-		mock_root = PlanNode(id="root", plan_id="p1", strategy="leaves")
 		wu = WorkUnit(id="wu1", title="Task")
-		mock_root._child_leaves = [(PlanNode(id="l1", node_type="leaf"), wu)]  # type: ignore[attr-defined]
-		planner._inner.plan_round = AsyncMock(return_value=(mock_plan, mock_root))
+		planner._inner.plan_round = AsyncMock(return_value=(mock_plan, [wu]))
 
 		mission = _mission()
 		await planner.get_next_units(

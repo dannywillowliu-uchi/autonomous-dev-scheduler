@@ -1,4 +1,4 @@
-"""Tests for the recursive planner and DAG planner modules."""
+"""Tests for the flat planner and DAG planner modules."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mission_control.config import MissionConfig, PlannerConfig, SchedulerConfig
-from mission_control.models import Plan, PlanNode, WorkUnit
+from mission_control.models import WorkUnit
 from mission_control.overlap import resolve_file_overlaps, topological_layers
 from mission_control.recursive_planner import (
 	PlannerResult,
@@ -19,11 +19,9 @@ from mission_control.recursive_planner import (
 )
 
 
-def _config(max_depth: int = 3, max_children: int = 5) -> MissionConfig:
+def _config() -> MissionConfig:
 	config = MissionConfig(
 		planner=PlannerConfig(
-			max_depth=max_depth,
-			max_children_per_node=max_children,
 			budget_per_call_usd=0.10,
 		),
 		scheduler=SchedulerConfig(model="sonnet"),
@@ -32,8 +30,8 @@ def _config(max_depth: int = 3, max_children: int = 5) -> MissionConfig:
 	return config
 
 
-def _planner(max_depth: int = 3, max_children: int = 5) -> RecursivePlanner:
-	config = _config(max_depth=max_depth, max_children=max_children)
+def _planner() -> RecursivePlanner:
+	config = _config()
 	db = MagicMock()
 	return RecursivePlanner(config=config, db=db)
 
@@ -64,218 +62,46 @@ class TestParsePlannerOutput:
 		assert result.type == "subdivide"
 		assert len(result.children) == 2
 		assert result.children[0]["scope"] == "Backend API"
-		assert result.children[1]["scope"] == "Frontend UI"
-		assert result.units == []
 
 	def test_valid_leaves_json(self) -> None:
 		raw = json.dumps({
 			"type": "leaves",
 			"units": [
-				{"title": "Add tests", "description": "Write unit tests", "files_hint": "tests/", "priority": 1},
-				{"title": "Fix lint", "description": "Run ruff", "files_hint": "src/", "priority": 2},
+				{"title": "Add auth", "description": "Implement JWT", "files_hint": "auth.py", "priority": 1},
 			],
 		})
 		result = _parse_planner_output(raw)
 		assert result.type == "leaves"
-		assert len(result.units) == 2
-		assert result.units[0]["title"] == "Add tests"
-		assert result.units[1]["priority"] == 2
-		assert result.children == []
-
-	def test_markdown_fenced_json(self) -> None:
-		inner = json.dumps({
-			"type": "subdivide",
-			"children": [{"scope": "Database layer"}],
-		})
-		raw = f"Here is the plan:\n\n```json\n{inner}\n```\n\nLet me know."
-		result = _parse_planner_output(raw)
-		assert result.type == "subdivide"
-		assert len(result.children) == 1
-		assert result.children[0]["scope"] == "Database layer"
-
-	def test_markdown_fenced_without_lang_tag(self) -> None:
-		inner = json.dumps({
-			"type": "leaves",
-			"units": [{"title": "Task A", "description": "do A", "files_hint": "", "priority": 1}],
-		})
-		raw = f"```\n{inner}\n```"
-		result = _parse_planner_output(raw)
-		assert result.type == "leaves"
 		assert len(result.units) == 1
+		assert result.units[0]["title"] == "Add auth"
 
-	def test_invalid_json_fallback(self) -> None:
-		raw = "This is not valid JSON at all {{{"
-		result = _parse_planner_output(raw)
+	def test_invalid_json_returns_fallback(self) -> None:
+		result = _parse_planner_output("This is not valid JSON at all")
 		assert result.type == "leaves"
 		assert len(result.units) == 1
 		assert result.units[0]["title"] == "Execute scope"
-		assert result.units[0]["priority"] == 1
-
-	def test_invalid_json_preserves_description(self) -> None:
-		raw = "Some useful context about the task"
-		result = _parse_planner_output(raw)
-		assert result.units[0]["description"] == raw
-
-	def test_missing_type_defaults_to_leaves(self) -> None:
-		raw = json.dumps({
-			"units": [{"title": "Implicit leaves", "description": "x", "files_hint": "", "priority": 1}],
-		})
-		result = _parse_planner_output(raw)
-		assert result.type == "leaves"
-		assert len(result.units) == 1
-
-	def test_json_embedded_in_prose(self) -> None:
-		"""JSON object surrounded by non-JSON text, no fences."""
-		obj = json.dumps({
-			"type": "leaves",
-			"units": [{"title": "Embedded", "description": "found it", "files_hint": "", "priority": 1}],
-		})
-		raw = f"I think the best plan is:\n{obj}\nDoes that look good?"
-		result = _parse_planner_output(raw)
-		assert result.type == "leaves"
-		assert result.units[0]["title"] == "Embedded"
 
 	def test_plan_result_marker(self) -> None:
-		"""PLAN_RESULT: marker is the preferred parse method."""
-		obj = json.dumps({
+		data = {
 			"type": "leaves",
-			"units": [{"title": "Via marker", "description": "extracted", "files_hint": "x.py", "priority": 1}],
-		})
-		raw = f"Let me analyze the scope and decompose it.\n\nPLAN_RESULT:{obj}"
+			"units": [{"title": "Marker task", "description": "ok", "files_hint": "", "priority": 1}],
+		}
+		raw = f"Some reasoning.\n\nPLAN_RESULT:{json.dumps(data)}"
 		result = _parse_planner_output(raw)
 		assert result.type == "leaves"
-		assert result.units[0]["title"] == "Via marker"
+		assert result.units[0]["title"] == "Marker task"
 
-	def test_plan_result_marker_with_subdivide(self) -> None:
-		"""PLAN_RESULT: marker works with subdivide type."""
-		obj = json.dumps({
-			"type": "subdivide",
-			"children": [{"scope": "Backend"}, {"scope": "Frontend"}],
-		})
-		raw = f"This scope spans multiple subsystems.\n\nPLAN_RESULT:{obj}"
-		result = _parse_planner_output(raw)
-		assert result.type == "subdivide"
-		assert len(result.children) == 2
-		assert result.children[0]["scope"] == "Backend"
+	def test_empty_string_returns_fallback(self) -> None:
+		result = _parse_planner_output("")
+		assert result.type == "leaves"
+		assert len(result.units) == 1
+		assert result.units[0]["title"] == "Execute scope"
 
-	def test_plan_result_marker_takes_precedence(self) -> None:
-		"""When both marker and bare JSON exist, marker wins."""
-		bad_json = json.dumps({"type": "subdivide", "children": [{"scope": "Wrong"}]})
-		good_json = json.dumps({
-			"type": "leaves",
-			"units": [{"title": "Right", "description": "correct", "files_hint": "", "priority": 1}],
-		})
-		raw = f"Analysis: {bad_json}\n\nPLAN_RESULT:{good_json}"
+	def test_defaults_to_leaves_type(self) -> None:
+		"""When type key is missing, defaults to leaves."""
+		raw = json.dumps({"units": [{"title": "Test", "description": "x", "files_hint": "", "priority": 1}]})
 		result = _parse_planner_output(raw)
 		assert result.type == "leaves"
-		assert result.units[0]["title"] == "Right"
-
-
-# -- _force_create_leaf tests --
-
-
-class TestForceCreateLeaf:
-	def test_creates_leaf_with_work_unit(self) -> None:
-		planner = _planner()
-		plan = Plan(objective="Test objective")
-		node = PlanNode(plan_id=plan.id, depth=3, scope="Implement feature X", node_type="branch")
-
-		planner._force_create_leaf(node, plan)
-
-		assert node.node_type == "leaf"
-		assert node.strategy == "leaves"
-		assert node.status == "expanded"
-		assert node.work_unit_id is not None
-		assert hasattr(node, "_forced_unit")
-		wu = node._forced_unit  # type: ignore[attr-defined]
-		assert wu.plan_id == plan.id
-		assert wu.title == "Implement feature X"
-		assert wu.description == "Implement feature X"
-		assert wu.priority == 1
-		assert wu.plan_node_id == node.id
-
-	def test_truncates_long_scope_in_title(self) -> None:
-		planner = _planner()
-		plan = Plan(objective="Test")
-		long_scope = "A" * 200
-		node = PlanNode(plan_id=plan.id, depth=3, scope=long_scope, node_type="branch")
-
-		planner._force_create_leaf(node, plan)
-
-		wu = node._forced_unit  # type: ignore[attr-defined]
-		assert len(wu.title) == 120
-		assert wu.description == long_scope
-
-
-# -- _iter_leaves tests --
-
-
-class TestIterLeaves:
-	def test_single_leaf_node(self) -> None:
-		planner = _planner()
-		leaf = PlanNode(node_type="leaf", scope="Task A")
-		leaves = planner._iter_leaves(leaf, {})
-		assert len(leaves) == 1
-		assert leaves[0] is leaf
-
-	def test_branch_with_child_leaves(self) -> None:
-		planner = _planner()
-		parent = PlanNode(node_type="branch", scope="Parent")
-		child1 = PlanNode(node_type="leaf", scope="Child 1")
-		child2 = PlanNode(node_type="leaf", scope="Child 2")
-		wu1 = MagicMock()
-		wu2 = MagicMock()
-		parent._child_leaves = [(child1, wu1), (child2, wu2)]  # type: ignore[attr-defined]
-
-		leaves = planner._iter_leaves(parent, {})
-		assert len(leaves) == 2
-		assert child1 in leaves
-		assert child2 in leaves
-
-	def test_branch_without_children_returns_empty(self) -> None:
-		planner = _planner()
-		branch = PlanNode(node_type="branch", scope="Empty branch")
-		leaves = planner._iter_leaves(branch, {})
-		assert leaves == []
-
-	def test_branch_with_subdivided_children(self) -> None:
-		"""Subdivided children are traversed recursively."""
-		planner = _planner()
-		root = PlanNode(node_type="branch", scope="Root")
-		child_a = PlanNode(node_type="branch", scope="Child A")
-		child_b = PlanNode(node_type="branch", scope="Child B")
-
-		leaf_a = PlanNode(node_type="leaf", scope="Leaf A")
-		leaf_b = PlanNode(node_type="leaf", scope="Leaf B")
-		wu_a = MagicMock()
-		wu_b = MagicMock()
-
-		child_a._child_leaves = [(leaf_a, wu_a)]  # type: ignore[attr-defined]
-		child_b._child_leaves = [(leaf_b, wu_b)]  # type: ignore[attr-defined]
-		root._subdivided_children = [child_a, child_b]  # type: ignore[attr-defined]
-
-		leaves = planner._iter_leaves(root, {})
-		assert len(leaves) == 2
-		assert leaf_a in leaves
-		assert leaf_b in leaves
-
-	def test_nested_subdivide_recursion(self) -> None:
-		"""Deeply nested subdivisions are traversed."""
-		planner = _planner()
-		root = PlanNode(node_type="branch", scope="Root")
-		mid = PlanNode(node_type="branch", scope="Mid")
-		bottom = PlanNode(node_type="branch", scope="Bottom")
-
-		leaf = PlanNode(node_type="leaf", scope="Deep leaf")
-		wu = MagicMock()
-
-		bottom._child_leaves = [(leaf, wu)]  # type: ignore[attr-defined]
-		mid._subdivided_children = [bottom]  # type: ignore[attr-defined]
-		root._subdivided_children = [mid]  # type: ignore[attr-defined]
-
-		leaves = planner._iter_leaves(root, {})
-		assert len(leaves) == 1
-		assert leaves[0] is leaf
 
 
 # -- plan_round tests --
@@ -283,8 +109,8 @@ class TestIterLeaves:
 
 class TestPlanRound:
 	@pytest.mark.asyncio
-	async def test_plan_round_with_leaves(self) -> None:
-		"""LLM returns leaves directly -- no subdivision."""
+	async def test_plan_round_returns_plan_and_units(self) -> None:
+		"""plan_round returns (Plan, list[WorkUnit]) directly."""
 		planner = _planner()
 		leaf_result = PlannerResult(
 			type="leaves",
@@ -294,240 +120,95 @@ class TestPlanRound:
 			],
 		)
 
-		with patch.object(planner, "_invoke_planner_llm", new_callable=AsyncMock, return_value=leaf_result):
-			plan, root = await planner.plan_round("Build feature", "abc123", [], 1)
+		with patch.object(planner, "_run_planner_subprocess", new_callable=AsyncMock, return_value=leaf_result):
+			plan, units = await planner.plan_round("Build feature")
 
 		assert plan.objective == "Build feature"
-		assert root.node_type == "branch"
-		assert root.strategy == "leaves"
-		assert root.status == "expanded"
-		assert root.depth == 0
-		assert plan.root_node_id == root.id
-		# Two leaf units created as _child_leaves
-		assert hasattr(root, "_child_leaves")
-		assert len(root._child_leaves) == 2  # type: ignore[attr-defined]
 		assert plan.total_units == 2
+		assert len(units) == 2
+		assert units[0].title == "Task A"
+		assert units[1].title == "Task B"
+		assert units[0].plan_id == plan.id
+		assert units[1].plan_id == plan.id
 
 	@pytest.mark.asyncio
-	async def test_plan_round_with_subdivide_then_leaves(self) -> None:
-		"""LLM subdivides the root, then returns leaves for children."""
-		planner = _planner(max_depth=3)
-
-		subdivide_result = PlannerResult(
-			type="subdivide",
-			children=[
-				{"scope": "Backend"},
-				{"scope": "Frontend"},
-			],
-		)
-		leaf_result_backend = PlannerResult(
-			type="leaves",
-			units=[{"title": "API endpoint", "description": "REST", "files_hint": "api.py", "priority": 1}],
-		)
-		leaf_result_frontend = PlannerResult(
-			type="leaves",
-			units=[{"title": "UI component", "description": "React", "files_hint": "ui.tsx", "priority": 1}],
-		)
-
-		call_count = 0
-
-		async def mock_invoke(node, objective, snapshot_hash, prior_discoveries):
-			nonlocal call_count
-			call_count += 1
-			if node.depth == 0:
-				return subdivide_result
-			elif node.scope == "Backend":
-				return leaf_result_backend
-			else:
-				return leaf_result_frontend
-
-		with patch.object(planner, "_invoke_planner_llm", side_effect=mock_invoke):
-			plan, root = await planner.plan_round("Full stack app", "def456", [], 1)
-
-		assert call_count == 3  # root + 2 children
-		assert root.strategy == "subdivide"
-		assert root.node_type == "branch"
-		assert len(root.children_ids.split(",")) == 2
-		# _iter_leaves now recurses through _subdivided_children
-		assert plan.total_units == 2
-		assert root.status == "expanded"
-
-	@pytest.mark.asyncio
-	async def test_plan_round_with_prior_discoveries(self) -> None:
-		"""Prior discoveries are passed through to the LLM invocation."""
+	async def test_plan_round_empty_units(self) -> None:
+		"""Empty units list means objective is met."""
 		planner = _planner()
-		discoveries = ["Found legacy API at /v1", "Database uses PostgreSQL"]
+		empty_result = PlannerResult(type="leaves", units=[])
 
-		captured_args: list = []
+		with patch.object(planner, "_run_planner_subprocess", new_callable=AsyncMock, return_value=empty_result):
+			plan, units = await planner.plan_round("Already done")
 
-		async def capture_invoke(node, objective, snapshot_hash, prior_discoveries):
-			captured_args.append(prior_discoveries)
-			return PlannerResult(
-				type="leaves",
-				units=[{"title": "Task", "description": "x", "files_hint": "", "priority": 1}],
-			)
-
-		with patch.object(planner, "_invoke_planner_llm", side_effect=capture_invoke):
-			await planner.plan_round("Migrate API", "abc", discoveries, 2)
-
-		assert len(captured_args) == 1
-		assert captured_args[0] == discoveries
-
-
-# -- Max depth enforcement --
-
-
-class TestMaxDepthEnforcement:
-	@pytest.mark.asyncio
-	async def test_max_depth_forces_leaf(self) -> None:
-		"""When a node is at max_depth, expand_node should force a leaf without calling LLM."""
-		planner = _planner(max_depth=2)
-
-		plan = Plan(objective="Deep task")
-		node = PlanNode(plan_id=plan.id, depth=2, scope="Already at max depth", node_type="branch")
-
-		invoke_mock = AsyncMock()
-		with patch.object(planner, "_invoke_planner_llm", invoke_mock):
-			await planner.expand_node(node, plan, "Deep task", "hash", [])
-
-		# LLM should NOT have been called
-		invoke_mock.assert_not_called()
-		# Node should have been forced into a leaf
-		assert node.node_type == "leaf"
-		assert node.strategy == "leaves"
-		assert node.status == "expanded"
-		assert node.work_unit_id is not None
+		assert plan.total_units == 0
+		assert units == []
 
 	@pytest.mark.asyncio
-	async def test_depth_below_max_calls_llm(self) -> None:
-		"""When depth < max_depth, LLM should be called normally."""
-		planner = _planner(max_depth=3)
-
-		plan = Plan(objective="Normal task")
-		node = PlanNode(plan_id=plan.id, depth=1, scope="Not at max", node_type="branch")
-
+	async def test_plan_round_resolves_depends_on_indices(self) -> None:
+		"""depends_on_indices are resolved to WorkUnit IDs."""
+		planner = _planner()
 		leaf_result = PlannerResult(
 			type="leaves",
-			units=[{"title": "Work", "description": "Do work", "files_hint": "", "priority": 1}],
-		)
-
-		invoke_mock = AsyncMock(return_value=leaf_result)
-		with patch.object(planner, "_invoke_planner_llm", invoke_mock):
-			await planner.expand_node(node, plan, "Normal task", "hash", [])
-
-		invoke_mock.assert_called_once()
-		assert node.status == "expanded"
-
-	@pytest.mark.asyncio
-	async def test_sibling_expansion_is_concurrent(self) -> None:
-		"""Sibling children are expanded concurrently via TaskGroup, not sequentially."""
-		planner = _planner(max_depth=3)
-
-		subdivide_result = PlannerResult(
-			type="subdivide",
-			children=[{"scope": "A"}, {"scope": "B"}, {"scope": "C"}],
-		)
-		leaf_result = PlannerResult(
-			type="leaves",
-			units=[{"title": "Task", "description": "x", "files_hint": "", "priority": 1}],
-		)
-
-		num_children = 3
-		entered_count = 0
-		all_entered = asyncio.Event()
-
-		async def mock_invoke(node, objective, snapshot_hash, prior_discoveries):
-			nonlocal entered_count
-			if node.depth == 0:
-				return subdivide_result
-			# Each child signals entry, then waits for all siblings.
-			# If expansion were sequential, only one child enters at a time
-			# and the event never gets set -> timeout.
-			entered_count += 1
-			if entered_count >= num_children:
-				all_entered.set()
-			await asyncio.wait_for(all_entered.wait(), timeout=2.0)
-			return leaf_result
-
-		with patch.object(planner, "_invoke_planner_llm", side_effect=mock_invoke):
-			plan, root = await planner.plan_round("Concurrent test", "hash", [], 1)
-
-		assert entered_count == num_children
-		assert plan.total_units == 3
-		assert root.strategy == "subdivide"
-
-	@pytest.mark.asyncio
-	async def test_semaphore_bounds_concurrency(self) -> None:
-		"""Semaphore limits max concurrent expansions to configured value."""
-		planner = _planner(max_depth=3)
-		# Override semaphore to allow only 2 concurrent
-		planner._semaphore = asyncio.Semaphore(2)
-
-		subdivide_result = PlannerResult(
-			type="subdivide",
-			children=[{"scope": "A"}, {"scope": "B"}, {"scope": "C"}, {"scope": "D"}],
-		)
-		leaf_result = PlannerResult(
-			type="leaves",
-			units=[{"title": "Task", "description": "x", "files_hint": "", "priority": 1}],
-		)
-
-		max_concurrent = 0
-		current_concurrent = 0
-		lock = asyncio.Lock()
-
-		async def mock_invoke(node, objective, snapshot_hash, prior_discoveries):
-			nonlocal max_concurrent, current_concurrent
-			if node.depth == 0:
-				return subdivide_result
-			async with lock:
-				current_concurrent += 1
-				if current_concurrent > max_concurrent:
-					max_concurrent = current_concurrent
-			# Yield to let other tasks enter if they can
-			await asyncio.sleep(0.01)
-			async with lock:
-				current_concurrent -= 1
-			return leaf_result
-
-		with patch.object(planner, "_invoke_planner_llm", side_effect=mock_invoke):
-			plan, root = await planner.plan_round("Bounded test", "hash", [], 1)
-
-		assert plan.total_units == 4
-		assert max_concurrent <= 2
-
-	@pytest.mark.asyncio
-	async def test_subdivide_respects_max_children(self) -> None:
-		"""Subdivision should cap children at max_children_per_node."""
-		planner = _planner(max_depth=3, max_children=2)
-
-		plan = Plan(objective="Many children")
-		node = PlanNode(plan_id=plan.id, depth=0, scope="Root", node_type="branch")
-
-		subdivide_result = PlannerResult(
-			type="subdivide",
-			children=[
-				{"scope": "A"},
-				{"scope": "B"},
-				{"scope": "C"},  # should be dropped (max_children=2)
-				{"scope": "D"},  # should be dropped
+			units=[
+				{"title": "A", "description": "a", "files_hint": "a.py", "priority": 1, "depends_on_indices": []},
+				{"title": "B", "description": "b", "files_hint": "b.py", "priority": 2, "depends_on_indices": [0]},
+				{"title": "C", "description": "c", "files_hint": "c.py", "priority": 3, "depends_on_indices": [0, 1]},
 			],
 		)
+
+		with patch.object(planner, "_run_planner_subprocess", new_callable=AsyncMock, return_value=leaf_result):
+			plan, units = await planner.plan_round("Dep chain")
+
+		assert units[0].depends_on == ""
+		assert units[1].depends_on == units[0].id
+		assert units[2].depends_on == f"{units[0].id},{units[1].id}"
+
+	@pytest.mark.asyncio
+	async def test_plan_round_sets_work_unit_fields(self) -> None:
+		"""WorkUnit fields are correctly populated from parsed data."""
+		planner = _planner()
 		leaf_result = PlannerResult(
 			type="leaves",
-			units=[{"title": "Task", "description": "x", "files_hint": "", "priority": 1}],
+			units=[{
+				"title": "Add tests",
+				"description": "Write pytest tests",
+				"files_hint": "tests/test_foo.py",
+				"priority": 2,
+				"acceptance_criteria": "pytest -q tests/test_foo.py",
+				"specialist": "test-writer",
+				"speculation_score": 0.3,
+			}],
 		)
 
-		async def mock_invoke(n, obj, snap, disc):
-			if n.depth == 0:
-				return subdivide_result
-			return leaf_result
+		with patch.object(planner, "_run_planner_subprocess", new_callable=AsyncMock, return_value=leaf_result):
+			plan, units = await planner.plan_round("Add tests")
 
-		with patch.object(planner, "_invoke_planner_llm", side_effect=mock_invoke):
-			await planner.expand_node(node, plan, "Many children", "hash", [])
+		wu = units[0]
+		assert wu.title == "Add tests"
+		assert wu.description == "Write pytest tests"
+		assert wu.files_hint == "tests/test_foo.py"
+		assert wu.priority == 2
+		assert wu.acceptance_criteria == "pytest -q tests/test_foo.py"
+		assert wu.specialist == "test-writer"
+		assert wu.speculation_score == 0.3
 
-		# Only 2 children should have been created
-		assert len(node.children_ids.split(",")) == 2
+	@pytest.mark.asyncio
+	async def test_plan_round_resolves_file_overlaps(self) -> None:
+		"""File overlaps between units are resolved with dependency edges."""
+		planner = _planner()
+		leaf_result = PlannerResult(
+			type="leaves",
+			units=[
+				{"title": "A", "description": "a", "files_hint": "shared.py,a.py", "priority": 1},
+				{"title": "B", "description": "b", "files_hint": "shared.py,b.py", "priority": 2},
+			],
+		)
+
+		with patch.object(planner, "_run_planner_subprocess", new_callable=AsyncMock, return_value=leaf_result):
+			plan, units = await planner.plan_round("Overlap test")
+
+		# B should depend on A due to shared.py overlap
+		assert units[0].id in units[1].depends_on
 
 
 # -- _invoke_planner_llm tests --
@@ -538,25 +219,22 @@ class TestInvokePlannerLlm:
 	async def test_llm_failure_returns_fallback(self) -> None:
 		"""When subprocess fails, return a single fallback leaf."""
 		planner = _planner()
-		node = PlanNode(depth=0, scope="Test scope", node_type="branch")
 
 		mock_proc = AsyncMock()
 		mock_proc.returncode = 1
 		mock_proc.communicate.return_value = (b"", b"Error occurred")
 
 		with patch("mission_control.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc):
-			result = await planner._invoke_planner_llm(node, "obj", "hash", [])
+			result = await planner._invoke_planner_llm("Test objective")
 
 		assert result.type == "leaves"
 		assert len(result.units) == 1
 		assert result.units[0]["title"] == "Execute scope"
-		assert result.units[0]["description"] == "Test scope"
 
 	@pytest.mark.asyncio
 	async def test_llm_success_parses_output(self) -> None:
 		"""When subprocess succeeds, output is parsed via _parse_planner_output."""
 		planner = _planner()
-		node = PlanNode(depth=0, scope="Test scope", node_type="branch")
 
 		response = json.dumps({
 			"type": "leaves",
@@ -567,20 +245,16 @@ class TestInvokePlannerLlm:
 		mock_proc.communicate.return_value = (response.encode(), b"")
 
 		with patch("mission_control.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc):
-			result = await planner._invoke_planner_llm(node, "obj", "hash", ["discovery 1"])
+			result = await planner._invoke_planner_llm("Test objective")
 
 		assert result.type == "leaves"
 		assert result.units[0]["title"] == "Parsed task"
 
 	@pytest.mark.asyncio
 	async def test_llm_timeout_returns_fallback_and_kills_process(self) -> None:
-		"""When subprocess times out, kill the process and return a fallback leaf.
-
-		Timeout/infra fallbacks are NOT retried (only parse fallbacks are).
-		"""
+		"""When subprocess times out, kill the process and return a fallback leaf."""
 		planner = _planner()
 		planner.config.target.verification.timeout = 10
-		node = PlanNode(depth=1, scope="Slow scope", node_type="branch")
 
 		mock_proc = AsyncMock()
 		mock_proc.communicate.side_effect = asyncio.TimeoutError()
@@ -588,12 +262,11 @@ class TestInvokePlannerLlm:
 		mock_proc.wait = AsyncMock()
 
 		with patch("mission_control.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc):
-			result = await planner._invoke_planner_llm(node, "obj", "hash", [])
+			result = await planner._invoke_planner_llm("Test objective")
 
 		assert result.type == "leaves"
 		assert len(result.units) == 1
 		assert result.units[0]["title"] == "Execute scope"
-		assert result.units[0]["description"] == "Slow scope"
 		assert mock_proc.kill.call_count == 1
 		assert mock_proc.wait.await_count == 1
 
@@ -601,7 +274,6 @@ class TestInvokePlannerLlm:
 	async def test_llm_uses_stdin_not_shell_interpolation(self) -> None:
 		"""Prompt with shell metacharacters is passed via stdin, not shell command."""
 		planner = _planner()
-		node = PlanNode(depth=0, scope='$(echo INJECTED) && `rm -rf /`', node_type="branch")
 
 		response = json.dumps({
 			"type": "leaves",
@@ -615,17 +287,13 @@ class TestInvokePlannerLlm:
 			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		) as mock_exec:
-			result = await planner._invoke_planner_llm(node, "obj with $() backticks", "hash", [])
+			result = await planner._invoke_planner_llm("obj with $() backticks")
 
-		# Verify create_subprocess_exec was called (not shell)
 		mock_exec.assert_called_once()
 		call_args = mock_exec.call_args
-		# First positional args should be the command parts
 		assert call_args[0][0] == "claude"
 		assert call_args[0][1] == "-p"
-		# Prompt should be passed via stdin, not as a command argument
 		assert call_args[1].get("stdin") is not None
-		# communicate should have been called with input= containing the prompt
 		comm_call = mock_proc.communicate.call_args
 		assert comm_call[1].get("input") is not None or (comm_call[0] and comm_call[0][0] is not None)
 		assert result.type == "leaves"
@@ -640,19 +308,16 @@ class TestPlannerRetry:
 	async def test_retry_on_parse_fallback_succeeds(self) -> None:
 		"""When first call returns unparseable output, retry once and return valid result."""
 		planner = _planner()
-		node = PlanNode(depth=0, scope="Test scope", node_type="branch")
 
 		valid_json = json.dumps({
 			"type": "leaves",
 			"units": [{"title": "Real task", "description": "Valid", "files_hint": "x.py", "priority": 1}],
 		})
 
-		# First call: unparseable output (returncode=0 but garbage text)
 		mock_proc1 = AsyncMock()
 		mock_proc1.returncode = 0
 		mock_proc1.communicate.return_value = (b"This is not valid JSON at all {{{", b"")
 
-		# Second call: valid PLAN_RESULT
 		mock_proc2 = AsyncMock()
 		mock_proc2.returncode = 0
 		mock_proc2.communicate.return_value = (valid_json.encode(), b"")
@@ -661,7 +326,7 @@ class TestPlannerRetry:
 			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
 			side_effect=[mock_proc1, mock_proc2],
 		) as mock_exec:
-			result = await planner._invoke_planner_llm(node, "obj", "hash", [])
+			result = await planner._invoke_planner_llm("Test objective")
 
 		assert result.type == "leaves"
 		assert result.units[0]["title"] == "Real task"
@@ -671,9 +336,7 @@ class TestPlannerRetry:
 	async def test_retry_on_parse_fallback_also_fails(self) -> None:
 		"""When both calls return unparseable output, return fallback after two attempts."""
 		planner = _planner()
-		node = PlanNode(depth=0, scope="Test scope", node_type="branch")
 
-		# Both calls: unparseable output
 		mock_proc1 = AsyncMock()
 		mock_proc1.returncode = 0
 		mock_proc1.communicate.return_value = (b"garbage output 1", b"")
@@ -686,7 +349,7 @@ class TestPlannerRetry:
 			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
 			side_effect=[mock_proc1, mock_proc2],
 		) as mock_exec:
-			result = await planner._invoke_planner_llm(node, "obj", "hash", [])
+			result = await planner._invoke_planner_llm("Test objective")
 
 		assert result.type == "leaves"
 		assert len(result.units) == 1
@@ -697,7 +360,6 @@ class TestPlannerRetry:
 	async def test_no_retry_on_subprocess_failure(self) -> None:
 		"""When subprocess fails (returncode != 0), no retry -- return fallback immediately."""
 		planner = _planner()
-		node = PlanNode(depth=0, scope="Test scope", node_type="branch")
 
 		mock_proc = AsyncMock()
 		mock_proc.returncode = 1
@@ -707,7 +369,7 @@ class TestPlannerRetry:
 			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		) as mock_exec:
-			result = await planner._invoke_planner_llm(node, "obj", "hash", [])
+			result = await planner._invoke_planner_llm("Test objective")
 
 		assert result.type == "leaves"
 		assert result.units[0]["title"] == "Execute scope"
@@ -718,7 +380,6 @@ class TestPlannerRetry:
 		"""When subprocess times out, no retry -- return fallback immediately."""
 		planner = _planner()
 		planner.config.target.verification.timeout = 10
-		node = PlanNode(depth=0, scope="Slow scope", node_type="branch")
 
 		mock_proc = AsyncMock()
 		mock_proc.communicate.side_effect = asyncio.TimeoutError()
@@ -729,7 +390,7 @@ class TestPlannerRetry:
 			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		) as mock_exec:
-			result = await planner._invoke_planner_llm(node, "obj", "hash", [])
+			result = await planner._invoke_planner_llm("Test objective")
 
 		assert result.type == "leaves"
 		assert result.units[0]["title"] == "Execute scope"
@@ -737,28 +398,24 @@ class TestPlannerRetry:
 
 	def test_is_parse_fallback_detection(self) -> None:
 		"""Unit test for _is_parse_fallback helper."""
-		# Positive: matches the fallback pattern from _parse_planner_output
 		fallback = PlannerResult(
 			type="leaves",
 			units=[{"title": "Execute scope", "description": "some text", "files_hint": "", "priority": 1}],
 		)
 		assert _is_parse_fallback(fallback) is True
 
-		# Negative: valid leaves result with a real title
 		valid = PlannerResult(
 			type="leaves",
 			units=[{"title": "Add tests", "description": "Write tests", "files_hint": "tests/", "priority": 1}],
 		)
 		assert _is_parse_fallback(valid) is False
 
-		# Negative: subdivide result
 		subdivide = PlannerResult(
 			type="subdivide",
 			children=[{"scope": "Backend"}],
 		)
 		assert _is_parse_fallback(subdivide) is False
 
-		# Negative: multiple units (even if first is "Execute scope")
 		multi = PlannerResult(
 			type="leaves",
 			units=[
@@ -768,7 +425,6 @@ class TestPlannerRetry:
 		)
 		assert _is_parse_fallback(multi) is False
 
-		# Negative: empty units
 		empty = PlannerResult(type="leaves", units=[])
 		assert _is_parse_fallback(empty) is False
 
@@ -809,176 +465,135 @@ class TestParsePlannerOutputEdgeCases:
 
 
 class TestDependsOnIndicesResolution:
-	"""Tests for the depends_on_indices -> WorkUnit.depends_on resolution in expand_node."""
+	"""Tests for the depends_on_indices -> WorkUnit.depends_on resolution in plan_round."""
 
 	@pytest.mark.asyncio
 	async def test_out_of_range_index(self) -> None:
 		"""depends_on_indices=[99] with only 3 units -- out-of-range index silently skipped."""
 		planner = _planner()
-		plan = Plan(objective="Test deps")
-		node = PlanNode(plan_id=plan.id, depth=0, scope="Root", node_type="branch")
-
 		leaf_result = PlannerResult(
 			type="leaves",
 			units=[
-				{"title": "A", "description": "a", "files_hint": "", "priority": 1, "depends_on_indices": []},
-				{"title": "B", "description": "b", "files_hint": "", "priority": 2, "depends_on_indices": []},
-				{"title": "C", "description": "c", "files_hint": "", "priority": 3, "depends_on_indices": [99]},
+				{"title": "A", "description": "a", "files_hint": "a.py", "priority": 1, "depends_on_indices": []},
+				{"title": "B", "description": "b", "files_hint": "b.py", "priority": 2, "depends_on_indices": []},
+				{"title": "C", "description": "c", "files_hint": "c.py", "priority": 3, "depends_on_indices": [99]},
 			],
 		)
 
-		with patch.object(planner, "_invoke_planner_llm", new_callable=AsyncMock, return_value=leaf_result):
-			await planner.expand_node(node, plan, "Test deps", "hash", [])
+		with patch.object(planner, "_run_planner_subprocess", new_callable=AsyncMock, return_value=leaf_result):
+			plan, units = await planner.plan_round("Test deps")
 
-		pairs = node._child_leaves  # type: ignore[attr-defined]
-		assert len(pairs) == 3
-		# Unit C has out-of-range dep -- should have no depends_on set
-		wu_c = pairs[2][1]
-		assert wu_c.depends_on == ""
+		assert len(units) == 3
+		assert units[2].depends_on == ""
 
 	@pytest.mark.asyncio
 	async def test_self_reference_index(self) -> None:
 		"""depends_on_indices=[0] on unit index 0 -- self-reference should be skipped."""
 		planner = _planner()
-		plan = Plan(objective="Test self-ref")
-		node = PlanNode(plan_id=plan.id, depth=0, scope="Root", node_type="branch")
-
 		leaf_result = PlannerResult(
 			type="leaves",
 			units=[
-				{"title": "A", "description": "a", "files_hint": "", "priority": 1, "depends_on_indices": [0]},
-				{"title": "B", "description": "b", "files_hint": "", "priority": 2, "depends_on_indices": []},
+				{"title": "A", "description": "a", "files_hint": "a.py", "priority": 1, "depends_on_indices": [0]},
+				{"title": "B", "description": "b", "files_hint": "b.py", "priority": 2, "depends_on_indices": []},
 			],
 		)
 
-		with patch.object(planner, "_invoke_planner_llm", new_callable=AsyncMock, return_value=leaf_result):
-			await planner.expand_node(node, plan, "Test self-ref", "hash", [])
+		with patch.object(planner, "_run_planner_subprocess", new_callable=AsyncMock, return_value=leaf_result):
+			plan, units = await planner.plan_round("Test self-ref")
 
-		pairs = node._child_leaves  # type: ignore[attr-defined]
-		wu_a = pairs[0][1]
-		assert wu_a.depends_on == ""
+		assert units[0].depends_on == ""
 
 	@pytest.mark.asyncio
 	async def test_non_integer_values(self) -> None:
 		"""depends_on_indices=["foo", None, 1.5] -- non-int values should be skipped."""
 		planner = _planner()
-		plan = Plan(objective="Test non-int")
-		node = PlanNode(plan_id=plan.id, depth=0, scope="Root", node_type="branch")
-
 		leaf_result = PlannerResult(
 			type="leaves",
 			units=[
-				{"title": "A", "description": "a", "files_hint": "", "priority": 1, "depends_on_indices": []},
+				{"title": "A", "description": "a", "files_hint": "a.py", "priority": 1, "depends_on_indices": []},
 				{
-				"title": "B", "description": "b", "files_hint": "", "priority": 2,
+				"title": "B", "description": "b", "files_hint": "b.py", "priority": 2,
 				"depends_on_indices": ["foo", None, 1.5],
 			},
 			],
 		)
 
-		with patch.object(planner, "_invoke_planner_llm", new_callable=AsyncMock, return_value=leaf_result):
-			await planner.expand_node(node, plan, "Test non-int", "hash", [])
+		with patch.object(planner, "_run_planner_subprocess", new_callable=AsyncMock, return_value=leaf_result):
+			plan, units = await planner.plan_round("Test non-int")
 
-		pairs = node._child_leaves  # type: ignore[attr-defined]
-		wu_b = pairs[1][1]
-		assert wu_b.depends_on == ""
+		assert units[1].depends_on == ""
 
 	@pytest.mark.asyncio
 	async def test_empty_depends_on_indices(self) -> None:
 		"""depends_on_indices=[] -- no depends_on should be set."""
 		planner = _planner()
-		plan = Plan(objective="Test empty deps")
-		node = PlanNode(plan_id=plan.id, depth=0, scope="Root", node_type="branch")
-
 		leaf_result = PlannerResult(
 			type="leaves",
 			units=[
-				{"title": "A", "description": "a", "files_hint": "", "priority": 1, "depends_on_indices": []},
-				{"title": "B", "description": "b", "files_hint": "", "priority": 2, "depends_on_indices": []},
+				{"title": "A", "description": "a", "files_hint": "a.py", "priority": 1, "depends_on_indices": []},
+				{"title": "B", "description": "b", "files_hint": "b.py", "priority": 2, "depends_on_indices": []},
 			],
 		)
 
-		with patch.object(planner, "_invoke_planner_llm", new_callable=AsyncMock, return_value=leaf_result):
-			await planner.expand_node(node, plan, "Test empty deps", "hash", [])
+		with patch.object(planner, "_run_planner_subprocess", new_callable=AsyncMock, return_value=leaf_result):
+			plan, units = await planner.plan_round("Test empty deps")
 
-		pairs = node._child_leaves  # type: ignore[attr-defined]
-		for _, wu in pairs:
+		for wu in units:
 			assert wu.depends_on == ""
 
 	@pytest.mark.asyncio
 	async def test_valid_dependency_chain(self) -> None:
 		"""3 units: unit[1] depends on unit[0], unit[2] depends on unit[0] and unit[1]."""
 		planner = _planner()
-		plan = Plan(objective="Test dep chain")
-		node = PlanNode(plan_id=plan.id, depth=0, scope="Root", node_type="branch")
-
 		leaf_result = PlannerResult(
 			type="leaves",
 			units=[
-				{"title": "A", "description": "a", "files_hint": "", "priority": 1, "depends_on_indices": []},
-				{"title": "B", "description": "b", "files_hint": "", "priority": 2, "depends_on_indices": [0]},
-				{"title": "C", "description": "c", "files_hint": "", "priority": 3, "depends_on_indices": [0, 1]},
+				{"title": "A", "description": "a", "files_hint": "a.py", "priority": 1, "depends_on_indices": []},
+				{"title": "B", "description": "b", "files_hint": "b.py", "priority": 2, "depends_on_indices": [0]},
+				{"title": "C", "description": "c", "files_hint": "c.py", "priority": 3, "depends_on_indices": [0, 1]},
 			],
 		)
 
-		with patch.object(planner, "_invoke_planner_llm", new_callable=AsyncMock, return_value=leaf_result):
-			await planner.expand_node(node, plan, "Test dep chain", "hash", [])
+		with patch.object(planner, "_run_planner_subprocess", new_callable=AsyncMock, return_value=leaf_result):
+			plan, units = await planner.plan_round("Test dep chain")
 
-		pairs = node._child_leaves  # type: ignore[attr-defined]
-		wu_a = pairs[0][1]
-		wu_b = pairs[1][1]
-		wu_c = pairs[2][1]
-
-		assert wu_a.depends_on == ""
-		assert wu_b.depends_on == wu_a.id
-		assert wu_c.depends_on == f"{wu_a.id},{wu_b.id}"
+		assert units[0].depends_on == ""
+		assert units[1].depends_on == units[0].id
+		assert units[2].depends_on == f"{units[0].id},{units[1].id}"
 
 	@pytest.mark.asyncio
 	async def test_mixed_valid_and_invalid_indices(self) -> None:
 		"""depends_on_indices=[0, 99, -1, 1] -- only valid in-range, non-self indices kept."""
 		planner = _planner()
-		plan = Plan(objective="Test mixed deps")
-		node = PlanNode(plan_id=plan.id, depth=0, scope="Root", node_type="branch")
-
 		leaf_result = PlannerResult(
 			type="leaves",
 			units=[
-				{"title": "A", "description": "a", "files_hint": "", "priority": 1, "depends_on_indices": []},
-				{"title": "B", "description": "b", "files_hint": "", "priority": 2, "depends_on_indices": []},
+				{"title": "A", "description": "a", "files_hint": "a.py", "priority": 1, "depends_on_indices": []},
+				{"title": "B", "description": "b", "files_hint": "b.py", "priority": 2, "depends_on_indices": []},
 				{
-				"title": "C", "description": "c", "files_hint": "", "priority": 3,
+				"title": "C", "description": "c", "files_hint": "c.py", "priority": 3,
 				"depends_on_indices": [0, 99, -1, 1],
 			},
 			],
 		)
 
-		with patch.object(planner, "_invoke_planner_llm", new_callable=AsyncMock, return_value=leaf_result):
-			await planner.expand_node(node, plan, "Test mixed deps", "hash", [])
-
-		pairs = node._child_leaves  # type: ignore[attr-defined]
-		wu_a = pairs[0][1]
-		wu_b = pairs[1][1]
-		wu_c = pairs[2][1]
+		with patch.object(planner, "_run_planner_subprocess", new_callable=AsyncMock, return_value=leaf_result):
+			plan, units = await planner.plan_round("Test mixed deps")
 
 		# Only indices 0 and 1 are valid (99 out of range, -1 negative)
-		assert wu_c.depends_on == f"{wu_a.id},{wu_b.id}"
+		assert units[2].depends_on == f"{units[0].id},{units[1].id}"
 
 
 # -- Subprocess cwd assertion tests --
 
 
 class TestSubprocessCwdAssertion:
-	"""Verify that _run_planner_subprocess always uses config.target.resolved_path as cwd.
-
-	See CLAUDE.md Gotchas: without this, the planner LLM sees the scheduler's own
-	file tree and generates units targeting scheduler files instead of the target project.
-	"""
+	"""Verify that _run_planner_subprocess always uses config.target.resolved_path as cwd."""
 
 	@pytest.mark.asyncio
 	async def test_subprocess_cwd_matches_target_resolved_path(self) -> None:
 		"""The cwd passed to create_subprocess_exec must equal config.target.resolved_path."""
 		planner = _planner()
-		node = PlanNode(depth=0, scope="Test scope", node_type="branch")
 
 		response = json.dumps({
 			"type": "leaves",
@@ -992,7 +607,7 @@ class TestSubprocessCwdAssertion:
 			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		) as mock_exec:
-			await planner._run_planner_subprocess("test prompt", node)
+			await planner._run_planner_subprocess("test prompt")
 
 		call_kwargs = mock_exec.call_args[1]
 		expected_cwd = str(planner.config.target.resolved_path)
@@ -1002,14 +617,12 @@ class TestSubprocessCwdAssertion:
 	async def test_subprocess_cwd_rejects_relative_path(self) -> None:
 		"""If config.target.resolved_path is somehow relative, the assertion fires."""
 		planner = _planner()
-		node = PlanNode(depth=0, scope="Test scope", node_type="branch")
 
-		# Override the target config's path to produce a relative resolved_path
 		planner.config.target.path = "relative/path"
 		assert not planner.config.target.resolved_path.is_absolute()
 
 		with pytest.raises(AssertionError, match="Planner cwd must be absolute"):
-			await planner._run_planner_subprocess("test prompt", node)
+			await planner._run_planner_subprocess("test prompt")
 
 
 # -- <!-- PLAN --> block parsing tests --
@@ -1242,10 +855,9 @@ class TestCausalContextAndSnapshot:
 
 	@pytest.mark.asyncio
 	async def test_causal_risks_included_in_prompt(self) -> None:
-		"""When _causal_risks is set, the prompt at depth 0 includes it."""
+		"""When _causal_risks is set, the prompt includes it."""
 		planner = _planner()
 		planner.set_causal_context("## Causal Risk\nmodel=opus: 9% failure")
-		node = PlanNode(depth=0, scope="Root", node_type="branch")
 
 		response = json.dumps({
 			"type": "leaves",
@@ -1256,17 +868,16 @@ class TestCausalContextAndSnapshot:
 		mock_proc.communicate.return_value = (response.encode(), b"")
 
 		with patch("mission_control.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc):
-			await planner._invoke_planner_llm(node, "obj", "hash", [])
+			await planner._invoke_planner_llm("obj")
 
 		prompt = mock_proc.communicate.call_args[1]["input"].decode()
 		assert "model=opus: 9% failure" in prompt
 
 	@pytest.mark.asyncio
 	async def test_project_snapshot_included_in_prompt(self) -> None:
-		"""When _project_snapshot is set, the prompt at depth 0 includes it."""
+		"""When _project_snapshot is set, the prompt includes it."""
 		planner = _planner()
 		planner.set_project_snapshot("src/ has 20 files")
-		node = PlanNode(depth=0, scope="Root", node_type="branch")
 
 		response = json.dumps({
 			"type": "leaves",
@@ -1277,7 +888,7 @@ class TestCausalContextAndSnapshot:
 		mock_proc.communicate.return_value = (response.encode(), b"")
 
 		with patch("mission_control.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc):
-			await planner._invoke_planner_llm(node, "obj", "hash", [])
+			await planner._invoke_planner_llm("obj")
 
 		prompt = mock_proc.communicate.call_args[1]["input"].decode()
 		assert "src/ has 20 files" in prompt
@@ -1295,7 +906,6 @@ class TestPerComponentModelUsage:
 		"""Without config.models.planner_model, falls back to scheduler.model."""
 		planner = _planner()
 		planner.config.models.planner_model = ""
-		node = PlanNode(depth=0, scope="Test scope", node_type="branch")
 
 		response = json.dumps({
 			"type": "leaves",
@@ -1309,7 +919,7 @@ class TestPerComponentModelUsage:
 			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		) as mock_exec:
-			await planner._run_planner_subprocess("test prompt", node)
+			await planner._run_planner_subprocess("test prompt")
 
 		call_args = mock_exec.call_args[0]
 		model_idx = list(call_args).index("--model")
@@ -1319,7 +929,6 @@ class TestPerComponentModelUsage:
 	async def test_uses_planner_model_from_models_config(self) -> None:
 		"""When config.models.planner_model is set, it overrides scheduler.model."""
 		planner = _planner()
-		node = PlanNode(depth=0, scope="Test scope", node_type="branch")
 
 		class ModelsConfig:
 			planner_model = "haiku"
@@ -1337,7 +946,7 @@ class TestPerComponentModelUsage:
 			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		) as mock_exec:
-			await planner._run_planner_subprocess("test prompt", node)
+			await planner._run_planner_subprocess("test prompt")
 
 		call_args = mock_exec.call_args[0]
 		model_idx = list(call_args).index("--model")
@@ -1347,7 +956,6 @@ class TestPerComponentModelUsage:
 	async def test_falls_back_when_planner_model_is_none(self) -> None:
 		"""When config.models exists but planner_model is None, falls back to scheduler.model."""
 		planner = _planner()
-		node = PlanNode(depth=0, scope="Test scope", node_type="branch")
 
 		class ModelsConfig:
 			planner_model = None
@@ -1365,7 +973,7 @@ class TestPerComponentModelUsage:
 			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		) as mock_exec:
-			await planner._run_planner_subprocess("test prompt", node)
+			await planner._run_planner_subprocess("test prompt")
 
 		call_args = mock_exec.call_args[0]
 		model_idx = list(call_args).index("--model")
@@ -1375,7 +983,6 @@ class TestPerComponentModelUsage:
 	async def test_falls_back_when_planner_model_is_empty(self) -> None:
 		"""When config.models.planner_model is empty string, falls back to scheduler.model."""
 		planner = _planner()
-		node = PlanNode(depth=0, scope="Test scope", node_type="branch")
 
 		class ModelsConfig:
 			planner_model = ""
@@ -1393,7 +1000,7 @@ class TestPerComponentModelUsage:
 			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		) as mock_exec:
-			await planner._run_planner_subprocess("test prompt", node)
+			await planner._run_planner_subprocess("test prompt")
 
 		call_args = mock_exec.call_args[0]
 		model_idx = list(call_args).index("--model")
@@ -1435,12 +1042,9 @@ class TestTopologicalLayers:
 		d = _wu("D", "d.py", depends_on=f"{b.id},{c.id}")
 		layers = topological_layers([a, b, c, d])
 		assert len(layers) == 3
-		# Layer 0: A
 		assert layers[0][0].id == a.id
-		# Layer 1: B and C (parallel)
 		layer1_ids = {u.id for u in layers[1]}
 		assert layer1_ids == {b.id, c.id}
-		# Layer 2: D
 		assert layers[2][0].id == d.id
 
 	def test_orphan_deps_ignored(self) -> None:
@@ -1448,7 +1052,6 @@ class TestTopologicalLayers:
 		a = _wu("A", "a.py", depends_on="nonexistent-id")
 		b = _wu("B", "b.py")
 		layers = topological_layers([a, b])
-		# Both should be in layer 0 (orphan dep ignored)
 		assert len(layers) == 1
 		assert len(layers[0]) == 2
 
@@ -1462,42 +1065,13 @@ class TestTopologicalLayers:
 		"""Mix of dependent and independent units."""
 		a = _wu("A", "a.py")
 		b = _wu("B", "b.py", depends_on=a.id)
-		c = _wu("C", "c.py")  # independent
+		c = _wu("C", "c.py")
 		layers = topological_layers([a, b, c])
 		assert len(layers) == 2
-		# Layer 0: A and C
 		layer0_ids = {u.id for u in layers[0]}
 		assert a.id in layer0_ids
 		assert c.id in layer0_ids
-		# Layer 1: B
 		assert layers[1][0].id == b.id
-
-
-# -- PlanNode multi-parent tests --
-
-
-class TestPlanNodeMultiParent:
-	def test_parent_ids_field_exists(self) -> None:
-		"""PlanNode has parent_ids field defaulting to empty string."""
-		node = PlanNode()
-		assert node.parent_ids == ""
-
-	def test_parent_ids_populated(self) -> None:
-		"""parent_ids can hold comma-separated parent IDs."""
-		node = PlanNode(parent_ids="parent-1,parent-2")
-		assert "parent-1" in node.parent_ids
-		assert "parent-2" in node.parent_ids
-
-	def test_backward_compat_parent_id(self) -> None:
-		"""parent_id still works for single parent."""
-		node = PlanNode(parent_id="single-parent", parent_ids="single-parent")
-		assert node.parent_id == "single-parent"
-		assert node.parent_ids == "single-parent"
-
-	def test_parent_id_none_by_default(self) -> None:
-		node = PlanNode()
-		assert node.parent_id is None
-		assert node.parent_ids == ""
 
 
 # -- Overlap with layers integration tests --
@@ -1506,20 +1080,16 @@ class TestPlanNodeMultiParent:
 class TestOverlapWithLayers:
 	def test_resolve_then_layer(self) -> None:
 		"""resolve_file_overlaps + topological_layers integration."""
-		# Two units share a file -- overlap resolution adds dependency
 		a = _wu("A", "shared.py,a.py", priority=1)
 		b = _wu("B", "shared.py,b.py", priority=2)
 		c = _wu("C", "c.py", priority=3)
 		resolve_file_overlaps([a, b, c])
-		# B should now depend on A
 		assert a.id in b.depends_on
 		layers = topological_layers([a, b, c])
 		assert len(layers) == 2
-		# Layer 0: A and C
 		layer0_ids = {u.id for u in layers[0]}
 		assert a.id in layer0_ids
 		assert c.id in layer0_ids
-		# Layer 1: B
 		assert layers[1][0].id == b.id
 
 	def test_diamond_from_overlaps(self) -> None:
@@ -1530,9 +1100,7 @@ class TestOverlapWithLayers:
 		d = _wu("D", "feature.py,util.py", priority=3)
 		resolve_file_overlaps([a, b, c, d])
 		layers = topological_layers([a, b, c, d])
-		# A is first (highest priority), B and C second, D third
 		assert layers[0][0].id == a.id
-		# D should be in a later layer than B and C
 		d_layer = None
 		for idx, layer in enumerate(layers):
 			if any(u.id == d.id for u in layer):

@@ -30,7 +30,7 @@ Before ANY commit, run:
 - `planner_agent.py` -- Wraps RecursivePlanner with critic-enriched context (findings, risks, gaps)
 - `context_gathering.py` -- Shared context functions: backlog, git log, past missions, strategic context, episodic memory
 - `continuous_planner.py` -- Flat impact-focused planner wrapper around RecursivePlanner (fallback when deliberation disabled)
-- `recursive_planner.py` -- LLM-based recursive plan tree generation with PLAN_RESULT marker
+- `recursive_planner.py` -- Flat LLM-based planner: single-call decomposition into work units via <!-- PLAN --> block
 - `batch_analyzer.py` -- Heuristic pattern detection from batch signals (file hotspots, failure clusters, stalled areas)
 - `planner_context.py` -- Minimal planner context (cross-mission semantic memories + recent failures) and fixed-size MISSION_STATE.md writer
 - `green_branch.py` -- mc/green branch lifecycle, merge_unit() for direct merge without verification, ZFC fixup prompt generation
