@@ -118,6 +118,7 @@ class PlannerConfig:
 
 	budget_per_call_usd: float = 1.0
 	max_file_tree_chars: int = 2000
+	allowed_tools: list[str] = field(default_factory=lambda: ["WebSearch", "WebFetch"])
 
 
 @dataclass
@@ -143,6 +144,8 @@ class ContinuousConfig:
 	circuit_breaker_enabled: bool = True
 	circuit_breaker_max_failures: int = 3
 	circuit_breaker_cooldown_seconds: int = 120
+	layer_drain_timeout_base: int = 300
+	layer_drain_timeout_per_unit: int = 120
 
 
 @dataclass
@@ -604,6 +607,8 @@ def _build_planner_config(data: dict[str, Any]) -> PlannerConfig:
 		pc.max_file_tree_chars = int(data["max_file_tree_chars"])
 	if "budget_per_call_usd" in data:
 		pc.budget_per_call_usd = float(data["budget_per_call_usd"])
+	if "allowed_tools" in data:
+		pc.allowed_tools = [str(t) for t in data["allowed_tools"]]
 	return pc
 
 
@@ -1025,6 +1030,7 @@ def build_claude_cmd(
 	session_id: str | None = None,
 	prompt: str | None = None,
 	resume_session: str | None = None,
+	allowed_tools: list[str] | None = None,
 ) -> list[str]:
 	"""Build the base claude subprocess command list.
 
@@ -1047,6 +1053,9 @@ def build_claude_cmd(
 	if config.mcp.enabled and config.mcp.config_path:
 		resolved = str(Path(os.path.expanduser(config.mcp.config_path)))
 		cmd.extend(["--mcp-config", resolved])
+	if allowed_tools:
+		for tool in allowed_tools:
+			cmd.extend(["--allowedTools", tool])
 	if prompt is not None:
 		cmd.append(prompt)
 	return cmd

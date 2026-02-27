@@ -753,16 +753,17 @@ class GreenBranchManager:
 
 		Worker pool clones share the source .venv via symlink. If a worker runs
 		`pip install -e .` in its clone, the editable path gets hijacked to point
-		at the clone instead of the source repo. This causes verification to import
-		stale code from the clone rather than the merged code in the source repo.
+		at the clone instead of the source repo. Must run from the SOURCE repo
+		directory (not the workspace clone) so the editable path resolves correctly.
 		"""
-		venv_python = Path(self.workspace) / ".venv" / "bin" / "python"
+		source_repo = self.config.target.path
+		venv_python = Path(source_repo) / ".venv" / "bin" / "python"
 		if not venv_python.exists():
 			return
 		proc = await asyncio.create_subprocess_exec(
 			"uv", "pip", "install", "-e", ".",
 			"--python", str(venv_python),
-			cwd=self.workspace,
+			cwd=source_repo,
 			stdout=asyncio.subprocess.PIPE,
 			stderr=asyncio.subprocess.STDOUT,
 		)

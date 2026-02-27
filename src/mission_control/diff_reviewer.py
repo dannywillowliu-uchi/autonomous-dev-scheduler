@@ -58,16 +58,59 @@ REVIEW_RESULT:{{"alignment": 7, "approach": 8, "test_quality": 6{criteria_output
 IMPORTANT: The REVIEW_RESULT line must be the LAST line of your output."""
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_REVIEW_KEYS = {"alignment", "approach", "test_quality"}
+_MARKER_RE = re.compile(
+	r"[*`_~]*REVIEW[_\s-]*RESULT[*`_~]*\s*[:]\s*",
+	re.IGNORECASE,
+)
+
+
+def _strip_ansi(text: str) -> str:
+	return _ANSI_RE.sub("", text)
+
+
+def _is_review_dict(d: Any) -> bool:
+	if not isinstance(d, dict):
+		return False
+	return bool(_REVIEW_KEYS & set(d.keys()))
+
+
+def _extract_scores_from_prose(text: str) -> dict[str, Any] | None:
+	"""Last-resort: pull individual scores from natural language output."""
+	scores: dict[str, Any] = {}
+	patterns = {
+		"alignment": r"[Aa]lignment[^0-9]*(\d{1,2})",
+		"approach": r"[Aa]pproach[^0-9]*(\d{1,2})",
+		"test_quality": r"[Tt]est[_ ]?[Qq]uality[^0-9]*(\d{1,2})",
+		"criteria_met": r"[Cc]riteria[_ ]?[Mm]et[^0-9]*(\d{1,2})",
+	}
+	for key, pattern in patterns.items():
+		m = re.search(pattern, text)
+		if m:
+			scores[key] = int(m.group(1))
+	if not (_REVIEW_KEYS & set(scores.keys())):
+		return None
+	rationale_m = re.search(r"[Rr]ationale[:\s]*[\"']?(.+?)[\"']?\s*$", text, re.MULTILINE)
+	if rationale_m:
+		scores.setdefault("rationale", rationale_m.group(1).strip())
+	return scores
+
+
 def _parse_review_output(output: str) -> dict[str, Any] | None:
 	"""Parse REVIEW_RESULT from LLM output. Returns parsed dict or None."""
-	idx = output.rfind(REVIEW_RESULT_MARKER)
-	data = None
-	if idx != -1:
-		remainder = output[idx + len(REVIEW_RESULT_MARKER):]
-		data = extract_json_from_text(remainder)
+	if not output or not output.strip():
+		return None
 
-		# Fallback: single-line regex (matches MC_RESULT pattern in session.py)
-		if not isinstance(data, dict):
+	cleaned = _strip_ansi(output)
+
+	# Strategy 1: regex-based marker search (case-insensitive, markdown-tolerant)
+	data = None
+	marker_match = _MARKER_RE.search(cleaned)
+	if marker_match:
+		remainder = cleaned[marker_match.end():]
+		data = extract_json_from_text(remainder)
+		if not _is_review_dict(data):
 			match = re.search(r"\{.*\}", remainder.split("\n")[0])
 			if match:
 				try:
@@ -77,10 +120,35 @@ def _parse_review_output(output: str) -> dict[str, Any] | None:
 				except json.JSONDecodeError:
 					pass
 
-	if not isinstance(data, dict):
-		data = extract_json_from_text(output)
+	# Strategy 2: exact marker (legacy path)
+	if not _is_review_dict(data):
+		idx = cleaned.rfind(REVIEW_RESULT_MARKER)
+		if idx != -1:
+			remainder = cleaned[idx + len(REVIEW_RESULT_MARKER):]
+			data = extract_json_from_text(remainder)
 
-	if not isinstance(data, dict):
+	# Strategy 3: find any JSON object in the output that has review keys
+	if not _is_review_dict(data):
+		data = extract_json_from_text(cleaned)
+		if not _is_review_dict(data):
+			for line in reversed(cleaned.splitlines()):
+				line = line.strip()
+				if not line or "{" not in line:
+					continue
+				candidate = extract_json_from_text(line)
+				if _is_review_dict(candidate):
+					data = candidate
+					break
+
+	# Strategy 4: extract individual scores from prose
+	if not _is_review_dict(data):
+		data = _extract_scores_from_prose(cleaned)
+
+	if not _is_review_dict(data):
+		logger.warning(
+			"All parse strategies failed. Output length=%d, last 300 chars: %.300s",
+			len(cleaned), cleaned[-300:] if cleaned else "(empty)",
+		)
 		return None
 
 	return data
@@ -150,10 +218,21 @@ class DiffReviewer:
 			logger.warning("Review subprocess failed for unit %s (rc=%d)", unit.id, proc.returncode)
 			return None
 
+		if not output or not output.strip():
+			stderr_text = stderr.decode() if stderr else ""
+			logger.warning(
+				"Review returned empty stdout for unit %s (rc=%d, stderr_len=%d): %.200s",
+				unit.id, proc.returncode, len(stderr_text), stderr_text[:200],
+			)
+			return None
+
 		logger.debug("Raw review output for %s (len=%d): %.500s", unit.id, len(output), output)
 		data = _parse_review_output(output)
 		if data is None:
-			logger.warning("Could not parse REVIEW_RESULT for unit %s", unit.id)
+			logger.warning(
+				"Could not parse REVIEW_RESULT for unit %s (output_len=%d, last_200=%.200s)",
+				unit.id, len(output), output[-200:],
+			)
 			return None
 
 		alignment = _clamp_score(data.get("alignment", 5))

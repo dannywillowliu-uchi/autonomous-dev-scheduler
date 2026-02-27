@@ -113,9 +113,33 @@ def build_parser() -> argparse.ArgumentParser:
 	return parser
 
 
+def _find_config_path(config_path: str) -> Path:
+	"""Resolve config path to absolute, searching upward if not found in CWD."""
+	p = Path(config_path)
+	if p.is_absolute():
+		return p.resolve()
+	# Check CWD first
+	candidate = Path.cwd() / p
+	if candidate.exists():
+		return candidate.resolve()
+	# Search upward for the config file
+	current = Path.cwd()
+	while True:
+		candidate = current / p.name
+		if candidate.exists():
+			return candidate.resolve()
+		parent = current.parent
+		if parent == current:
+			break
+		current = parent
+	# Fallback: resolve relative to CWD even if it doesn't exist yet
+	return (Path.cwd() / p).resolve()
+
+
 def _get_db_path(config_path: str) -> Path:
 	"""Derive database path from config path location."""
-	return Path(config_path).parent / DEFAULT_DB
+	resolved = _find_config_path(config_path)
+	return resolved.parent / DEFAULT_DB
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -273,6 +297,13 @@ def _start_dashboard_background(
 
 	url = f"http://127.0.0.1:{port}?token={auth_token}"
 	print(f"Live dashboard: {url}")
+
+	# Write token URL to well-known file so it can be retrieved when stdout is unavailable
+	url_file = db_path.parent / ".mc-dashboard-url"
+	try:
+		url_file.write_text(url + "\n")
+	except OSError:
+		pass
 
 	# Give the server a moment to bind, then open browser
 	def _open_browser() -> None:
@@ -637,6 +668,14 @@ def cmd_live(args: argparse.Namespace) -> int:
 	dashboard = LiveDashboard(db_path, auth_token=auth_token)
 	url = f"http://{args.host}:{args.port}?token={auth_token}"
 	print(f"Starting live dashboard at {url}")
+
+	# Write token URL to well-known file so it can be retrieved when stdout is unavailable
+	url_file = Path(db_path).parent / ".mc-dashboard-url"
+	try:
+		url_file.write_text(url + "\n")
+	except OSError:
+		pass
+
 	uvicorn.run(dashboard.app, host=args.host, port=args.port, log_level="warning")
 	return 0
 

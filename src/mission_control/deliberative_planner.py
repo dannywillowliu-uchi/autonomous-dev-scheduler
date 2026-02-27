@@ -1,10 +1,10 @@
-"""Deliberative planner -- critic/planner dual-agent architecture.
+"""Deliberative planner -- ambitious planner + supplementary critic architecture.
 
-Replaces the separate research phase, strategic reflection, and strategist
-with a unified deliberation loop:
+The planner is the ambitious, outward-looking central agent (with web search).
+The critic is a lightweight supplementary feasibility check.
 
-  Round 1: Critic researches -> Planner decomposes
-  Round 2+: Critic reviews plan -> Planner refines (if needed)
+  Round 1: Planner proposes (with project context + web search) -> Critic checks feasibility
+  Round 2+: If critic says "needs_refinement", planner refines -> critic re-checks
 
 The critic declares "sufficient" for early exit. Max rounds configurable.
 """
@@ -16,6 +16,14 @@ from typing import Any
 
 from mission_control.batch_analyzer import BatchSignals
 from mission_control.config import MissionConfig
+from mission_control.context_gathering import (
+	get_episodic_context,
+	get_git_log,
+	get_human_preferences,
+	get_past_missions,
+	get_strategic_context,
+	read_backlog,
+)
 from mission_control.critic_agent import CriticAgent
 from mission_control.db import Database
 from mission_control.models import (
@@ -26,13 +34,37 @@ from mission_control.models import (
 	Plan,
 	WorkUnit,
 )
-from mission_control.planner_agent import PlannerAgent
+from mission_control.overlap import resolve_file_overlaps
+from mission_control.recursive_planner import RecursivePlanner
 
 log = logging.getLogger(__name__)
 
 
+def _format_critic_feedback(finding: CriticFinding) -> str:
+	"""Format critic findings as plain text feedback for planner refinement."""
+	sections: list[str] = []
+
+	if finding.findings:
+		items = "\n".join(f"- {f}" for f in finding.findings)
+		sections.append(f"## Critic Findings\n{items}")
+
+	if finding.risks:
+		items = "\n".join(f"- {r}" for r in finding.risks)
+		sections.append(f"## Risks\n{items}")
+
+	if finding.gaps:
+		items = "\n".join(f"- {g}" for g in finding.gaps)
+		sections.append(f"## Gaps\n{items}")
+
+	if finding.open_questions:
+		items = "\n".join(f"- {q}" for q in finding.open_questions)
+		sections.append(f"## Open Questions\n{items}")
+
+	return "\n\n".join(sections)
+
+
 class DeliberativePlanner:
-	"""Dual-agent deliberation loop: critic researches, planner decomposes.
+	"""Ambitious planner + supplementary critic deliberation loop.
 
 	Same interface as ContinuousPlanner so the controller swap is clean.
 	"""
@@ -41,7 +73,7 @@ class DeliberativePlanner:
 		self._config = config
 		self._db = db
 		self._critic = CriticAgent(config, db)
-		self._planner = PlannerAgent(config, db)
+		self._planner = RecursivePlanner(config, db)
 		self._epoch_counter: int = 0
 		self._current_strategy: str = ""
 
@@ -55,6 +87,39 @@ class DeliberativePlanner:
 	def set_project_snapshot(self, snapshot: str) -> None:
 		self._planner.set_project_snapshot(snapshot)
 
+	async def _gather_project_context(self, mission: Mission, knowledge_context: str = "") -> str:
+		"""Gather all project context for the planner prompt."""
+		sections: list[str] = []
+
+		backlog = read_backlog(self._config)
+		if backlog:
+			sections.append(f"### BACKLOG.md\n{backlog}")
+
+		past = get_past_missions(self._db)
+		if past:
+			sections.append(f"### Past Missions\n{past}")
+
+		strategic = get_strategic_context(self._db)
+		if strategic:
+			sections.append(f"### Strategic Context\n{strategic}")
+
+		episodic = get_episodic_context(self._db)
+		if episodic:
+			sections.append(f"### Past Learnings\n{episodic}")
+
+		human_prefs = get_human_preferences(self._db)
+		if human_prefs:
+			sections.append(f"### Human Preferences\n{human_prefs}")
+
+		git_log = await get_git_log(self._config)
+		if git_log:
+			sections.insert(0, f"### Recent Git History\n{git_log}")
+
+		if knowledge_context:
+			sections.append(f"### Accumulated Knowledge\n{knowledge_context}")
+
+		return "\n\n".join(sections) if sections else "(No project context available)"
+
 	async def get_next_units(
 		self,
 		mission: Mission,
@@ -64,7 +129,7 @@ class DeliberativePlanner:
 		batch_signals: BatchSignals | None = None,
 		**kwargs: object,
 	) -> tuple[Plan, list[WorkUnit], Epoch]:
-		"""Run critic/planner deliberation loop. Returns same signature as ContinuousPlanner."""
+		"""Run planner/critic deliberation loop. Returns same signature as ContinuousPlanner."""
 		self._epoch_counter += 1
 
 		from mission_control.snapshot import clear_snapshot_cache
@@ -75,34 +140,46 @@ class DeliberativePlanner:
 			number=self._epoch_counter,
 		)
 
-		# Gather context for the critic
-		context = await self._critic.gather_context_async(mission)
-		if knowledge_context:
-			context += f"\n\n## Accumulated Knowledge\n{knowledge_context}"
+		# Gather project context for the planner
+		project_context = await self._gather_project_context(mission, knowledge_context)
+
+		# Inject project context into planner's feedback
+		enriched_feedback = feedback_context
+		if project_context:
+			enriched_feedback = (
+				(enriched_feedback + "\n\n## Project Context\n" + project_context)
+				if enriched_feedback
+				else ("## Project Context\n" + project_context)
+			)
 
 		max_rounds = self._config.deliberation.max_rounds
 
-		# Round 1: Critic researches, planner decomposes
-		finding = await self._critic.research(
-			mission.objective, context, batch_signals,
-		)
-		plan, units = await self._planner.decompose(
-			mission.objective, finding, feedback_context,
+		# Round 1: Planner proposes with full context + web search
+		plan, units = await self._planner.plan_round(
+			objective=mission.objective,
 			round_number=self._epoch_counter,
+			feedback_context=enriched_feedback,
 		)
+		units = resolve_file_overlaps(units)
+		plan.status = "active"
+		plan.total_units = len(units)
 
-		# Rounds 2-N: Critic reviews, planner refines (if needed)
+		# Critic does feasibility review
+		finding = CriticFinding(verdict="sufficient")
+		if units:
+			finding = await self._critic.review_plan(
+				mission.objective, units, CriticFinding(), batch_signals,
+			)
+
+		# Rounds 2-N: If critic says needs_refinement, planner refines -> critic re-checks
 		for round_num in range(2, max_rounds + 1):
 			if not units:
 				break
 
-			finding = await self._critic.review_plan(
-				mission.objective, units, finding, batch_signals,
-			)
 			if finding.verdict == "sufficient":
 				log.info(
 					"Critic approved plan at round %d (confidence=%.2f)",
-					round_num, finding.confidence,
+					round_num - 1, finding.confidence,
 				)
 				break
 
@@ -110,15 +187,40 @@ class DeliberativePlanner:
 				"Critic requests refinement at round %d: %d gaps, %d risks",
 				round_num, len(finding.gaps), len(finding.risks),
 			)
-			plan, units = await self._planner.refine(
-				mission.objective, units, finding, feedback_context,
-				round_number=self._epoch_counter,
-			)
 
-		# Write strategy and store knowledge
-		if finding.strategy_text:
-			self._current_strategy = finding.strategy_text
-			self._write_strategy(finding.strategy_text)
+			# Planner refines with critic feedback
+			critic_feedback_text = _format_critic_feedback(finding)
+			refinement_context = enriched_feedback
+			if critic_feedback_text:
+				refinement_context = (
+					(refinement_context + "\n\n" + critic_feedback_text)
+					if refinement_context
+					else critic_feedback_text
+				)
+
+			# Include current units so planner knows what to improve
+			current_units_text = "\n".join(
+				f"- {u.title}: {u.description[:100]} (files: {u.files_hint or 'unspecified'})"
+				for u in units
+			)
+			refinement_context += f"\n\n## Previous Plan (needs refinement)\n{current_units_text}"
+
+			plan, units = await self._planner.plan_round(
+				objective=mission.objective,
+				round_number=self._epoch_counter,
+				feedback_context=refinement_context,
+			)
+			units = resolve_file_overlaps(units)
+			plan.status = "active"
+			plan.total_units = len(units)
+
+			# Critic re-checks
+			if units:
+				finding = await self._critic.review_plan(
+					mission.objective, units, finding, batch_signals,
+				)
+
+		# Store knowledge from critic findings
 		self._store_knowledge(finding, mission)
 
 		epoch.units_planned = len(units)
@@ -127,8 +229,8 @@ class DeliberativePlanner:
 		units = units[:max_units]
 
 		log.info(
-			"Deliberation complete: epoch=%d, units=%d, rounds=%d",
-			self._epoch_counter, len(units), min(round_num, max_rounds) if units else 1,
+			"Deliberation complete: epoch=%d, units=%d",
+			self._epoch_counter, len(units),
 		)
 
 		return plan, units, epoch
