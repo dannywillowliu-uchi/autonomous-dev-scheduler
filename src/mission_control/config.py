@@ -114,11 +114,8 @@ class RoundsConfig:
 
 @dataclass
 class PlannerConfig:
-	"""Recursive planner settings."""
+	"""Flat planner settings."""
 
-	max_depth: int = 3  # max recursion depth (hard capped at absolute_max_depth)
-	absolute_max_depth: int = 4  # safety cap to prevent runaway recursion
-	max_children_per_node: int = 5
 	budget_per_call_usd: float = 1.0
 	max_file_tree_chars: int = 2000
 
@@ -603,13 +600,10 @@ def _build_rounds(data: dict[str, Any]) -> RoundsConfig:
 
 def _build_planner_config(data: dict[str, Any]) -> PlannerConfig:
 	pc = PlannerConfig()
-	for key in ("max_depth", "absolute_max_depth", "max_children_per_node", "max_file_tree_chars"):
-		if key in data:
-			setattr(pc, key, int(data[key]))
+	if "max_file_tree_chars" in data:
+		pc.max_file_tree_chars = int(data["max_file_tree_chars"])
 	if "budget_per_call_usd" in data:
 		pc.budget_per_call_usd = float(data["budget_per_call_usd"])
-	# Hard cap max_depth at absolute_max_depth to prevent runaway recursion
-	pc.max_depth = min(pc.max_depth, pc.absolute_max_depth)
 	return pc
 
 

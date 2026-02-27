@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mission_control.config import MissionConfig, PlannerConfig, TargetConfig
-from mission_control.models import CriticFinding, Plan, PlanNode, WorkUnit
+from mission_control.models import CriticFinding, Plan, WorkUnit
 from mission_control.planner_agent import PlannerAgent, _format_critic_context
 
 
@@ -63,19 +63,15 @@ class TestPlannerDecompose:
 		db = MagicMock()
 		agent = PlannerAgent(config, db)
 
-		# Mock the inner RecursivePlanner
 		mock_plan = Plan(id="p1", objective="test")
-		mock_root = PlanNode(id="n1", plan_id="p1")
-		mock_unit = WorkUnit(
-			id="wu1", plan_id="p1", title="Add auth",
-			files_hint="src/auth.py", priority=1,
-		)
-		mock_root._child_leaves = [(mock_root, mock_unit)]  # type: ignore[attr-defined]
+		mock_units = [
+			WorkUnit(id="wu1", plan_id="p1", title="Add auth", files_hint="src/auth.py", priority=1),
+		]
 
 		with patch.object(
 			agent._inner, "plan_round",
 			new_callable=AsyncMock,
-			return_value=(mock_plan, mock_root),
+			return_value=(mock_plan, mock_units),
 		) as mock_plan_round:
 			finding = CriticFinding(
 				findings=["uses Flask"],
@@ -85,7 +81,6 @@ class TestPlannerDecompose:
 
 		assert len(units) == 1
 		assert units[0].title == "Add auth"
-		# Verify critic context was passed to inner planner
 		call_kwargs = mock_plan_round.call_args[1]
 		assert "JWT" in call_kwargs["feedback_context"]
 		assert "uses Flask" in call_kwargs["feedback_context"]
@@ -97,14 +92,12 @@ class TestPlannerDecompose:
 		agent = PlannerAgent(config, db)
 
 		mock_plan = Plan(id="p1", objective="test")
-		mock_root = PlanNode(id="n1", plan_id="p1")
-		mock_unit = WorkUnit(id="wu1", plan_id="p1", title="Task 1")
-		mock_root._child_leaves = [(mock_root, mock_unit)]  # type: ignore[attr-defined]
+		mock_units = [WorkUnit(id="wu1", plan_id="p1", title="Task 1")]
 
 		with patch.object(
 			agent._inner, "plan_round",
 			new_callable=AsyncMock,
-			return_value=(mock_plan, mock_root),
+			return_value=(mock_plan, mock_units),
 		):
 			plan, units = await agent.decompose("Objective", CriticFinding())
 
@@ -123,14 +116,12 @@ class TestPlannerRefine:
 		]
 
 		mock_plan = Plan(id="p2", objective="test")
-		mock_root = PlanNode(id="n2", plan_id="p2")
-		mock_unit = WorkUnit(id="wu2", plan_id="p2", title="Refined task")
-		mock_root._child_leaves = [(mock_root, mock_unit)]  # type: ignore[attr-defined]
+		mock_units = [WorkUnit(id="wu2", plan_id="p2", title="Refined task")]
 
 		with patch.object(
 			agent._inner, "plan_round",
 			new_callable=AsyncMock,
-			return_value=(mock_plan, mock_root),
+			return_value=(mock_plan, mock_units),
 		) as mock_plan_round:
 			critic_feedback = CriticFinding(
 				gaps=["missing error handling"],
@@ -140,44 +131,6 @@ class TestPlannerRefine:
 
 		assert len(units) == 1
 		assert units[0].title == "Refined task"
-		# Verify previous units and gaps are in the context
 		call_kwargs = mock_plan_round.call_args[1]
 		assert "Old task" in call_kwargs["feedback_context"]
 		assert "missing error handling" in call_kwargs["feedback_context"]
-
-
-class TestExtractUnits:
-	def test_extract_from_child_leaves(self, tmp_path: Path) -> None:
-		agent = PlannerAgent(_config(tmp_path), MagicMock())
-		node = PlanNode()
-		wu1 = WorkUnit(title="Unit 1")
-		wu2 = WorkUnit(title="Unit 2")
-		node._child_leaves = [(node, wu1), (node, wu2)]  # type: ignore[attr-defined]
-		units = agent._extract_units(node)
-		assert len(units) == 2
-
-	def test_extract_from_forced_unit(self, tmp_path: Path) -> None:
-		agent = PlannerAgent(_config(tmp_path), MagicMock())
-		node = PlanNode()
-		wu = WorkUnit(title="Forced")
-		node._forced_unit = wu  # type: ignore[attr-defined]
-		units = agent._extract_units(node)
-		assert len(units) == 1
-		assert units[0].title == "Forced"
-
-	def test_extract_from_subdivided(self, tmp_path: Path) -> None:
-		agent = PlannerAgent(_config(tmp_path), MagicMock())
-		root = PlanNode()
-		child = PlanNode()
-		wu = WorkUnit(title="Leaf")
-		child._child_leaves = [(child, wu)]  # type: ignore[attr-defined]
-		root._subdivided_children = [child]  # type: ignore[attr-defined]
-		units = agent._extract_units(root)
-		assert len(units) == 1
-		assert units[0].title == "Leaf"
-
-	def test_extract_empty_node(self, tmp_path: Path) -> None:
-		agent = PlannerAgent(_config(tmp_path), MagicMock())
-		node = PlanNode()
-		units = agent._extract_units(node)
-		assert len(units) == 0

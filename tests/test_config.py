@@ -110,23 +110,6 @@ def test_resolved_path_tilde(full_config: Path) -> None:
 	assert str(resolved).endswith("personal_projects/my-project")
 
 
-def test_planner_max_depth_capped_at_absolute(tmp_path: Path) -> None:
-	"""max_depth is capped at absolute_max_depth."""
-	toml = tmp_path / "mission-control.toml"
-	toml.write_text("""\
-[target]
-name = "test"
-path = "/tmp/test"
-
-[planner]
-max_depth = 10
-absolute_max_depth = 6
-""")
-	cfg = load_config(toml)
-	assert cfg.planner.max_depth == 6
-	assert cfg.planner.absolute_max_depth == 6
-
-
 def _make_git_repo(path: Path) -> None:
 	"""Initialize a bare git repo at the given path."""
 	path.mkdir(parents=True, exist_ok=True)

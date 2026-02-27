@@ -71,15 +71,12 @@ class PlannerAgent:
 				else critic_context
 			)
 
-		plan, root_node = await self._inner.plan_round(
+		plan, units = await self._inner.plan_round(
 			objective=objective,
-			snapshot_hash="",
-			prior_discoveries=[],
 			round_number=round_number,
 			feedback_context=enriched_feedback,
 		)
 
-		units = self._extract_units(root_node)
 		units = resolve_file_overlaps(units)
 
 		plan.status = "active"
@@ -120,15 +117,12 @@ class PlannerAgent:
 				else refinement_context
 			)
 
-		plan, root_node = await self._inner.plan_round(
+		plan, new_units = await self._inner.plan_round(
 			objective=objective,
-			snapshot_hash="",
-			prior_discoveries=[],
 			round_number=round_number,
 			feedback_context=enriched_feedback,
 		)
 
-		new_units = self._extract_units(root_node)
 		new_units = resolve_file_overlaps(new_units)
 
 		plan.status = "active"
@@ -136,20 +130,3 @@ class PlannerAgent:
 
 		log.info("Planner refined to %d units", len(new_units))
 		return plan, new_units
-
-	def _extract_units(self, node: object) -> list[WorkUnit]:
-		"""Extract WorkUnit objects from the in-memory plan tree."""
-		units: list[WorkUnit] = []
-
-		if hasattr(node, "_forced_unit"):
-			units.append(node._forced_unit)  # type: ignore[union-attr]
-
-		if hasattr(node, "_child_leaves"):
-			for _leaf, wu in node._child_leaves:  # type: ignore[union-attr]
-				units.append(wu)
-
-		if hasattr(node, "_subdivided_children"):
-			for child in node._subdivided_children:  # type: ignore[union-attr]
-				units.extend(self._extract_units(child))
-
-		return units

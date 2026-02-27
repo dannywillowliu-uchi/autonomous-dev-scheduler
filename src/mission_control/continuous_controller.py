@@ -1531,7 +1531,6 @@ class ContinuousController:
 				files_hint=unit.files_hint,
 				verification_hint=unit.verification_hint,
 				priority=unit.priority,
-				plan_node_id=unit.plan_node_id,
 				epoch_id=epoch.id,
 				unit_type="speculation_branch",
 				speculation_parent_id=unit.id,

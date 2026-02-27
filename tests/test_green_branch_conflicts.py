@@ -862,12 +862,7 @@ class TestLockedFilesInPlannerPrompt:
 		async def mock_plan_round(**kwargs):
 			captured_kwargs.update(kwargs)
 			plan = Plan(objective="test")
-			from mission_control.models import PlanNode
-			root = PlanNode(plan_id=plan.id, depth=0, scope="test", node_type="branch")
-			root.strategy = "leaves"
-			root._child_leaves = []  # type: ignore[attr-defined]
-			root.status = "expanded"
-			return plan, root
+			return plan, []
 
 		planner._inner.plan_round = mock_plan_round  # type: ignore[assignment]
 
@@ -889,7 +884,7 @@ class TestLockedFilesInPlannerPrompt:
 
 		captured_prompt = ""
 
-		async def mock_subprocess(prompt: str, node: object) -> PlannerResult:
+		async def mock_subprocess(prompt: str) -> PlannerResult:
 			nonlocal captured_prompt
 			captured_prompt = prompt
 			return PlannerResult(type="leaves", units=[])
@@ -899,8 +894,6 @@ class TestLockedFilesInPlannerPrompt:
 		locked = {"src/app.py": ["already merged"], "src/api.py": ["in-flight: Build API"]}
 		await rp.plan_round(
 			objective="test",
-			snapshot_hash="",
-			prior_discoveries=[],
 			round_number=1,
 			locked_files=locked,
 		)
@@ -921,7 +914,7 @@ class TestLockedFilesInPlannerPrompt:
 
 		captured_prompt = ""
 
-		async def mock_subprocess(prompt: str, node: object) -> PlannerResult:
+		async def mock_subprocess(prompt: str) -> PlannerResult:
 			nonlocal captured_prompt
 			captured_prompt = prompt
 			return PlannerResult(type="leaves", units=[])
@@ -930,8 +923,6 @@ class TestLockedFilesInPlannerPrompt:
 
 		await rp.plan_round(
 			objective="test",
-			snapshot_hash="",
-			prior_discoveries=[],
 			round_number=1,
 			locked_files={},
 		)

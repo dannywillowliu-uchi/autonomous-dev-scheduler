@@ -62,16 +62,11 @@ class ContinuousPlanner:
 				else ("## Accumulated Knowledge\n" + knowledge_context)
 			)
 
-		plan, root_node = await self._inner.plan_round(
+		plan, units = await self._inner.plan_round(
 			objective=mission.objective,
-			snapshot_hash="",
-			prior_discoveries=[],
 			round_number=self._epoch_count,
 			feedback_context=enriched_context,
 		)
-
-		# Extract work units from the plan tree
-		units = self._extract_units_from_tree(root_node)
 
 		# Resolve file overlaps
 		units = resolve_file_overlaps(units)
@@ -89,20 +84,3 @@ class ContinuousPlanner:
 		)
 
 		return plan, units, epoch
-
-	def _extract_units_from_tree(self, node: object) -> list[WorkUnit]:
-		"""Extract WorkUnit objects from the in-memory plan tree."""
-		units: list[WorkUnit] = []
-
-		if hasattr(node, "_forced_unit"):
-			units.append(node._forced_unit)  # type: ignore[union-attr]
-
-		if hasattr(node, "_child_leaves"):
-			for _leaf, wu in node._child_leaves:  # type: ignore[union-attr]
-				units.append(wu)
-
-		if hasattr(node, "_subdivided_children"):
-			for child in node._subdivided_children:  # type: ignore[union-attr]
-				units.extend(self._extract_units_from_tree(child))
-
-		return units
