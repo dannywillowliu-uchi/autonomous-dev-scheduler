@@ -28,10 +28,10 @@ Tracked from dogfooding session 2026-02-22/23. Missions 1-4 ran autonomously.
 ## Medium (causes friction but has workarounds)
 
 ### 4. Duplicate backlog items from discovery
-**Status**: Unfixed
-**Files**: `auto_discovery.py`, `discovery.py`
+**Status**: RESOLVED (discovery module removed)
+**Files**: `auto_discovery.py`, `discovery.py` -- both removed in recent refactoring
 **Symptom**: Discovery engine inserts the same item multiple times with different IDs. E.g., "DB lock bypass" appeared twice, "parallel planner" appeared twice. Planner wastes time deduplicating and duplicate items consume 2 of 5 mission objective slots.
-**Fix needed**: Deduplicate by title similarity or content hash before inserting into backlog.
+**Resolution**: The `discovery.py` and `auto_discovery.py` modules were removed during the backlog/auto-discovery refactoring. The data models (`DiscoveryItem`, `DiscoveryResult`) remain in `models.py` for DB schema compatibility but no insertion logic exists.
 
 ### 5. Dashboard requires auth token in URL but `mc live` output gets swallowed
 **Status**: Unfixed
@@ -52,7 +52,7 @@ Tracked from dogfooding session 2026-02-22/23. Missions 1-4 ran autonomously.
 **Symptom**: Every merge logs `ERROR: Failed to fetch mc/green: [rejected] non-fast-forward`. Noisy but non-blocking since the merge itself succeeds.
 
 ### 8. Layer completion drain timeout warnings
-**Status**: Unfixed
-**Files**: `continuous_controller.py`
+**Status**: FIXED
+**Files**: `continuous_controller.py`, `config.py`
 **Symptom**: "Layer 0: completion drain timeout (2/4 processed)" appears when some units complete faster than others. The completion queue drain has a timeout that fires before all completions are processed, even though they complete fine.
-**Fix needed**: Increase drain timeout or make it proportional to unit count.
+**Fix**: Layer drain timeout is now proportional to unit count: `base (300s) + per_unit (120s) * num_units`. Both values are configurable via `ContinuousConfig.layer_drain_timeout_base` and `layer_drain_timeout_per_unit`. A 4-unit layer now gets 780s instead of a fixed timeout. On timeout, completed results are still collected and straggler tasks are cancelled.

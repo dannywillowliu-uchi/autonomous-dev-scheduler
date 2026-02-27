@@ -1348,7 +1348,31 @@ class ContinuousController:
 				layer_tasks.append(task)
 
 			if layer_tasks:
-				results = await asyncio.gather(*layer_tasks, return_exceptions=True)
+				cont = self.config.continuous
+				layer_timeout = (
+					cont.layer_drain_timeout_base
+					+ cont.layer_drain_timeout_per_unit * len(layer_tasks)
+				)
+				try:
+					results = await asyncio.wait_for(
+						asyncio.gather(*layer_tasks, return_exceptions=True),
+						timeout=layer_timeout,
+					)
+				except asyncio.TimeoutError:
+					completed = 0
+					for t in layer_tasks:
+						if t.done():
+							r = t.result()
+							if isinstance(r, WorkerCompletion):
+								all_completions.append(r)
+							completed += 1
+						else:
+							t.cancel()
+					logger.warning(
+						"Layer %d: completion drain timeout after %ds (%d/%d processed)",
+						layer_idx, layer_timeout, completed, len(layer_tasks),
+					)
+					continue
 				for r in results:
 					if isinstance(r, WorkerCompletion):
 						all_completions.append(r)
