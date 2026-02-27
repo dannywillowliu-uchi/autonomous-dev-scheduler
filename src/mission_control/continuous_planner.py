@@ -21,6 +21,11 @@ class ContinuousPlanner:
 		self._config = config
 		self._db = db
 		self._epoch_count: int = 0
+		self._strategy: str = ""
+
+	def set_strategy(self, strategy: str) -> None:
+		"""Store the research phase strategy for inclusion in planner context."""
+		self._strategy = strategy
 
 	def set_causal_context(self, risks: str) -> None:
 		"""Set causal risk factors, delegating to the inner planner."""
@@ -48,22 +53,13 @@ class ContinuousPlanner:
 			number=self._epoch_count,
 		)
 
-		# Build structured state from DB
-		structured_state = self._build_structured_state(mission)
-
-		# Build the enriched context
+		# Build the enriched context (planner reads MISSION_STATE.md from disk)
 		enriched_context = feedback_context
 		if knowledge_context:
 			enriched_context = (
 				(enriched_context + "\n\n## Accumulated Knowledge\n" + knowledge_context)
 				if enriched_context
 				else ("## Accumulated Knowledge\n" + knowledge_context)
-			)
-		if structured_state:
-			enriched_context = (
-				(enriched_context + "\n\n" + structured_state)
-				if enriched_context
-				else structured_state
 			)
 
 		plan, root_node = await self._inner.plan_round(
@@ -93,36 +89,6 @@ class ContinuousPlanner:
 		)
 
 		return plan, units, epoch
-
-	def _build_structured_state(self, mission: Mission) -> str:
-		"""Build a structured checklist of completed/failed work from the DB."""
-		try:
-			all_units = self._db.get_work_units_for_mission(mission.id)
-		except Exception:
-			return ""
-
-		if not all_units:
-			return ""
-
-		lines = ["## What's Been Done"]
-
-		completed = [u for u in all_units if u.status == "completed"]
-		failed = [u for u in all_units if u.status == "failed"]
-
-		if completed:
-			for u in completed:
-				files_part = f" (files: {u.files_hint})" if u.files_hint else ""
-				lines.append(f"- [x] {u.title}{files_part}")
-
-		if failed:
-			for u in failed:
-				files_part = f" (files: {u.files_hint})" if u.files_hint else ""
-				lines.append(f"- [FAILED] {u.title}{files_part}")
-
-		if not completed and not failed:
-			return ""
-
-		return "\n".join(lines)
 
 	def _extract_units_from_tree(self, node: object) -> list[WorkUnit]:
 		"""Extract WorkUnit objects from the in-memory plan tree."""

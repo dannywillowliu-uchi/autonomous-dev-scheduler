@@ -1,7 +1,7 @@
 """Strategist agent -- proposes mission objectives autonomously.
 
-Gathers context from BACKLOG.md, git history, past missions, strategic context,
-and the priority queue, then calls Claude to propose a focused objective.
+Gathers context from git history, past missions, and strategic context,
+then calls Claude to propose a focused objective.
 """
 
 from __future__ import annotations
@@ -9,11 +9,10 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from mission_control.config import MissionConfig, claude_subprocess_env
+from mission_control.config import MissionConfig, build_claude_cmd, claude_subprocess_env
 from mission_control.db import Database
 from mission_control.json_utils import extract_json_from_text
 from mission_control.memory import MemoryManager
-from mission_control.models import BacklogItem
 
 log = logging.getLogger(__name__)
 
@@ -149,17 +148,7 @@ class Strategist:
 			return ""
 
 	def _get_pending_backlog(self) -> str:
-		items = self.db.get_pending_backlog(limit=10)
-		if not items:
-			return ""
-
-		def _score(item: BacklogItem) -> float:
-			return item.pinned_score if item.pinned_score is not None else item.priority_score
-
-		return "\n".join(
-			f"- [score={_score(item):.1f}] {item.title}: {item.description[:100]}"
-			for item in items
-		)
+		return ""
 
 	def _get_human_preferences(self) -> str:
 		"""Build a human preference signals section from trajectory ratings."""
@@ -249,16 +238,14 @@ class Strategist:
 
 		log.info("Invoking %s LLM", label)
 
+		cmd = build_claude_cmd(self.config, model=model, budget=budget)
 		try:
 			proc = await asyncio.create_subprocess_exec(
-				"claude", "-p",
-				"--output-format", "text",
-				"--max-budget-usd", str(budget),
-				"--model", model,
+				*cmd,
 				stdin=asyncio.subprocess.PIPE,
 				stdout=asyncio.subprocess.PIPE,
 				stderr=asyncio.subprocess.PIPE,
-				env=claude_subprocess_env(),
+				env=claude_subprocess_env(self.config),
 				cwd=str(self.config.target.resolved_path),
 			)
 			stdout, stderr = await asyncio.wait_for(

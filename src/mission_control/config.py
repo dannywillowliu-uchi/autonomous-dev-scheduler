@@ -149,22 +149,6 @@ class ContinuousConfig:
 
 
 @dataclass
-class DiscoveryConfig:
-	"""Auto-discovery settings."""
-
-	enabled: bool = True
-	tracks: list[str] = field(default_factory=lambda: ["feature", "quality", "security"])
-	max_items_per_track: int = 3
-	min_priority_score: float = 3.0
-	model: str = "opus"
-	budget_per_call_usd: float = 2.0
-	research_enabled: bool = True
-	research_model: str = "sonnet"
-	research_parallel_queries: int = 3
-	effort_weight: float = 0.3  # how much effort penalizes priority (0=ignore, 1=old formula)
-
-
-@dataclass
 class GreenBranchConfig:
 	"""Green branch pattern settings."""
 
@@ -429,6 +413,24 @@ class ZFCConfig:
 
 
 @dataclass
+class MCPConfig:
+	"""MCP server configuration for subprocess agents."""
+
+	config_path: str = ""  # path to MCP JSON config file
+	enabled: bool = True  # whether to pass --mcp-config to subprocesses
+
+
+@dataclass
+class ResearchConfig:
+	"""Research phase settings."""
+
+	enabled: bool = True
+	budget_per_agent_usd: float = 1.0
+	timeout: int = 300  # 5 minutes per research agent
+	model: str = ""  # defaults to scheduler.model
+
+
+@dataclass
 class SecurityConfig:
 	"""Security settings for worker subprocess isolation."""
 
@@ -449,7 +451,6 @@ class MissionConfig:
 	green_branch: GreenBranchConfig = field(default_factory=GreenBranchConfig)
 	backend: BackendConfig = field(default_factory=BackendConfig)
 	pricing: PricingConfig = field(default_factory=PricingConfig)
-	discovery: DiscoveryConfig = field(default_factory=DiscoveryConfig)
 	heartbeat: HeartbeatConfig = field(default_factory=HeartbeatConfig)
 	notifications: NotificationConfig = field(default_factory=NotificationConfig)
 	dashboard: DashboardConfig = field(default_factory=DashboardConfig)
@@ -457,6 +458,8 @@ class MissionConfig:
 	models: ModelsConfig = field(default_factory=ModelsConfig)
 	specialist: SpecialistConfig = field(default_factory=SpecialistConfig)
 	tool_synthesis: ToolSynthesisConfig = field(default_factory=ToolSynthesisConfig)
+	mcp: MCPConfig = field(default_factory=MCPConfig)
+	research: ResearchConfig = field(default_factory=ResearchConfig)
 	security: SecurityConfig = field(default_factory=SecurityConfig)
 	tracing: TracingConfig = field(default_factory=TracingConfig)
 	hitl: HITLConfig = field(default_factory=HITLConfig)
@@ -648,32 +651,6 @@ def _build_green_branch(data: dict[str, Any]) -> GreenBranchConfig:
 	if "push_branch" in data:
 		gc.push_branch = str(data["push_branch"])
 	return gc
-
-
-def _build_discovery(data: dict[str, Any]) -> DiscoveryConfig:
-	dc = DiscoveryConfig()
-	if "enabled" in data:
-		dc.enabled = bool(data["enabled"])
-	if "tracks" in data:
-		dc.tracks = list(data["tracks"])
-	for key in ("max_items_per_track",):
-		if key in data:
-			setattr(dc, key, int(data[key]))
-	if "min_priority_score" in data:
-		dc.min_priority_score = float(data["min_priority_score"])
-	if "model" in data:
-		dc.model = str(data["model"])
-	if "budget_per_call_usd" in data:
-		dc.budget_per_call_usd = float(data["budget_per_call_usd"])
-	if "research_enabled" in data:
-		dc.research_enabled = bool(data["research_enabled"])
-	if "research_model" in data:
-		dc.research_model = str(data["research_model"])
-	if "research_parallel_queries" in data:
-		dc.research_parallel_queries = int(data["research_parallel_queries"])
-	if "effort_weight" in data:
-		dc.effort_weight = float(data["effort_weight"])
-	return dc
 
 
 def _build_pricing(data: dict[str, Any]) -> PricingConfig:
@@ -997,6 +974,8 @@ _ENV_ALLOWLIST = {
 	"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
 	# Encoding
 	"PYTHONIOENCODING", "PYTHONUTF8",
+	# Claude Code experimental features
+	"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
 }
 
 # Keys that must NEVER reach workers, even if added to extra_env_keys
@@ -1019,12 +998,72 @@ def claude_subprocess_env(config: MissionConfig | None = None) -> dict[str, str]
 		config: When provided, includes extra_env_keys from this config.
 			When None, only allowlisted keys are passed (safe default).
 	"""
-	extra = config._resolved_extra_env_keys if config is not None else set()
+	extra = getattr(config, "_resolved_extra_env_keys", set()) if config is not None else set()
 	allowed = _ENV_ALLOWLIST | extra
 	return {
 		k: v for k, v in os.environ.items()
 		if k in allowed and k not in _ENV_DENYLIST
 	}
+
+
+def build_claude_cmd(
+	config: MissionConfig,
+	*,
+	model: str,
+	output_format: str = "text",
+	budget: float | None = None,
+	max_turns: int | None = None,
+	permission_mode: str | None = None,
+	session_id: str | None = None,
+	prompt: str | None = None,
+	resume_session: str | None = None,
+) -> list[str]:
+	"""Build the base claude subprocess command list.
+
+	Centralizes all claude CLI flag construction so MCP config, model,
+	and other flags are applied consistently across all spawn points.
+	"""
+	if resume_session:
+		cmd: list[str] = ["claude", "--resume", resume_session, "-p", "--output-format", output_format]
+	else:
+		cmd = ["claude", "-p", "--output-format", output_format]
+	cmd.extend(["--model", model])
+	if budget is not None:
+		cmd.extend(["--max-budget-usd", str(budget)])
+	if max_turns is not None:
+		cmd.extend(["--max-turns", str(max_turns)])
+	if permission_mode:
+		cmd.extend(["--permission-mode", permission_mode])
+	if session_id:
+		cmd.extend(["--session-id", session_id])
+	if config.mcp.enabled and config.mcp.config_path:
+		resolved = str(Path(os.path.expanduser(config.mcp.config_path)))
+		cmd.extend(["--mcp-config", resolved])
+	if prompt is not None:
+		cmd.append(prompt)
+	return cmd
+
+
+def _build_mcp(data: dict[str, Any]) -> MCPConfig:
+	mc = MCPConfig()
+	if "config_path" in data:
+		mc.config_path = str(data["config_path"])
+	if "enabled" in data:
+		mc.enabled = bool(data["enabled"])
+	return mc
+
+
+def _build_research(data: dict[str, Any]) -> ResearchConfig:
+	rc = ResearchConfig()
+	if "enabled" in data:
+		rc.enabled = bool(data["enabled"])
+	if "budget_per_agent_usd" in data:
+		rc.budget_per_agent_usd = float(data["budget_per_agent_usd"])
+	if "timeout" in data:
+		rc.timeout = int(data["timeout"])
+	if "model" in data:
+		rc.model = str(data["model"])
+	return rc
 
 
 def load_config(path: str | Path) -> MissionConfig:
@@ -1062,8 +1101,6 @@ def load_config(path: str | Path) -> MissionConfig:
 		mc.green_branch = _build_green_branch(data["green_branch"])
 	if "backend" in data:
 		mc.backend = _build_backend(data["backend"])
-	if "discovery" in data:
-		mc.discovery = _build_discovery(data["discovery"])
 	if "pricing" in data:
 		mc.pricing = _build_pricing(data["pricing"])
 	if "heartbeat" in data:
@@ -1084,6 +1121,10 @@ def load_config(path: str | Path) -> MissionConfig:
 		mc.specialist = _build_specialist(data["specialist"])
 	if "tool_synthesis" in data:
 		mc.tool_synthesis = _build_tool_synthesis(data["tool_synthesis"])
+	if "mcp" in data:
+		mc.mcp = _build_mcp(data["mcp"])
+	if "research" in data:
+		mc.research = _build_research(data["research"])
 	if "security" in data:
 		mc.security = _build_security(data["security"])
 	if "tracing" in data:
