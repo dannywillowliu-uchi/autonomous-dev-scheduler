@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from mission_control.config import MissionConfig, TargetConfig, VerificationConfig
+from mission_control.config import MissionConfig, ResearchConfig, TargetConfig, VerificationConfig
 from mission_control.db import Database
 
 
@@ -26,4 +26,5 @@ def config(tmp_path: Any) -> MissionConfig:
 		branch="main",
 		verification=VerificationConfig(command="pytest -q"),
 	)
+	cfg.research = ResearchConfig(enabled=False)
 	return cfg

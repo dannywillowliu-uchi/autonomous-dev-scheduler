@@ -905,8 +905,8 @@ class TestInitialGeneration:
 		assert "# Mission State" in content
 		assert "Build the widget" in content
 
-	def test_initial_state_has_remaining_section(self, config: MissionConfig, db: Database) -> None:
-		"""Initial state includes the Remaining section for the planner."""
+	def test_initial_state_has_progress_section(self, config: MissionConfig, db: Database) -> None:
+		"""Initial state includes the Progress section."""
 		mission = Mission(id="m1", objective="Do stuff", status="running")
 		db.insert_mission(mission)
 
@@ -915,15 +915,15 @@ class TestInitialGeneration:
 
 		state_path = config.target.resolved_path / "MISSION_STATE.md"
 		content = state_path.read_text()
-		assert "## Remaining" in content
-		assert "planner should focus" in content
+		assert "## Progress" in content
+		assert "0 tasks complete, 0 failed" in content
 
 
 class TestCompletionWithTimestamp:
-	"""Test that completed units get timestamped entries."""
+	"""Test that completed units appear in progress counts and files."""
 
-	def test_completed_entry_has_timestamp(self, config: MissionConfig, db: Database) -> None:
-		"""Completed handoff entry includes the work unit's finished_at timestamp."""
+	def test_completed_unit_counted(self, config: MissionConfig, db: Database) -> None:
+		"""Completed unit is reflected in progress counts."""
 		mission = Mission(id="m1", objective="Test", status="running")
 		db.insert_mission(mission)
 		epoch = Epoch(id="e1", mission_id="m1")
@@ -945,13 +945,12 @@ class TestCompletionWithTimestamp:
 
 		state_path = config.target.resolved_path / "MISSION_STATE.md"
 		content = state_path.read_text()
-		assert "## Completed" in content
-		assert "unit1234" in content
-		assert "2024-01-15T10:30:00" in content
-		assert "Added the feature" in content
+		assert "1 tasks complete" in content
+		assert "Last completed:" in content
+		assert "Add feature" in content
 
 	def test_completed_entry_has_files(self, config: MissionConfig, db: Database) -> None:
-		"""Completed entry includes file list."""
+		"""Completed entry includes file list in Files Modified section."""
 		mission = Mission(id="m1", objective="Test", status="running")
 		db.insert_mission(mission)
 		epoch = Epoch(id="e1", mission_id="m1")
@@ -973,11 +972,12 @@ class TestCompletionWithTimestamp:
 
 		state_path = config.target.resolved_path / "MISSION_STATE.md"
 		content = state_path.read_text()
-		assert "src/bar.py" in content
-		assert "tests/test_bar.py" in content
+		assert "## Files Modified" in content
+		assert "bar.py" in content
+		assert "test_bar.py" in content
 
-	def test_changelog_entry_for_merged_unit(self, config: MissionConfig, db: Database) -> None:
-		"""Changelog section appears when entries have been appended."""
+	def test_no_changelog_in_new_format(self, config: MissionConfig, db: Database) -> None:
+		"""New fixed-size format does not include changelog section."""
 		mission = Mission(id="m1", objective="Test", status="running")
 		db.insert_mission(mission)
 
@@ -989,16 +989,16 @@ class TestCompletionWithTimestamp:
 
 		state_path = config.target.resolved_path / "MISSION_STATE.md"
 		content = state_path.read_text()
-		assert "## Changelog" in content
-		assert "unit1234 merged (commit: abc123)" in content
-		assert "2024-01-15T10:30:00" in content
+		# Changelog is no longer part of the fixed-size format
+		# (state_changelog is still passed but update_mission_state ignores it now)
+		assert "# Mission State" in content
 
 
 class TestFailureWithTimestamp:
-	"""Test that failed units get timestamped entries."""
+	"""Test that failed units appear in active issues."""
 
-	def test_failed_entry_has_timestamp(self, config: MissionConfig, db: Database) -> None:
-		"""Failed handoff entry includes the work unit's finished_at timestamp."""
+	def test_failed_entry_in_active_issues(self, config: MissionConfig, db: Database) -> None:
+		"""Failed handoff appears in Active Issues section."""
 		mission = Mission(id="m1", objective="Test", status="running")
 		db.insert_mission(mission)
 		epoch = Epoch(id="e1", mission_id="m1")
@@ -1020,94 +1020,100 @@ class TestFailureWithTimestamp:
 
 		state_path = config.target.resolved_path / "MISSION_STATE.md"
 		content = state_path.read_text()
-		assert "## Failed" in content
-		assert "failunit" in content
-		assert "2024-03-10T08:45:00" in content
+		assert "## Active Issues" in content
 		assert "Merge conflict on models.py" in content
 
-	def test_changelog_entry_for_failed_unit(self, config: MissionConfig, db: Database) -> None:
-		"""Changelog includes failed unit entries."""
+	def test_failed_counted_in_progress(self, config: MissionConfig, db: Database) -> None:
+		"""Failed units are counted in progress section."""
 		mission = Mission(id="m1", objective="Test", status="running")
 		db.insert_mission(mission)
+		epoch = Epoch(id="e1", mission_id="m1")
+		db.insert_epoch(epoch)
+
+		_insert_unit_with_handoff(
+			db,
+			unit_id="failunit1234",
+			title="Broken thing",
+			unit_status="failed",
+			handoff_status="failed",
+			summary="It broke",
+		)
 
 		ctrl = ContinuousController(config, db)
-		ctrl._state_changelog.append(
-			"- 2024-03-10T08:45:00 | failunit failed -- It broke"
-		)
 		ctrl._update_mission_state(mission)
 
 		state_path = config.target.resolved_path / "MISSION_STATE.md"
 		content = state_path.read_text()
-		assert "## Changelog" in content
-		assert "failunit failed" in content
+		assert "1 failed" in content
 
 
-class TestChangelogAccumulation:
-	"""Test that changelog accumulates entries across multiple updates."""
+class TestProgressCounts:
+	"""Test that progress counts are accurate across multiple updates."""
 
-	def test_changelog_accumulates_multiple_entries(self, config: MissionConfig, db: Database) -> None:
-		"""Multiple changelog entries persist across _update_mission_state calls."""
+	def test_multiple_units_counted(self, config: MissionConfig, db: Database) -> None:
+		"""Multiple units of different statuses are counted correctly."""
 		mission = Mission(id="m1", objective="Test accumulation", status="running")
 		db.insert_mission(mission)
+		epoch = Epoch(id="e1", mission_id="m1")
+		db.insert_epoch(epoch)
+
+		for i in range(3):
+			_insert_unit_with_handoff(
+				db,
+				unit_id=f"unit{i:04d}1234",
+				title=f"Task {i}",
+				unit_status="completed",
+				commit_hash=f"hash{i}",
+				finished_at=f"2024-01-15T{10+i}:00:00+00:00",
+				summary=f"Feature {i}",
+				files_changed=[f"src/mod{i}.py"],
+			)
+		_insert_unit_with_handoff(
+			db,
+			unit_id="failunit01234",
+			title="Failed task",
+			unit_status="failed",
+			handoff_status="failed",
+			summary="Broke",
+		)
 
 		ctrl = ContinuousController(config, db)
-
-		# First update
-		ctrl._state_changelog.append(
-			"- 2024-01-15T10:00:00 | unit0001 merged (commit: aaa111) -- First feature"
-		)
 		ctrl._update_mission_state(mission)
 
 		state_path = config.target.resolved_path / "MISSION_STATE.md"
 		content = state_path.read_text()
-		assert "## Changelog" in content
-		assert "unit0001 merged" in content
+		assert "3 tasks complete, 1 failed" in content
 
-		# Second update
-		ctrl._state_changelog.append(
-			"- 2024-01-15T11:00:00 | unit0002 merged (commit: bbb222) -- Second feature"
-		)
-		ctrl._update_mission_state(mission)
-
-		content = state_path.read_text()
-		assert "unit0001 merged" in content
-		assert "unit0002 merged" in content
-
-		# Third update (failure)
-		ctrl._state_changelog.append(
-			"- 2024-01-15T12:00:00 | unit0003 failed -- Merge conflict"
-		)
-		ctrl._update_mission_state(mission)
-
-		content = state_path.read_text()
-		assert "unit0001 merged" in content
-		assert "unit0002 merged" in content
-		assert "unit0003 failed" in content
-
-	def test_changelog_preserves_order(self, config: MissionConfig, db: Database) -> None:
-		"""Changelog entries appear in chronological order (insertion order)."""
+	def test_files_modified_grouped_by_dir(self, config: MissionConfig, db: Database) -> None:
+		"""Files are grouped by directory in Files Modified section."""
 		mission = Mission(id="m1", objective="Test order", status="running")
 		db.insert_mission(mission)
+		epoch = Epoch(id="e1", mission_id="m1")
+		db.insert_epoch(epoch)
+
+		_insert_unit_with_handoff(
+			db,
+			unit_id="unit00011234",
+			title="First",
+			unit_status="completed",
+			files_changed=["src/a.py", "src/b.py", "tests/test_a.py"],
+		)
 
 		ctrl = ContinuousController(config, db)
-		ctrl._state_changelog.append("- 2024-01-15T10:00:00 | first entry")
-		ctrl._state_changelog.append("- 2024-01-15T11:00:00 | second entry")
-		ctrl._state_changelog.append("- 2024-01-15T12:00:00 | third entry")
 		ctrl._update_mission_state(mission)
 
 		state_path = config.target.resolved_path / "MISSION_STATE.md"
 		content = state_path.read_text()
-		first_pos = content.index("first entry")
-		second_pos = content.index("second entry")
-		third_pos = content.index("third entry")
-		assert first_pos < second_pos < third_pos
+		assert "## Files Modified" in content
+		assert "src/" in content
+		assert "a.py" in content
 
 
 class TestTimestampFallback:
 	"""Test timestamp handling when finished_at is missing."""
 
-	def test_no_timestamp_when_finished_at_is_none(self, config: MissionConfig, db: Database) -> None:
-		"""Entry omits timestamp when work unit's finished_at is None."""
+	def test_no_timestamp_omits_parenthesized_time(self, config: MissionConfig, db: Database) -> None:
+		"""Last completed entry omits timestamp when finished_at is None."""
 		mission = Mission(id="m1", objective="Test", status="running")
 		db.insert_mission(mission)
 		epoch = Epoch(id="e1", mission_id="m1")
@@ -1128,8 +1134,8 @@ class TestTimestampFallback:
 
 		state_path = config.target.resolved_path / "MISSION_STATE.md"
 		content = state_path.read_text()
-		assert "notime12" in content
-		assert "Done without timestamp" in content
+		assert "No time" in content
+		assert "1 tasks complete" in content
 		# No parenthesized timestamp
 		assert "()" not in content
 

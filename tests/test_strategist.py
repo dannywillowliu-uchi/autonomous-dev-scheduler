@@ -13,7 +13,7 @@ from mission_control.cli import build_parser, cmd_mission
 from mission_control.config import MissionConfig, PlannerConfig, SchedulerConfig, TargetConfig
 from mission_control.continuous_controller import ContinuousController, ContinuousMissionResult, WorkerCompletion
 from mission_control.db import Database
-from mission_control.models import BacklogItem, Epoch, Mission, Plan, StrategicContext, WorkUnit
+from mission_control.models import Epoch, Mission, Plan, StrategicContext, WorkUnit
 from mission_control.strategist import (
 	STRATEGY_RESULT_MARKER,
 	Strategist,
@@ -233,25 +233,9 @@ class TestContextGathering:
 		s.db.get_strategic_context.return_value = []
 		assert s._get_strategic_context() == ""
 
-	def test_get_pending_backlog_empty(self) -> None:
+	def test_get_pending_backlog_returns_empty(self) -> None:
 		s = _make_strategist()
-		s.db.get_pending_backlog.return_value = []
 		assert s._get_pending_backlog() == ""
-
-	def test_get_pending_backlog_formats(self) -> None:
-		s = _make_strategist()
-		item = BacklogItem(title="Fix auth", description="Auth is broken in prod", priority_score=8.5)
-		s.db.get_pending_backlog.return_value = [item]
-		result = s._get_pending_backlog()
-		assert "Fix auth" in result
-		assert "score=8.5" in result
-
-	def test_get_pending_backlog_uses_pinned_score(self) -> None:
-		s = _make_strategist()
-		item = BacklogItem(title="Pinned task", description="Important", priority_score=3.0, pinned_score=9.5)
-		s.db.get_pending_backlog.return_value = [item]
-		result = s._get_pending_backlog()
-		assert "score=9.5" in result
 
 
 # -- propose_objective --
@@ -333,8 +317,6 @@ class TestProposeObjective:
 		s = _make_strategist()
 		m = Mission(objective="Past mission", status="completed", total_rounds=2, final_score=7.0)
 		s.db.get_all_missions.return_value = [m]
-		item = BacklogItem(title="Backlog task", description="Do this", priority_score=6.0)
-		s.db.get_pending_backlog.return_value = [item]
 
 		strategy_output = _make_strategy_output("Next objective", "Based on context", 6)
 
@@ -455,7 +437,7 @@ class TestControllerStrategistIntegration:
 		"""With strategist set, orchestration loop still completes successfully."""
 		config.target.name = "test"
 		config.continuous.max_wall_time_seconds = 1
-		config.discovery.enabled = False
+
 		ctrl = ContinuousController(config, db)
 
 		mock_strategist = MagicMock(spec=Strategist)
@@ -521,7 +503,7 @@ class TestControllerStrategistIntegration:
 		"""Without a strategist, orchestration loop completes normally."""
 		config.target.name = "test"
 		config.continuous.max_wall_time_seconds = 1
-		config.discovery.enabled = False
+
 		ctrl = ContinuousController(config, db)
 
 		call_count = 0
@@ -585,7 +567,7 @@ class TestControllerStrategistIntegration:
 		"""Mission completes and is persisted to DB with strategist set."""
 		config.target.name = "test"
 		config.continuous.max_wall_time_seconds = 1
-		config.discovery.enabled = False
+
 		ctrl = ContinuousController(config, db)
 
 		mock_strategist = MagicMock(spec=Strategist)
@@ -648,8 +630,8 @@ class TestControllerStrategistIntegration:
 	) -> None:
 		"""Sequential orchestration: units dispatched until planner returns empty."""
 		config.target.name = "test"
-		config.continuous.max_wall_time_seconds = 5
-		config.discovery.enabled = False
+		config.continuous.max_wall_time_seconds = 30
+
 		ctrl = ContinuousController(config, db)
 		ctrl._strategist = None
 
@@ -690,6 +672,9 @@ class TestControllerStrategistIntegration:
 		mock_gbm = MagicMock()
 		mock_gbm.merge_unit = AsyncMock()
 
+		mock_reflection = MagicMock()
+		mock_reflection.reflect = AsyncMock(return_value=MagicMock(strategy_revision=None))
+
 		async def mock_init() -> None:
 			ctrl._planner = mock_planner
 			ctrl._green_branch = mock_gbm
@@ -697,10 +682,12 @@ class TestControllerStrategistIntegration:
 			ctrl._notifier = None
 			ctrl._heartbeat = None
 			ctrl._event_stream = None
+			ctrl._strategic_reflection = mock_reflection
 
 		with (
 			patch.object(ctrl, "_init_components", mock_init),
 			patch.object(ctrl, "_execute_single_unit", side_effect=mock_execute),
+			patch.object(ctrl, "_run_final_verification", new_callable=AsyncMock, return_value=(True, "ok")),
 			patch("mission_control.continuous_controller.EventStream"),
 		):
 			await asyncio.wait_for(ctrl.run(), timeout=5.0)

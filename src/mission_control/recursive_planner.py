@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from mission_control.config import MissionConfig, claude_subprocess_env
+from mission_control.config import MissionConfig, build_claude_cmd, claude_subprocess_env
 from mission_control.db import Database
 from mission_control.json_utils import extract_json_from_text
 from mission_control.models import Plan, PlanNode, WorkUnit
@@ -395,16 +395,14 @@ IMPORTANT: Put all reasoning BEFORE the <!-- PLAN --> block. The block must cont
 
 		log.info("Invoking planner LLM at depth %d for scope: %s", node.depth, node.scope[:80])
 
+		cmd = build_claude_cmd(self.config, model=model, budget=budget)
 		try:
 			proc = await asyncio.create_subprocess_exec(
-				"claude", "-p",
-				"--output-format", "text",
-				"--max-budget-usd", str(budget),
-				"--model", model,
+				*cmd,
 				stdin=asyncio.subprocess.PIPE,
 				stdout=asyncio.subprocess.PIPE,
 				stderr=asyncio.subprocess.PIPE,
-				env=claude_subprocess_env(),
+				env=claude_subprocess_env(self.config),
 				cwd=str(cwd),
 			)
 			stdout, stderr = await asyncio.wait_for(

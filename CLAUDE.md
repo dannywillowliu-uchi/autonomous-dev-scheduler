@@ -25,8 +25,12 @@ Before ANY commit, run:
 
 ### Mission Mode (Continuous) -- the primary execution mode
 - `continuous_controller.py` -- Event-driven loop: dispatch + completion processor via asyncio.Queue
-- `continuous_planner.py` -- Rolling backlog wrapper around RecursivePlanner
+- `continuous_planner.py` -- Flat impact-focused planner wrapper around RecursivePlanner
 - `recursive_planner.py` -- LLM-based recursive plan tree generation with PLAN_RESULT marker
+- `research_phase.py` -- Pre-planning parallel research agents (codebase analyst, domain researcher, prior art reviewer) + synthesis -> MISSION_STRATEGY.md
+- `batch_analyzer.py` -- Heuristic pattern detection from batch signals (file hotspots, failure clusters, stalled areas)
+- `strategic_reflection.py` -- LLM synthesis of batch signals into actionable reflection (patterns, tensions, open questions, strategy revision)
+- `planner_context.py` -- Minimal planner context (cross-mission semantic memories + recent failures) and fixed-size MISSION_STATE.md writer
 - `green_branch.py` -- mc/green branch lifecycle, merge_unit() for direct merge without verification, ZFC fixup prompt generation
 - `hitl.py` -- Human-in-the-loop approval gates (file-based + Telegram polling) for push and large merge actions
 - `heartbeat.py` -- Time-based progress monitor (checks merge activity, sends Telegram alerts)
@@ -46,12 +50,15 @@ Before ANY commit, run:
 
 ### Execution Flow
 1. Controller creates mission, initializes backend + green branch + planner
-2. Dispatch loop: planner generates work units, dispatches to workers via semaphore
-3. Workers run as Claude Code subprocesses, emit MC_RESULT with handoff data
-4. Completion processor: merge to mc/green, ingest handoff, update MISSION_STATE.md
-5. Heartbeat monitors progress, sends Telegram alerts
-6. Stopping: planner returns empty plan (objective met), heartbeat stall, wall time, or signal
-7. Final verification runs on mc/green at mission end
+2. Research phase: parallel agents investigate codebase, domain, and prior art -> writes MISSION_STRATEGY.md
+3. Orchestration loop: plan -> execute -> process -> reflect, repeat
+4. Workers run as Claude Code subprocesses with MCP access, emit MC_RESULT with handoff data
+5. Completion processor: merge to mc/green, ingest handoff, update MISSION_STATE.md (fixed-size summary)
+6. Batch analysis: heuristic pattern detection (file hotspots, failure clusters, stalled areas)
+7. Strategic reflection: LLM synthesis of batch signals, optional strategy revision
+8. Heartbeat monitors progress, sends Telegram alerts
+9. Stopping: planner returns empty plan (objective met), heartbeat stall, wall time, or signal
+10. Final verification runs on mc/green at mission end
 
 ## Gotchas
 
@@ -61,6 +68,8 @@ Before ANY commit, run:
 - Pool clones (`git clone --shared`) can corrupt editable installs -- reinstall with `uv pip install -e .` after pool cleanup
 - Worker output-format MUST be `text` not `stream-json` -- MC_RESULT markers are invisible inside JSON
 - Clean mission-control.db AND .db-shm/.db-wal when resetting (stale WAL causes sqlite3.OperationalError)
+- All subprocess spawning uses `build_claude_cmd()` from config.py -- never build `claude` command lists manually
+- MCP config (`[mcp]` in TOML) passes `--mcp-config` to all Claude subprocesses when enabled
 
 ## Conventions
 

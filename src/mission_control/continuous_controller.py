@@ -15,10 +15,10 @@ from pathlib import Path
 from typing import Any
 
 from mission_control.backends import ContainerBackend, LocalBackend, SSHBackend, WorkerBackend
-from mission_control.backlog_manager import BacklogManager
+from mission_control.batch_analyzer import BatchAnalyzer
 from mission_control.causal import CausalAttributor, CausalSignal
 from mission_control.circuit_breaker import CircuitBreakerManager
-from mission_control.config import ContinuousConfig, MissionConfig, claude_subprocess_env
+from mission_control.config import ContinuousConfig, MissionConfig, build_claude_cmd, claude_subprocess_env
 from mission_control.constants import (
 	UNIT_EVENT_AUDIT_COMPLETED,
 	UNIT_EVENT_DEGRADATION_TRANSITION,
@@ -42,7 +42,6 @@ from mission_control.green_branch import GreenBranchManager, UnitMergeResult
 from mission_control.heartbeat import Heartbeat
 from mission_control.json_utils import extract_json_from_text
 from mission_control.models import (
-	BacklogItem,
 	Epoch,
 	ExperimentResult,
 	Handoff,
@@ -60,6 +59,7 @@ from mission_control.notifier import TelegramNotifier
 from mission_control.overlap import _parse_files_hint, topological_layers
 from mission_control.planner_context import build_planner_context, update_mission_state
 from mission_control.session import parse_mc_result
+from mission_control.strategic_reflection import StrategicReflectionAgent
 from mission_control.strategist import Strategist
 from mission_control.token_parser import compute_token_cost, parse_stream_json
 from mission_control.tracing import MissionTracer
@@ -144,7 +144,6 @@ class ContinuousMissionResult:
 	evaluator_passed: bool | None = None
 	evaluator_evidence: list[str] = field(default_factory=list)
 	evaluator_gaps: list[str] = field(default_factory=list)
-	backlog_item_ids: list[str] | None = None
 	db_errors: int = 0
 	units_failed_unrecovered: int = 0
 	sync_failures: int = 0
@@ -189,7 +188,6 @@ class ContinuousController:
 		self._strategist: Strategist | None = None
 		self._is_cleanup_mission: bool = config.target.objective.startswith("[CLEANUP]")
 		self._diff_reviewer: DiffReviewer = DiffReviewer(config)
-		self._backlog_manager: BacklogManager = BacklogManager(db, config)
 		cont = config.continuous
 		self._circuit_breakers: CircuitBreakerManager = CircuitBreakerManager(
 			max_failures=cont.circuit_breaker_max_failures,
@@ -229,6 +227,10 @@ class ContinuousController:
 				self._memory_manager = MemoryManager(db, config.episodic_memory)
 		except Exception:
 			logger.warning("Failed to initialize memory manager", exc_info=True)
+		self._batch_analyzer: BatchAnalyzer = BatchAnalyzer(db)
+		self._strategic_reflection: StrategicReflectionAgent = StrategicReflectionAgent(config)
+		self._current_strategy: str = ""
+		self._latest_reflection: Any = None
 		self._speculation_completions: dict[str, list[WorkerCompletion]] = {}
 		self._speculation_parent_units: dict[str, WorkUnit] = {}
 		budget = config.scheduler.budget
@@ -385,6 +387,25 @@ class ContinuousController:
 
 		try:
 			await self._init_components()
+
+			# Run research phase (before first planning iteration)
+			if self.config.research.enabled:
+				try:
+					from mission_control.research_phase import ResearchPhase
+					research_phase = ResearchPhase(self.config, self.db)
+					research_result = await research_phase.run(mission)
+					self._current_strategy = research_result.strategy
+					if self._planner:
+						self._planner.set_strategy(research_result.strategy)
+					mission.total_cost_usd += research_result.cost_usd
+					logger.info(
+						"Research phase complete: strategy=%d chars, findings=%d, cost=$%.2f",
+						len(research_result.strategy), len(research_result.findings),
+						research_result.cost_usd,
+					)
+				except Exception as exc:
+					logger.warning("Research phase failed (continuing without strategy): %s", exc)
+
 			if self._a2a_server is not None:
 				try:
 					self._a2a_server.start()
@@ -393,21 +414,6 @@ class ContinuousController:
 					self._a2a_server = None
 			self._mission_span_ctx = self._tracer.start_mission_span(mission.id)
 			self._mission_span = self._mission_span_ctx.__enter__()
-
-			# Load backlog items as objective if discovery is enabled
-			if self.config.discovery.enabled:
-				backlog_objective = self._backlog_manager.load_backlog_objective()
-				if backlog_objective:
-					if self.config.target.objective:
-						self.config.target.objective += "\n\n" + backlog_objective
-					else:
-						self.config.target.objective = backlog_objective
-					mission.objective = self.config.target.objective
-					result.objective = mission.objective
-					try:
-						self.db.update_mission(mission)
-					except Exception as exc:
-						logger.error("Failed to update mission objective: %s", exc)
 
 			# Initialize JSONL event stream
 			target_dir = Path(self.config.target.resolved_path)
@@ -506,16 +512,6 @@ class ContinuousController:
 							details={"error": str(exc)},
 						)
 
-			# Update backlog items based on mission outcome
-			if self._backlog_manager.backlog_item_ids:
-				try:
-					handoffs = self.db.get_recent_handoffs(mission.id, limit=50)
-					self._backlog_manager.update_backlog_on_completion(result.objective_met, handoffs)
-				except Exception as exc:
-					logger.error(
-						"Failed to update backlog on completion: %s", exc, exc_info=True,
-					)
-
 			mission.status = "completed" if result.objective_met else "stopped"
 			mission.finished_at = _now_iso()
 			mission.stopped_reason = result.stopped_reason
@@ -543,9 +539,6 @@ class ContinuousController:
 			result.units_failed_unrecovered = self._total_failed
 			result.db_errors = self._degradation.get_status_dict()["db_errors"]
 			result.degradation_level = self._degradation.level_name
-
-			if self._backlog_manager.backlog_item_ids:
-				result.backlog_item_ids = list(self._backlog_manager.backlog_item_ids)
 
 			try:
 				from mission_control.mission_report import generate_mission_report
@@ -628,10 +621,6 @@ class ContinuousController:
 				)
 				self._event_stream.close()
 
-			# Post-mission re-discovery
-			if self.config.discovery.enabled and result.objective_met:
-				await self._run_post_mission_discovery(mission.id)
-
 			# Close the mission span
 			if hasattr(self, "_mission_span_ctx") and self._mission_span_ctx:
 				try:
@@ -695,58 +684,6 @@ class ContinuousController:
 		# raw range: 2.0 - 10.0; round and clamp
 		score = max(1, min(10, round(raw)))
 		return score
-
-	async def _run_post_mission_discovery(self, mission_id: str = "") -> None:
-		"""Run discovery after a successful mission to find new improvements."""
-		try:
-			from mission_control.auto_discovery import DiscoveryEngine
-
-			engine = DiscoveryEngine(self.config, self.db)
-			disc_result, items = await engine.discover()
-			if items:
-				logger.info(
-					"Post-mission discovery found %d new items",
-					len(items),
-				)
-				# Bridge discovery items into persistent backlog
-				for disc_item in items:
-					backlog_item = BacklogItem(
-						title=disc_item.title,
-						description=disc_item.description,
-						priority_score=disc_item.priority_score,
-						impact=disc_item.impact,
-						effort=disc_item.effort,
-						track=disc_item.track,
-						source_mission_id=mission_id,
-					)
-					try:
-						self.db.insert_backlog_item(backlog_item)
-					except Exception as exc:
-						logger.warning(
-							"Failed to insert discovery item '%s' into backlog: %s",
-							disc_item.title[:40], exc,
-						)
-				logger.info(
-					"Inserted %d discovery items into persistent backlog",
-					len(items),
-				)
-				if self._notifier:
-					summary_lines = [
-						f"- [{i.track}] {i.title} "
-						f"(priority: {i.priority_score:.1f})"
-						for i in items[:5]
-					]
-					await self._notifier.send(
-						"Post-mission discovery: "
-						f"{len(items)} new improvement items found.\n"
-						+ "\n".join(summary_lines)
-					)
-			else:
-				logger.info("Post-mission discovery found no new items")
-		except Exception as exc:
-			logger.error(
-				"Post-mission discovery failed: %s", exc, exc_info=True,
-			)
 
 	async def _init_components(self) -> None:
 		"""Initialize backend, green branch manager, and continuous planner."""
@@ -1267,17 +1204,6 @@ class ContinuousController:
 			else:
 				self._total_failed += 1
 
-		# Update backlog items based on this unit's outcome
-		try:
-			self._backlog_manager.update_backlog_from_completion(
-				unit, merged, handoff, mission.id,
-			)
-		except Exception as exc:
-			logger.warning(
-				"Failed to update backlog from completion for unit %s: %s",
-				unit.id, exc,
-			)
-
 		# Promote synthesized tools to MCP registry after merge
 		if merged and self._mcp_registry and handoff:
 			try:
@@ -1528,10 +1454,30 @@ class ContinuousController:
 
 			await self._process_batch(completions, mission, result)
 
+			# Reflect on batch results (skip first iteration -- no data yet)
+			if self._total_dispatched > len(units):
+				try:
+					signals = self._batch_analyzer.analyze(mission.id)
+					ki = self.db.get_knowledge_for_mission(mission.id)
+					reflection = await self._strategic_reflection.reflect(
+						objective=mission.objective,
+						signals=signals,
+						knowledge_items=ki,
+						strategy=self._current_strategy,
+					)
+					if reflection.strategy_revision:
+						self._current_strategy = reflection.strategy_revision
+						self._write_strategy_update(reflection.strategy_revision)
+					self._latest_reflection = reflection
+				except Exception as exc:
+					logger.debug("Reflection failed: %s", exc)
+
 			try:
 				update_mission_state(
 					self.db, mission, self.config, self._state_changelog,
 					degradation_status=self._degradation.get_status_dict(),
+					strategy=self._current_strategy,
+					reflection=self._latest_reflection,
 				)
 			except Exception as exc:
 				logger.warning("Failed to update MISSION_STATE.md: %s", exc)
@@ -1887,13 +1833,12 @@ class ContinuousController:
 			f'EVALUATION:{{"passed": true/false, "evidence": ["what works"], "gaps": ["what is missing"]}}'
 		)
 
+		eval_cmd = build_claude_cmd(
+			self.config, model=ev.model, max_turns=ev.max_turns, budget=ev.budget_usd,
+		)
 		try:
 			proc = await asyncio.create_subprocess_exec(
-				"claude", "-p",
-				"--output-format", "text",
-				"--model", ev.model,
-				"--max-turns", str(ev.max_turns),
-				"--max-budget-usd", str(ev.budget_usd),
+				*eval_cmd,
 				stdin=asyncio.subprocess.PIPE,
 				stdout=asyncio.subprocess.PIPE,
 				stderr=asyncio.subprocess.PIPE,
@@ -1997,12 +1942,10 @@ or
 OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 
 		model = getattr(self.config.models, "planner_model", None) or self.config.scheduler.model
+		verify_cmd = build_claude_cmd(self.config, model=model, budget=0.50)
 		try:
 			proc = await asyncio.create_subprocess_exec(
-				"claude", "-p",
-				"--output-format", "text",
-				"--max-budget-usd", "0.50",
-				"--model", model,
+				*verify_cmd,
 				stdin=asyncio.subprocess.PIPE,
 				stdout=asyncio.subprocess.PIPE,
 				stderr=asyncio.subprocess.PIPE,
@@ -2219,8 +2162,6 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 
 		Returns a successful UnitMergeResult if fixup worked, None otherwise.
 		"""
-		from mission_control.config import claude_subprocess_env
-
 		for attempt in range(max_fixup_attempts):
 			logger.info(
 				"Worker fixup attempt %d/%d for unit %s in %s (resume=%s)",
@@ -2263,16 +2204,11 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 					)
 				if unit.acceptance_criteria and merge_result.failure_stage == "acceptance_criteria":
 					prompt += f"\n\n## Acceptance Criteria\n{unit.acceptance_criteria}"
-				cmd = [
-					"claude",
-					"--resume", unit.session_id,
-					"-p",
-					"--output-format", "text",
-					"--permission-mode", "bypassPermissions",
-					"--model", model,
-					"--max-turns", "5",
-					prompt,
-				]
+				cmd = build_claude_cmd(
+					self.config, model=model, max_turns=5,
+					permission_mode="bypassPermissions",
+					resume_session=unit.session_id, prompt=prompt,
+				)
 			else:
 				# Cold fixup: no session to resume, include full task context.
 				if is_merge_conflict:
@@ -2304,14 +2240,10 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 					)
 				if unit.acceptance_criteria and merge_result.failure_stage == "acceptance_criteria":
 					prompt += f"\n\n## Acceptance Criteria\n{unit.acceptance_criteria}"
-				cmd = [
-					"claude", "-p",
-					"--output-format", "text",
-					"--permission-mode", "bypassPermissions",
-					"--model", model,
-					"--max-turns", "5",
-					prompt,
-				]
+				cmd = build_claude_cmd(
+					self.config, model=model, max_turns=5,
+					permission_mode="bypassPermissions", prompt=prompt,
+				)
 			try:
 				env = claude_subprocess_env(self.config)
 			except Exception:
@@ -2638,15 +2570,11 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 			model = getattr(models_cfg, "worker_model", None) or self.config.scheduler.model
 			session_id = str(uuid.uuid4())
 			unit.session_id = session_id
-			cmd = [
-				"claude", "-p",
-				"--output-format", "stream-json",
-				"--permission-mode", "bypassPermissions",
-				"--model", model,
-				"--max-budget-usd", str(budget),
-				"--session-id", session_id,
-				prompt,
-			]
+			cmd = build_claude_cmd(
+				self.config, model=model, output_format="stream-json",
+				permission_mode="bypassPermissions", budget=budget,
+				session_id=session_id, prompt=prompt,
+			)
 
 			effective_timeout = unit.timeout or self.config.scheduler.session_timeout
 			handle = await self._backend.spawn(
@@ -2831,6 +2759,16 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 			self._in_flight_count = max(self._in_flight_count - 1, 0)
 			self._semaphore.release()
 
+	def _write_strategy_update(self, revised_strategy: str) -> None:
+		"""Overwrite MISSION_STRATEGY.md with revised strategy."""
+		target_path = self.config.target.resolved_path
+		strategy_path = target_path / "MISSION_STRATEGY.md"
+		try:
+			strategy_path.write_text(revised_strategy + "\n")
+			logger.info("Updated MISSION_STRATEGY.md with revised strategy")
+		except OSError as exc:
+			logger.warning("Could not write MISSION_STRATEGY.md: %s", exc)
+
 	def _should_stop(self, mission: Mission) -> str:
 		"""Check stopping conditions. Returns reason string or empty."""
 		if not self.running:
@@ -2989,40 +2927,6 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 		ok, output = await self._green_branch._run_command(verify_cmd)
 		return ok, output
 
-	# Backward-compatible wrappers delegating to extracted modules
-	@property
-	def _backlog_item_ids(self) -> list[str]:
-		try:
-			return self._backlog_manager.backlog_item_ids
-		except AttributeError:
-			return []
-
-	@_backlog_item_ids.setter
-	def _backlog_item_ids(self, value: list[str]) -> None:
-		try:
-			self._backlog_manager.backlog_item_ids = value
-		except AttributeError:
-			# BacklogManager not yet initialized (e.g. test setup bypassing __init__)
-			self._backlog_manager = BacklogManager(self.db, self.config)
-			self._backlog_manager.backlog_item_ids = value
-
-	def _load_backlog_objective(self, limit: int = 5) -> str | None:
-		return self._backlog_manager.load_backlog_objective(limit=limit)
-
-	def _update_backlog_on_completion(
-		self, objective_met: bool, handoffs: list[Handoff],
-	) -> None:
-		self._backlog_manager.update_backlog_on_completion(objective_met, handoffs)
-
-	def _update_backlog_from_completion(
-		self,
-		unit: WorkUnit,
-		merged: bool,
-		handoff: Handoff | None,
-		mission_id: str,
-	) -> None:
-		self._backlog_manager.update_backlog_from_completion(unit, merged, handoff, mission_id)
-
 	def _build_planner_context(self, mission_id: str) -> str:
 		return build_planner_context(self.db, mission_id)
 
@@ -3030,6 +2934,8 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 		update_mission_state(
 			self.db, mission, self.config, self._state_changelog,
 			degradation_status=self._degradation.get_status_dict(),
+			strategy=self._current_strategy,
+			reflection=self._latest_reflection,
 		)
 
 	def stop(self) -> None:

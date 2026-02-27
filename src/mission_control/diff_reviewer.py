@@ -8,7 +8,7 @@ import logging
 import re
 from typing import Any
 
-from mission_control.config import MissionConfig, ReviewConfig, claude_subprocess_env
+from mission_control.config import MissionConfig, ReviewConfig, build_claude_cmd, claude_subprocess_env
 from mission_control.json_utils import extract_json_from_text
 from mission_control.models import UnitReview, WorkUnit
 
@@ -121,15 +121,13 @@ class DiffReviewer:
 		prompt = _build_review_prompt(unit, diff, objective, project_snapshot=project_snapshot)
 		model = self._review_config.model
 
+		cmd = build_claude_cmd(self._config, model=model, max_turns=1, prompt=prompt)
 		try:
 			proc = await asyncio.create_subprocess_exec(
-				"claude", "--print", "--output-format", "text",
-				"--model", model,
-				"--max-turns", "1",
-				"-p", prompt,
+				*cmd,
 				stdout=asyncio.subprocess.PIPE,
 				stderr=asyncio.subprocess.PIPE,
-				env=claude_subprocess_env(),
+				env=claude_subprocess_env(self._config),
 			)
 			stdout, stderr = await asyncio.wait_for(
 				proc.communicate(),
