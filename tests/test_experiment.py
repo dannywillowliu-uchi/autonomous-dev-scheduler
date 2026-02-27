@@ -214,7 +214,6 @@ class TestControllerExperimentCompletion:
 		controller._total_failed = 0
 		controller._completed_unit_ids = set()
 		controller._state_changelog = []
-		controller._backlog_item_ids = []
 		controller._degradation = DegradationManager()
 		controller._causal_attributor = CausalAttributor(db)
 		return controller

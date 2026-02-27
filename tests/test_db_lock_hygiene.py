@@ -11,9 +11,7 @@ SRC_DIR = Path(__file__).resolve().parent.parent / "src" / "mission_control"
 
 # Files with known pre-existing violations that are tracked separately.
 # Remove entries as they get migrated to locked_call().
-ALLOWLIST = {
-	"auto_discovery.py",
-}
+ALLOWLIST: set[str] = set()
 
 
 def _find_conn_execute_calls(filepath: Path) -> list[int]:

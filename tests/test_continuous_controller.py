@@ -462,7 +462,7 @@ class TestEndToEnd:
 		"""Integration: dispatch loop feeds units, completion processor merges them."""
 		config.target.name = "test"
 		config.continuous.max_wall_time_seconds = 1
-		config.discovery.enabled = False
+
 		ctrl = ContinuousController(config, db)
 
 		executed_ids: list[str] = []
@@ -741,41 +741,6 @@ class TestVenvSymlink:
 					assert workspace_venv.resolve() == source_venv.resolve()
 
 
-class TestPostMissionDiscovery:
-	@pytest.mark.asyncio
-	async def test_discovery_runs_on_success(self, config: MissionConfig, db: Database) -> None:
-		"""Post-mission discovery should run when objective met and discovery enabled."""
-		config.discovery.enabled = True
-		ctrl = ContinuousController(config, db)
-
-		mock_engine = MagicMock()
-		mock_engine.discover = AsyncMock(return_value=(MagicMock(item_count=2), [
-			MagicMock(track="quality", title="T1", priority_score=5.0),
-			MagicMock(track="feature", title="T2", priority_score=6.0),
-		]))
-
-		with patch(
-			"mission_control.auto_discovery.DiscoveryEngine",
-			return_value=mock_engine,
-		):
-			await ctrl._run_post_mission_discovery()
-
-		mock_engine.discover.assert_called_once()
-
-	@pytest.mark.asyncio
-	async def test_discovery_handles_errors(self, config: MissionConfig, db: Database) -> None:
-		"""Post-mission discovery failure should not raise."""
-		config.discovery.enabled = True
-		ctrl = ContinuousController(config, db)
-
-		with patch(
-			"mission_control.auto_discovery.DiscoveryEngine",
-			side_effect=RuntimeError("boom"),
-		):
-			# Should not raise
-			await ctrl._run_post_mission_discovery()
-
-
 class TestWorkerRecordPersistence:
 	"""Tests that Worker DB records are created/updated during _execute_single_unit."""
 
@@ -962,7 +927,7 @@ class TestSequentialOrchestration:
 		config.target.name = "test"
 		config.continuous.max_wall_time_seconds = 10
 		config.continuous.cooldown_between_units = 0
-		config.discovery.enabled = False
+
 		ctrl = ContinuousController(config, db)
 
 		events: list[str] = []
@@ -1226,7 +1191,7 @@ class TestAmbitionScoringInDispatch:
 		"""Units should be dispatched, executed, and processed via _orchestration_loop."""
 		config.target.name = "test"
 		config.continuous.max_wall_time_seconds = 1
-		config.discovery.enabled = False
+
 		ctrl = ContinuousController(config, db)
 
 		call_count = 0
@@ -1293,7 +1258,7 @@ class TestInFlightUnitsPreventPrematureCompletion:
 		"""Planner returns empty but units are still running -- should wait, not declare complete."""
 		config.target.name = "test"
 		config.continuous.max_wall_time_seconds = 10
-		config.discovery.enabled = False
+
 		ctrl = ContinuousController(config, db)
 
 		inflight_completed = asyncio.Event()
@@ -1785,7 +1750,7 @@ class TestLayerByLayerDispatch:
 		config.target.name = "test"
 		config.continuous.max_wall_time_seconds = 10
 		config.continuous.cooldown_between_units = 0
-		config.discovery.enabled = False
+
 		config.scheduler.parallel.num_workers = 4
 		ctrl = ContinuousController(config, db)
 
@@ -1866,7 +1831,7 @@ class TestLayerByLayerDispatch:
 		config.target.name = "test"
 		config.continuous.max_wall_time_seconds = 10
 		config.continuous.cooldown_between_units = 0
-		config.discovery.enabled = False
+
 		config.scheduler.parallel.num_workers = 4
 		ctrl = ContinuousController(config, db)
 
