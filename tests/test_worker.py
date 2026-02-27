@@ -14,6 +14,7 @@ from mission_control.models import Mission, Plan, Round, Worker, WorkUnit
 from mission_control.worker import (
 	WorkerAgent,
 	_sanitize_braces,
+	load_specialist_template,
 	render_architect_prompt,
 	render_editor_prompt,
 	render_mission_worker_prompt,
@@ -135,6 +136,22 @@ class TestResearchPromptSelection:
 		assert "research agent" in prompt.lower()
 		assert "EXPLORATION and DISCOVERY" in prompt
 		assert "Do NOT commit code changes" in prompt
+
+
+class TestLoadSpecialistTemplate:
+	def test_valid_specialist_returns_content(self) -> None:
+		"""load_specialist_template returns non-empty content for valid specialists."""
+		for specialist in ("test-writer", "refactorer", "debugger", "simplifier"):
+			content = load_specialist_template(specialist)
+			assert content, f"Expected non-empty template for {specialist}"
+
+	def test_invalid_specialist_returns_empty(self) -> None:
+		content = load_specialist_template("nonexistent")
+		assert content == ""
+
+	def test_empty_specialist_returns_empty(self) -> None:
+		content = load_specialist_template("")
+		assert content == ""
 
 
 class TestWorkerAgent:

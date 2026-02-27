@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from pathlib import Path
 
 from mission_control.backends.base import WorkerBackend, WorkerHandle
 from mission_control.config import MissionConfig
@@ -23,14 +24,14 @@ def _sanitize_braces(s: str) -> str:
 VALID_SPECIALISTS = {"test-writer", "refactorer", "debugger", "simplifier"}
 
 
-def load_specialist_template(specialist: str, config: MissionConfig) -> str:
+def load_specialist_template(specialist: str) -> str:
 	"""Load a specialist template from the specialist_templates directory.
 
 	Returns the template content, or empty string if not found or invalid.
 	"""
 	if not specialist or specialist not in VALID_SPECIALISTS:
 		return ""
-	templates_dir = config.target.resolved_path / "specialist_templates"
+	templates_dir = Path(__file__).parent / "specialist_templates"
 	template_path = templates_dir / f"{specialist}.md"
 	if not template_path.is_file():
 		logger.debug("Specialist template not found: %s", template_path)
@@ -65,13 +66,16 @@ Files likely involved: {files_hint}
 ## Verification Focus
 {verification_hint}
 
+## Verification
+Run: {verification_command}
+
 ## Context
 {context_block}
 
 ## Instructions
 1. Implement the task described above. Modify any files necessary to complete it well.
-2. Run verification: {verification_command}
-3. If verification passes, commit with a descriptive message
+2. Run verification (see above) and ensure it passes before committing.
+3. If verification passes, commit with a descriptive message.
 4. If verification fails, diagnose the issue and fix it. Stop and report if truly stuck.
 - Do NOT run `pip install`, `uv pip install`, or modify the Python environment -- it is pre-configured via symlink
 
