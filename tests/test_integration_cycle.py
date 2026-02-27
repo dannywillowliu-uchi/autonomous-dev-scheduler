@@ -763,10 +763,7 @@ class TestSimplifierSpecialist:
 		cfg = MissionConfig()
 		cfg.target = TargetConfig(name="test", path=str(tmp_path))
 		# Create the template in the expected location
-		templates_dir = tmp_path / "specialist_templates"
-		templates_dir.mkdir()
-		(templates_dir / "simplifier.md").write_text("# Specialist: Simplifier\nTest content")
-		template = load_specialist_template("simplifier", cfg)
+		template = load_specialist_template("simplifier")
 		assert "Simplifier" in template
 
 	def test_cleanup_forces_specialist(self) -> None:
