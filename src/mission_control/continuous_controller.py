@@ -2518,7 +2518,7 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 			if self._is_cleanup_mission and not unit.specialist:
 				unit.specialist = "simplifier"
 
-			specialist_template = load_specialist_template(unit.specialist, self.config)
+			specialist_template = load_specialist_template(unit.specialist)
 
 			prompt = render_mission_worker_prompt(
 				unit=unit,
