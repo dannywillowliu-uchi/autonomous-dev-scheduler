@@ -93,7 +93,6 @@ def generate_mission_report(
 		"files_changed": sorted(all_files),
 		"verification_passed": result.final_verification_passed,
 		"verification_output": result.final_verification_output,
-		"backlog_item_ids": result.backlog_item_ids or [],
 		"unit_reviews": review_data,
 		"trajectory_ratings": rating_data,
 		"decomposition_grades": grade_data,
