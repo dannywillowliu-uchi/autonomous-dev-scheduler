@@ -281,6 +281,148 @@ class LiveDashboard:
 				for r in ratings
 			]
 
+		@self.app.get(
+			"/api/agent-detail/{agent_id}",
+			dependencies=[Depends(verify_token)],
+		)
+		async def get_agent_detail(agent_id: str) -> dict[str, Any]:
+			mission = self._current_mission()
+			if mission is None:
+				raise HTTPException(status_code=404, detail="No active mission")
+			if agent_id == "planner":
+				return self._build_planner_detail(mission)
+			# Worker agent
+			workers = self.db.get_all_workers()
+			worker = next((w for w in workers if w.id == agent_id), None)
+			if worker is None:
+				raise HTTPException(status_code=404, detail="Worker not found")
+			units = self.db.get_units_for_worker(agent_id)
+			events = self.db.get_unit_events_for_worker(agent_id, limit=500)
+			stats = self.db.get_worker_stats(agent_id)
+			return {
+				"agent_id": agent_id,
+				"role": "worker",
+				"worker": _serialize_worker(worker),
+				"units": [_serialize_unit(u) for u in units],
+				"events": [_serialize_event(e) for e in events],
+				"stats": stats,
+			}
+
+	def _build_agent_activity(
+		self,
+		workers: list[Any],
+		epochs: list[Any],
+		units: list[Any],
+	) -> list[dict[str, Any]]:
+		"""Build agent activity list: planner pseudo-agent + worker agents."""
+		agents: list[dict[str, Any]] = []
+
+		# Planner pseudo-agent
+		planner_status = "idle"
+		current_task = ""
+		units_in_epoch = 0
+		if epochs:
+			last_epoch = epochs[-1]
+			epoch_units = [u for u in units if u.epoch_id == last_epoch.id]
+			units_in_epoch = len(epoch_units)
+			dispatched = any(u.status in ("running", "claimed", "completed", "failed") for u in epoch_units)
+			if not dispatched and epoch_units:
+				planner_status = "planning"
+			elif last_epoch.finished_at is None and not epoch_units:
+				planner_status = "planning"
+			current_task = f"Epoch {last_epoch.number}"
+
+		agents.append({
+			"agent_id": "planner",
+			"name": "Planner",
+			"role": "planner",
+			"status": planner_status,
+			"current_task": current_task,
+			"units_in_epoch": units_in_epoch,
+			"epochs_completed": sum(1 for e in epochs if e.finished_at),
+		})
+
+		# Worker agents
+		unit_by_id = {u.id: u for u in units}
+		for w in workers:
+			current_task = ""
+			if w.current_unit_id and w.current_unit_id in unit_by_id:
+				current_task = unit_by_id[w.current_unit_id].title
+
+			agents.append({
+				"agent_id": w.id,
+				"name": f"Worker {w.id[:8]}",
+				"role": "worker",
+				"status": w.status,
+				"current_task": current_task,
+				"last_heartbeat": w.last_heartbeat,
+				"units_completed": w.units_completed,
+				"units_failed": w.units_failed,
+				"total_cost_usd": w.total_cost_usd,
+				"pid": w.pid,
+			})
+
+		return agents
+
+	def _build_planner_detail(self, mission: Any) -> dict[str, Any]:
+		"""Build detail view for the planner pseudo-agent."""
+		chain_mids = self._get_chain_mission_ids(mission)
+		all_epochs: list[Any] = []
+		for mid in chain_mids:
+			all_epochs.extend(self.db.get_epochs_for_mission(mid))
+
+		# Synthetic events from epoch lifecycle
+		events: list[dict[str, Any]] = []
+		total_units_planned = 0
+		for epoch in all_epochs:
+			total_units_planned += epoch.units_planned
+			events.append({
+				"event_type": "planning_started",
+				"timestamp": epoch.started_at,
+				"details": f"Epoch {epoch.number} planning started ({epoch.units_planned} units)",
+				"input_tokens": 0,
+				"output_tokens": 0,
+			})
+			if epoch.finished_at:
+				events.append({
+					"event_type": "epoch_completed",
+					"timestamp": epoch.finished_at,
+					"details": (
+						f"Epoch {epoch.number} completed: "
+						f"{epoch.units_completed} merged, {epoch.units_failed} failed, "
+						f"score {epoch.score_at_start:.1f} -> {epoch.score_at_end:.1f}"
+					),
+					"input_tokens": 0,
+					"output_tokens": 0,
+				})
+
+		events.sort(key=lambda e: e["timestamp"] or "")
+
+		return {
+			"agent_id": "planner",
+			"role": "planner",
+			"events": events,
+			"epochs": [
+				{
+					"id": e.id,
+					"number": e.number,
+					"started_at": e.started_at,
+					"finished_at": e.finished_at,
+					"units_planned": e.units_planned,
+					"units_completed": e.units_completed,
+					"units_failed": e.units_failed,
+					"score_at_start": e.score_at_start,
+					"score_at_end": e.score_at_end,
+				}
+				for e in all_epochs
+			],
+			"stats": {
+				"epochs_completed": sum(1 for e in all_epochs if e.finished_at),
+				"epochs_total": len(all_epochs),
+				"total_units_planned": total_units_planned,
+			},
+		}
+
 	async def _broadcast_loop(self) -> None:
 		"""Poll DB every 1s, push snapshot to all connected clients."""
 		while True:
@@ -333,6 +475,11 @@ class LiveDashboard:
 
 		workers = self.db.get_all_workers()
 
+		# Collect epochs for agent activity (lightweight, same query plan_tree uses)
+		all_epochs: list[Any] = []
+		for mid in chain_mids:
+			all_epochs.extend(self.db.get_epochs_for_mission(mid))
+
 		plan_tree = self._build_plan_tree(chain_mids)
 
 		# Extract current (last) epoch's units for the mission statement section
@@ -353,6 +500,7 @@ class LiveDashboard:
 			"unit_reviews": review_by_unit,
 			"current_epoch_units": current_epoch_units,
 			"timeline": self._build_timeline(chain_mids),
+			"agent_activity": self._build_agent_activity(workers, all_epochs, units),
 		}
 
 	def _build_plan_tree(self, mission_ids: list[str]) -> list[dict[str, Any]]:
@@ -520,6 +668,8 @@ def _serialize_event(e: Any) -> dict[str, Any]:
 		"event_type": e.event_type,
 		"timestamp": e.timestamp,
 		"details": e.details,
+		"input_tokens": getattr(e, "input_tokens", 0) or 0,
+		"output_tokens": getattr(e, "output_tokens", 0) or 0,
 	}
 
 
