@@ -220,6 +220,41 @@ class TestWorkerAgent:
 		assert mr.work_unit_id == "wu1"
 		assert mr.worker_id == "w1"
 
+	async def test_execute_unit_provisions_from_green_branch(
+		self, db: Database, config: MissionConfig, worker_and_unit: tuple[Worker, WorkUnit],
+		mock_backend: MockBackend,
+	) -> None:
+		"""When green_branch is configured, provision_workspace receives it as base_branch."""
+		w, _ = worker_and_unit
+		# Clear workspace_path so _execute_unit calls provision_workspace
+		w.workspace_path = ""
+
+		config.green_branch.green_branch = "mc/green"
+
+		mc_output = (
+			'MC_RESULT:{"status":"completed","commits":["abc"],'
+			'"summary":"ok","files_changed":["a.py"]}'
+		)
+		mock_backend.get_output = AsyncMock(return_value=mc_output)  # type: ignore[method-assign]
+		mock_backend.provision_workspace = AsyncMock(return_value="/tmp/provisioned")  # type: ignore[method-assign]
+
+		agent = WorkerAgent(w, db, config, mock_backend, heartbeat_interval=9999)
+		agent.running = True
+
+		mock_git_proc = AsyncMock()
+		mock_git_proc.communicate = AsyncMock(return_value=(b"", b""))
+		mock_git_proc.returncode = 0
+
+		with patch("mission_control.worker.asyncio.create_subprocess_exec", return_value=mock_git_proc):
+			unit = db.claim_work_unit(w.id)
+			assert unit is not None
+			await agent._execute_unit(unit)  # noqa: SLF001
+
+		# Verify provision_workspace was called with mc/green as base_branch
+		mock_backend.provision_workspace.assert_awaited_once()
+		call_kwargs = mock_backend.provision_workspace.call_args
+		assert call_kwargs.kwargs.get("base_branch") == "mc/green"
+
 	async def test_failed_unit_marks_correctly(
 		self, db: Database, config: MissionConfig, worker_and_unit: tuple[Worker, WorkUnit],
 		mock_backend: MockBackend,

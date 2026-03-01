@@ -40,6 +40,7 @@ from mission_control.diff_reviewer import DiffReviewer
 from mission_control.ema import ExponentialMovingAverage
 from mission_control.event_stream import EventStream
 from mission_control.feedback import get_worker_context
+from mission_control.file_lock_registry import FileLockRegistry
 from mission_control.green_branch import GreenBranchManager, UnitMergeResult
 from mission_control.heartbeat import Heartbeat
 from mission_control.json_utils import extract_json_from_text
@@ -129,6 +130,15 @@ class WorkerCompletion:
 
 
 @dataclass
+class _BatchMergeEntry:
+	"""A unit queued for batch merge."""
+
+	completion: WorkerCompletion
+	mission: Mission
+	result: ContinuousMissionResult
+
+
+@dataclass
 class ContinuousMissionResult:
 	"""Summary of a completed continuous mission."""
 
@@ -183,6 +193,7 @@ class ContinuousController:
 		self._in_flight_count: int = 0
 		self._merged_files: set[str] = set()  # files covered by merged units
 		self._completed_unit_ids: set[str] = set()  # units that completed/merged successfully
+		self._file_locks: FileLockRegistry = FileLockRegistry()
 		self._last_reconcile_count: int = 0
 		self._objective_check_count: int = 0
 		self._failed_unit_replan_count: int = 0
@@ -228,10 +239,13 @@ class ContinuousController:
 				self._memory_manager = MemoryManager(db, config.episodic_memory)
 		except Exception:
 			logger.warning("Failed to initialize memory manager", exc_info=True)
+		self._active_fixups: dict[str, asyncio.Task[None]] = {}
 		self._batch_analyzer: BatchAnalyzer = BatchAnalyzer(db)
 		self._current_strategy: str = ""
 		self._speculation_completions: dict[str, list[WorkerCompletion]] = {}
 		self._speculation_parent_units: dict[str, WorkUnit] = {}
+		self._merge_queue: list[_BatchMergeEntry] = []
+		self._merge_queue_timer: asyncio.TimerHandle | None = None
 		budget = config.scheduler.budget
 		self._ema: ExponentialMovingAverage = ExponentialMovingAverage(
 			alpha=budget.ema_alpha,
@@ -1094,29 +1108,27 @@ class ContinuousController:
 		if unit.status == "completed" and unit.commit_hash:
 			try:
 				self._trace(unit.id, unit.id, "merge_attempted")
-				merge_result = await self._green_branch.merge_unit(
-					workspace, unit.branch_name,
-					acceptance_criteria=unit.acceptance_criteria,
-				)
-				self._degradation.record_merge_attempt(conflict=not merge_result.merged)
 
-				# Fixup path: resume worker for fixable failures
-				if not merge_result.merged:
-					logger.warning(
-						"Unit %s failed merge: %s",
-						unit.id, merge_result.failure_output[-200:],
+				# Queue for batch merge if batch_merge_min_size >= 2
+				gb_config = self.config.green_branch
+				if gb_config.batch_merge_min_size >= 2:
+					entry = _BatchMergeEntry(
+						completion=completion, mission=mission, result=result,
 					)
-					fixup_stages = ("pre_merge_verification", "acceptance_criteria", "merge_conflict")
-					if (
-						merge_result.failure_stage in fixup_stages
-						and workspace
-					):
-						fixed = await self._resume_worker_for_fixup(
-							unit, workspace, merge_result, cont,
-						)
-						if fixed:
-							merge_result = fixed
-							logger.info("Unit %s merged after worker fixup", unit.id)
+					self._merge_queue.append(entry)
+					if len(self._merge_queue) >= gb_config.batch_merge_min_size:
+						await self._flush_merge_batch()
+					else:
+						self._schedule_batch_flush()
+					# Bookkeeping runs inside _flush_merge_batch
+					return
+				else:
+					merge_result = await self._green_branch.merge_unit(
+						workspace, unit.branch_name,
+						acceptance_criteria=unit.acceptance_criteria,
+					)
+
+				self._degradation.record_merge_attempt(conflict=not merge_result.merged)
 
 				# Post-merge bookkeeping (review, counters, sync)
 				if merge_result.merged:
@@ -1128,49 +1140,75 @@ class ContinuousController:
 					merged = True
 
 				if not merged:
-					self._trace(
-						unit.id, unit.id, "merge_failed",
-						failure_stage=merge_result.failure_stage,
-					)
-					# Log merge_failed event
-					_fail_details = {
-						"failure_output": merge_result.failure_output[-2000:],
-						"failure_stage": merge_result.failure_stage,
-					}
-					self._log_unit_event(
-						mission_id=mission.id,
-						epoch_id=epoch.id,
-						work_unit_id=unit.id,
-						event_type=UNIT_EVENT_MERGE_FAILED,
-						details=json.dumps(_fail_details),
-						stream_details=_fail_details,
-					)
-
-					# Append merge failure to handoff concerns
-					if handoff:
-						handoff.concerns.append(
-							f"Merge failed: {merge_result.failure_output[-500:]}",
+					# Fixup path: fire background task for fixable failures
+					fixup_stages = ("pre_merge_verification", "acceptance_criteria", "merge_conflict")
+					if (
+						merge_result.failure_stage in fixup_stages
+						and workspace
+						and unit.id not in self._active_fixups
+					):
+						logger.info(
+							"Launching background fixup for unit %s (stage=%s)",
+							unit.id[:12], merge_result.failure_stage,
 						)
-
-					failure_reason = merge_result.failure_output[-1000:]
-
-					# Check if retryable
-					if unit.attempt < unit.max_attempts:
-						self._schedule_retry(unit, epoch, mission, failure_reason, cont)
+						task = asyncio.create_task(
+							self._background_fixup(
+								unit, workspace, merge_result, cont,
+								mission, epoch, result, handoff,
+							),
+						)
+						self._active_fixups[unit.id] = task
+						task.add_done_callback(self._fixup_done_callback)
+						# Return early -- background task handles all post-fixup bookkeeping
+						return
 					else:
-						self._total_failed += 1
+						logger.warning(
+							"Unit %s failed merge: %s",
+							unit.id, merge_result.failure_output[-200:],
+						)
+						self._trace(
+							unit.id, unit.id, "merge_failed",
+							failure_stage=merge_result.failure_stage,
+						)
+						# Log merge_failed event
+						_fail_details = {
+							"failure_output": merge_result.failure_output[-2000:],
+							"failure_stage": merge_result.failure_stage,
+						}
 						self._log_unit_event(
 							mission_id=mission.id,
 							epoch_id=epoch.id,
 							work_unit_id=unit.id,
-							event_type=UNIT_EVENT_REJECTED,
-							details=merge_result.failure_output[-2000:],
-							stream_details={"failure_output": merge_result.failure_output[-2000:]},
+							event_type=UNIT_EVENT_MERGE_FAILED,
+							details=json.dumps(_fail_details),
+							stream_details=_fail_details,
 						)
-						if self._notifier:
-							await self._notifier.send_merge_conflict(
-								unit.title, merge_result.failure_output[-500:],
+
+						# Append merge failure to handoff concerns
+						if handoff:
+							handoff.concerns.append(
+								f"Merge failed: {merge_result.failure_output[-500:]}",
 							)
+
+						failure_reason = merge_result.failure_output[-1000:]
+
+						# Check if retryable
+						if unit.attempt < unit.max_attempts:
+							self._schedule_retry(unit, epoch, mission, failure_reason, cont)
+						else:
+							self._total_failed += 1
+							self._log_unit_event(
+								mission_id=mission.id,
+								epoch_id=epoch.id,
+								work_unit_id=unit.id,
+								event_type=UNIT_EVENT_REJECTED,
+								details=merge_result.failure_output[-2000:],
+								stream_details={"failure_output": merge_result.failure_output[-2000:]},
+							)
+							if self._notifier:
+								await self._notifier.send_merge_conflict(
+									unit.title, merge_result.failure_output[-500:],
+								)
 			except Exception as exc:
 				logger.error(
 					"merge_unit failed for %s: %s",
@@ -1303,8 +1341,20 @@ class ContinuousController:
 			logger.debug("Failed to record causal signal: %s", exc)
 
 		# Reconciler sweep: verify combined green state after new merges
-		# Skip when verify_before_merge is on -- each merge already verified
-		if merged and self._total_merged > self._last_reconcile_count and not cont.verify_before_merge:
+		# Runs when verify_before_merge is off (each merge not pre-verified),
+		# or periodically every reconcile_interval merges as an integrity check.
+		reconcile_interval = cont.reconcile_interval
+		periodic_reconcile = (
+			reconcile_interval > 0
+			and self._total_merged > 0
+			and self._total_merged % reconcile_interval == 0
+		)
+		should_reconcile = (
+			merged
+			and self._total_merged > self._last_reconcile_count
+			and (not cont.verify_before_merge or periodic_reconcile)
+		)
+		if should_reconcile:
 			try:
 				reconcile_ok, reconcile_output = await self._green_branch.run_reconciliation_check()
 				if not reconcile_ok:
@@ -1350,6 +1400,16 @@ class ContinuousController:
 				except Exception as exc:
 					logger.error("Failed to insert work unit: %s", exc, exc_info=True)
 					continue
+
+				# File-scope isolation: skip dispatch if write_scope conflicts
+				if unit.write_scope:
+					conflicts = self._file_locks.claim(unit.id, unit.write_scope)
+					if conflicts:
+						logger.warning(
+							"Unit %s write_scope conflicts on %s -- holding as pending",
+							unit.id[:12], conflicts,
+						)
+						continue
 
 				self._log_unit_event(
 					mission_id=mission.id,
@@ -1501,6 +1561,13 @@ class ContinuousController:
 			completions = await self._execute_batch(units, epoch, mission)
 
 			await self._process_batch(completions, mission, result)
+
+			# Flush any remaining batched pushes after processing completions
+			if self._green_branch:
+				try:
+					await self._green_branch.maybe_push(force=True)
+				except Exception as exc:
+					logger.warning("Batch push flush failed: %s", exc)
 
 			try:
 				update_mission_state(
@@ -2174,6 +2241,219 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 			if mf:
 				self._merged_files |= mf
 
+	def _schedule_batch_flush(self) -> None:
+		"""Schedule a timer to flush the merge queue after batch_merge_wait_seconds."""
+		if self._merge_queue_timer is not None:
+			return  # timer already running
+		wait = self.config.green_branch.batch_merge_wait_seconds
+		loop = asyncio.get_event_loop()
+		self._merge_queue_timer = loop.call_later(
+			wait, lambda: asyncio.ensure_future(self._flush_merge_batch()),
+		)
+
+	async def _flush_merge_batch(self) -> None:
+		"""Flush the pending merge queue via merge_batch (or merge_unit for single)."""
+		if self._merge_queue_timer is not None:
+			self._merge_queue_timer.cancel()
+			self._merge_queue_timer = None
+
+		entries = list(self._merge_queue)
+		self._merge_queue.clear()
+		if not entries or self._green_branch is None:
+			return
+
+		# Build the units list for merge_batch
+		units_for_batch: list[tuple[str, str, str]] = []
+		for entry in entries:
+			c = entry.completion
+			units_for_batch.append(
+				(c.workspace, c.unit.branch_name, c.unit.acceptance_criteria),
+			)
+
+		try:
+			results = await self._green_branch.merge_batch(units_for_batch)
+		except Exception as exc:
+			logger.error("merge_batch failed: %s", exc, exc_info=True)
+			# Mark all entries as failed
+			for entry in entries:
+				self._total_failed += 1
+				_exc_details = {
+					"failure_output": str(exc)[:500],
+					"failure_stage": "exception",
+				}
+				self._log_unit_event(
+					mission_id=entry.mission.id,
+					epoch_id=entry.completion.epoch.id,
+					work_unit_id=entry.completion.unit.id,
+					event_type=UNIT_EVENT_MERGE_FAILED,
+					details=json.dumps(_exc_details),
+					stream_details=_exc_details,
+				)
+			return
+
+		# Process each result with per-unit bookkeeping
+		for entry, merge_result in zip(entries, results):
+			c = entry.completion
+			unit = c.unit
+			epoch = c.epoch
+			mission = entry.mission
+			result = entry.result
+			workspace = c.workspace
+			handoff = c.handoff
+			cont = self.config.continuous
+
+			self._degradation.record_merge_attempt(conflict=not merge_result.merged)
+
+			if merge_result.merged:
+				self._trace(unit.id, unit.id, "merge_succeeded")
+				self._accept_merge(unit, merge_result, workspace, mission, epoch, result)
+			else:
+				fixup_stages = ("pre_merge_verification", "acceptance_criteria", "merge_conflict")
+				if (
+					merge_result.failure_stage in fixup_stages
+					and workspace
+					and unit.id not in self._active_fixups
+				):
+					logger.info(
+						"Launching background fixup for unit %s (stage=%s)",
+						unit.id[:12], merge_result.failure_stage,
+					)
+					task = asyncio.create_task(
+						self._background_fixup(
+							unit, workspace, merge_result, cont,
+							mission, epoch, result, handoff,
+						),
+					)
+					self._active_fixups[unit.id] = task
+					task.add_done_callback(self._fixup_done_callback)
+				else:
+					logger.warning(
+						"Unit %s failed merge: %s",
+						unit.id, merge_result.failure_output[-200:],
+					)
+					self._trace(
+						unit.id, unit.id, "merge_failed",
+						failure_stage=merge_result.failure_stage,
+					)
+					_fail_details = {
+						"failure_output": merge_result.failure_output[-2000:],
+						"failure_stage": merge_result.failure_stage,
+					}
+					self._log_unit_event(
+						mission_id=mission.id,
+						epoch_id=epoch.id,
+						work_unit_id=unit.id,
+						event_type=UNIT_EVENT_MERGE_FAILED,
+						details=json.dumps(_fail_details),
+						stream_details=_fail_details,
+					)
+					if handoff:
+						handoff.concerns.append(
+							f"Merge failed: {merge_result.failure_output[-500:]}",
+						)
+					failure_reason = merge_result.failure_output[-1000:]
+					if unit.attempt < unit.max_attempts:
+						self._schedule_retry(unit, epoch, mission, failure_reason, cont)
+					else:
+						self._total_failed += 1
+						self._log_unit_event(
+							mission_id=mission.id,
+							epoch_id=epoch.id,
+							work_unit_id=unit.id,
+							event_type=UNIT_EVENT_REJECTED,
+							details=merge_result.failure_output[-2000:],
+							stream_details={"failure_output": merge_result.failure_output[-2000:]},
+						)
+
+	def _fixup_done_callback(self, task: asyncio.Task[None]) -> None:
+		"""Remove completed fixup tasks from the active set and log exceptions."""
+		# Find and remove the unit_id for this task
+		unit_id = None
+		for uid, t in self._active_fixups.items():
+			if t is task:
+				unit_id = uid
+				break
+		if unit_id is not None:
+			del self._active_fixups[unit_id]
+		if task.cancelled():
+			return
+		exc = task.exception()
+		if exc is not None:
+			logger.error("Background fixup task failed: %s", exc, exc_info=exc)
+
+	async def _background_fixup(
+		self,
+		unit: WorkUnit,
+		workspace: str,
+		merge_result: UnitMergeResult,
+		cont: ContinuousConfig,
+		mission: Mission,
+		epoch: Epoch,
+		result: ContinuousMissionResult,
+		handoff: Handoff | None,
+	) -> None:
+		"""Run fixup in the background so completion processing is not blocked.
+
+		Calls _resume_worker_for_fixup and then handles all post-fixup
+		bookkeeping (accept merge on success, or log failure/retry on failure).
+		"""
+		try:
+			fixed = await self._resume_worker_for_fixup(
+				unit, workspace, merge_result, cont,
+			)
+			if fixed:
+				logger.info("Unit %s merged after background fixup", unit.id)
+				self._trace(unit.id, unit.id, "merge_succeeded")
+				self._accept_merge(
+					unit, fixed, workspace,
+					mission, epoch, result,
+				)
+			else:
+				logger.warning(
+					"Background fixup failed for unit %s: %s",
+					unit.id, merge_result.failure_output[-200:],
+				)
+				self._trace(
+					unit.id, unit.id, "merge_failed",
+					failure_stage=merge_result.failure_stage,
+				)
+				_fail_details = {
+					"failure_output": merge_result.failure_output[-2000:],
+					"failure_stage": merge_result.failure_stage,
+				}
+				self._log_unit_event(
+					mission_id=mission.id,
+					epoch_id=epoch.id,
+					work_unit_id=unit.id,
+					event_type=UNIT_EVENT_MERGE_FAILED,
+					details=json.dumps(_fail_details),
+					stream_details=_fail_details,
+				)
+				if handoff:
+					handoff.concerns.append(
+						f"Merge failed: {merge_result.failure_output[-500:]}",
+					)
+				failure_reason = merge_result.failure_output[-1000:]
+				if unit.attempt < unit.max_attempts:
+					self._schedule_retry(unit, epoch, mission, failure_reason, cont)
+				else:
+					self._total_failed += 1
+					self._log_unit_event(
+						mission_id=mission.id,
+						epoch_id=epoch.id,
+						work_unit_id=unit.id,
+						event_type=UNIT_EVENT_REJECTED,
+						details=merge_result.failure_output[-2000:],
+						stream_details={"failure_output": merge_result.failure_output[-2000:]},
+					)
+					if self._notifier:
+						await self._notifier.send_merge_conflict(
+							unit.title, merge_result.failure_output[-500:],
+						)
+		except Exception as exc:
+			logger.error("Background fixup crashed for unit %s: %s", unit.id, exc, exc_info=True)
+			self._total_failed += 1
+
 	async def _resume_worker_for_fixup(
 		self,
 		unit: WorkUnit,
@@ -2790,6 +3070,7 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 					output_tokens=unit.output_tokens,
 					cost_usd=unit.cost_usd,
 				)
+			self._file_locks.release(unit.id)
 			if workspace:
 				await self._backend.release_workspace(workspace)
 			self._in_flight_count = max(self._in_flight_count - 1, 0)

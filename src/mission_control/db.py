@@ -609,6 +609,7 @@ class Database:
 		self._migrate_degradation_level_column()
 		self._migrate_speculation_columns()
 		self._migrate_session_id_column()
+		self._migrate_write_scope_column()
 		self._migrate_chain_id_column()
 		self._migrate_knowledge_items()
 
@@ -655,6 +656,18 @@ class Database:
 				pass
 			else:
 				logger.warning("Migration failed for work_units.session_id: %s", exc)
+				raise
+
+	def _migrate_write_scope_column(self) -> None:
+		"""Add write_scope column to work_units (JSON-serialized list, idempotent)."""
+		try:
+			self.conn.execute("ALTER TABLE work_units ADD COLUMN write_scope TEXT DEFAULT ''")
+			logger.debug("Migration: added column work_units.write_scope")
+		except sqlite3.OperationalError as exc:
+			if "duplicate column name" in str(exc):
+				pass
+			else:
+				logger.warning("Migration failed for work_units.write_scope: %s", exc)
 				raise
 
 	def _migrate_specialist_column(self) -> None:
@@ -1117,9 +1130,9 @@ class Database:
 			 unit_type, timeout, verification_command,
 			 epoch_id, input_tokens, output_tokens, cost_usd, experiment_mode,
 			 acceptance_criteria, specialist,
-			 speculation_score, speculation_parent_id, session_id)
+			 speculation_score, speculation_parent_id, session_id, write_scope)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-			 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+			 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
 			(
 				unit.id, unit.plan_id, unit.title, unit.description,
 				unit.files_hint, unit.verification_hint, unit.priority,
@@ -1132,6 +1145,7 @@ class Database:
 				unit.epoch_id, unit.input_tokens, unit.output_tokens, unit.cost_usd,
 				int(unit.experiment_mode), unit.acceptance_criteria, unit.specialist,
 				unit.speculation_score, unit.speculation_parent_id, unit.session_id,
+				json.dumps(unit.write_scope) if unit.write_scope else "",
 			),
 		)
 		self.conn.commit()
@@ -1149,7 +1163,8 @@ class Database:
 			unit_type=?, timeout=?, verification_command=?,
 			epoch_id=?, input_tokens=?, output_tokens=?, cost_usd=?,
 			experiment_mode=?, acceptance_criteria=?, specialist=?,
-			speculation_score=?, speculation_parent_id=?, session_id=?
+			speculation_score=?, speculation_parent_id=?, session_id=?,
+			write_scope=?
 			WHERE id=?""",
 			(
 				unit.plan_id, unit.title, unit.description, unit.files_hint,
@@ -1163,6 +1178,7 @@ class Database:
 				unit.epoch_id, unit.input_tokens, unit.output_tokens, unit.cost_usd,
 				int(unit.experiment_mode), unit.acceptance_criteria, unit.specialist,
 				unit.speculation_score, unit.speculation_parent_id, unit.session_id,
+				json.dumps(unit.write_scope) if unit.write_scope else "",
 				unit.id,
 			),
 		)
@@ -1344,6 +1360,7 @@ class Database:
 			speculation_score=float(row["speculation_score"]) if "speculation_score" in keys else 0.0,
 			speculation_parent_id=row["speculation_parent_id"] if "speculation_parent_id" in keys else "",
 			session_id=row["session_id"] if "session_id" in keys else "",
+			write_scope=json.loads(row["write_scope"]) if "write_scope" in keys and row["write_scope"] else [],
 		)
 
 	def update_degradation_level(self, level: str) -> None:

@@ -2276,7 +2276,7 @@ class TestResumeWorkerForFixup:
 
 	@pytest.mark.asyncio
 	async def test_fixup_triggers_on_verification_failure(self, config: MissionConfig, db: Database) -> None:
-		"""Completion processor calls fixup when merge fails at pre_merge_verification."""
+		"""Completion processor launches background fixup when merge fails at pre_merge_verification."""
 		ctrl, db = self._make_ctrl(config, db)
 		result = ContinuousMissionResult(mission_id="m1")
 
@@ -2285,7 +2285,6 @@ class TestResumeWorkerForFixup:
 			failure_output="1 test failed",
 			failure_stage="pre_merge_verification",
 		)
-		success_result = UnitMergeResult(merged=True, verification_passed=True)
 
 		ctrl._green_branch.merge_unit = AsyncMock(return_value=fail_result)
 
@@ -2305,18 +2304,16 @@ class TestResumeWorkerForFixup:
 		completion = WorkerCompletion(
 			unit=unit, handoff=None, workspace="/tmp/ws", epoch=epoch,
 		)
-		with patch.object(
-			ctrl, "_resume_worker_for_fixup",
-			new_callable=AsyncMock,
-			return_value=success_result,
-		):
+		bg_fixup = AsyncMock()
+		with patch.object(ctrl, "_background_fixup", bg_fixup):
 			await ctrl._process_single_completion(completion, Mission(id="m1"), result)
 
-		assert ctrl._total_merged == 1
+		# Background task was created for this unit
+		assert "wu1" in ctrl._active_fixups
 
 	@pytest.mark.asyncio
 	async def test_fixup_not_triggered_on_fetch_failure(self, config: MissionConfig, db: Database) -> None:
-		"""Completion processor does NOT call fixup for non-fixable stages like fetch failure."""
+		"""Completion processor does NOT launch background fixup for non-fixable stages."""
 		ctrl, db = self._make_ctrl(config, db)
 		result = ContinuousMissionResult(mission_id="m1")
 
@@ -2343,18 +2340,15 @@ class TestResumeWorkerForFixup:
 		completion = WorkerCompletion(
 			unit=unit, handoff=None, workspace="/tmp/ws", epoch=epoch,
 		)
-		with patch.object(
-			ctrl, "_resume_worker_for_fixup",
-			new_callable=AsyncMock,
-		) as mock_fixup, patch.object(ctrl, "_retry_unit", new_callable=AsyncMock):
+		with patch.object(ctrl, "_retry_unit", new_callable=AsyncMock):
 			await ctrl._process_single_completion(completion, Mission(id="m1"), result)
 
-		mock_fixup.assert_not_awaited()
+		assert "wu1" not in ctrl._active_fixups
 		assert ctrl._total_merged == 0
 
 	@pytest.mark.asyncio
 	async def test_fixup_triggered_on_merge_conflict(self, config: MissionConfig, db: Database) -> None:
-		"""Completion processor calls fixup for merge_conflict so the worker can rebase."""
+		"""Completion processor launches background fixup for merge_conflict."""
 		ctrl, db = self._make_ctrl(config, db)
 		result = ContinuousMissionResult(mission_id="m1")
 
@@ -2363,7 +2357,6 @@ class TestResumeWorkerForFixup:
 			failure_output="Merge conflict: CONFLICT in utils.py",
 			failure_stage="merge_conflict",
 		)
-		success_result = UnitMergeResult(merged=True, verification_passed=True)
 
 		ctrl._green_branch.merge_unit = AsyncMock(return_value=fail_result)
 
@@ -2383,15 +2376,12 @@ class TestResumeWorkerForFixup:
 		completion = WorkerCompletion(
 			unit=unit, handoff=None, workspace="/tmp/ws", epoch=epoch,
 		)
-		with patch.object(
-			ctrl, "_resume_worker_for_fixup",
-			new_callable=AsyncMock,
-			return_value=success_result,
-		) as mock_fixup:
+		bg_fixup = AsyncMock()
+		with patch.object(ctrl, "_background_fixup", bg_fixup):
 			await ctrl._process_single_completion(completion, Mission(id="m1"), result)
 
-		mock_fixup.assert_awaited_once()
-		assert ctrl._total_merged == 1
+		# Background task was created for merge_conflict
+		assert "wu1" in ctrl._active_fixups
 
 	@pytest.mark.asyncio
 	async def test_merge_conflict_resume_prompt_contains_rebase(self, config: MissionConfig, db: Database) -> None:
@@ -2470,7 +2460,7 @@ class TestAcceptMerge:
 
 	@pytest.mark.asyncio
 	async def test_fixup_merge_goes_through_accept(self, config: MissionConfig, db: Database) -> None:
-		"""Fixup-merged units go through _accept_merge (not bypassing review)."""
+		"""Background fixup calls _accept_merge when fixup succeeds."""
 		ctrl, db = self._make_ctrl(config, db)
 		result = ContinuousMissionResult(mission_id="m1")
 
@@ -2480,6 +2470,46 @@ class TestAcceptMerge:
 			failure_stage="pre_merge_verification",
 		)
 		success_result = UnitMergeResult(merged=True, verification_passed=True)
+
+		epoch = Epoch(id="ep1", mission_id="m1", number=1)
+		db.insert_epoch(epoch)
+		plan = Plan(id="p1", objective="test")
+		db.insert_plan(plan)
+
+		unit = WorkUnit(
+			id="wu1", plan_id="p1", title="Task",
+			status="completed", commit_hash="abc123",
+			branch_name="mc/unit-wu1",
+			attempt=1, max_attempts=3,
+		)
+		db.insert_work_unit(unit)
+
+		with patch.object(
+			ctrl, "_resume_worker_for_fixup",
+			new_callable=AsyncMock,
+			return_value=success_result,
+		), patch.object(
+			ctrl, "_accept_merge",
+		) as mock_accept:
+			await ctrl._background_fixup(
+				unit, "/tmp/ws", fail_result, config.continuous,
+				Mission(id="m1"), epoch, result, None,
+			)
+
+		# Verify _accept_merge was called (fixup path uses unified acceptance)
+		mock_accept.assert_called_once()
+
+	@pytest.mark.asyncio
+	async def test_background_fixup_prevents_duplicates(self, config: MissionConfig, db: Database) -> None:
+		"""Completion processor skips fixup when one is already in progress for the same unit."""
+		ctrl, db = self._make_ctrl(config, db)
+		result = ContinuousMissionResult(mission_id="m1")
+
+		fail_result = UnitMergeResult(
+			merged=False,
+			failure_output="1 test failed",
+			failure_stage="pre_merge_verification",
+		)
 
 		ctrl._green_branch.merge_unit = AsyncMock(return_value=fail_result)
 
@@ -2496,20 +2526,60 @@ class TestAcceptMerge:
 		)
 		db.insert_work_unit(unit)
 
+		# Simulate an already-active fixup for this unit
+		ctrl._active_fixups["wu1"] = asyncio.create_task(asyncio.sleep(999))
+
 		completion = WorkerCompletion(
 			unit=unit, handoff=None, workspace="/tmp/ws", epoch=epoch,
 		)
+		bg_fixup = AsyncMock()
+		with patch.object(ctrl, "_background_fixup", bg_fixup):
+			await ctrl._process_single_completion(completion, Mission(id="m1"), result)
+
+		# Should NOT have launched a second fixup
+		bg_fixup.assert_not_awaited()
+
+		# Cleanup
+		ctrl._active_fixups["wu1"].cancel()
+		try:
+			await ctrl._active_fixups["wu1"]
+		except asyncio.CancelledError:
+			pass
+
+	@pytest.mark.asyncio
+	async def test_background_fixup_failure_schedules_retry(self, config: MissionConfig, db: Database) -> None:
+		"""Background fixup schedules retry when fixup returns None (failure)."""
+		ctrl, db = self._make_ctrl(config, db)
+		result = ContinuousMissionResult(mission_id="m1")
+
+		fail_result = UnitMergeResult(
+			merged=False,
+			failure_output="2 tests failed",
+			failure_stage="pre_merge_verification",
+		)
+
+		epoch = Epoch(id="ep1", mission_id="m1", number=1)
+
+		unit = WorkUnit(
+			id="wu1", plan_id="p1", title="Task",
+			status="completed", commit_hash="abc123",
+			branch_name="mc/unit-wu1",
+			attempt=1, max_attempts=3,
+		)
+
 		with patch.object(
 			ctrl, "_resume_worker_for_fixup",
 			new_callable=AsyncMock,
-			return_value=success_result,
+			return_value=None,
 		), patch.object(
-			ctrl, "_accept_merge",
-		) as mock_accept:
-			await ctrl._process_single_completion(completion, Mission(id="m1"), result)
+			ctrl, "_schedule_retry",
+		) as mock_retry:
+			await ctrl._background_fixup(
+				unit, "/tmp/ws", fail_result, config.continuous,
+				Mission(id="m1"), epoch, result, None,
+			)
 
-		# Verify _accept_merge was called (fixup path uses unified acceptance)
-		mock_accept.assert_called_once()
+		mock_retry.assert_called_once()
 
 
 class TestExtractKnowledge:
