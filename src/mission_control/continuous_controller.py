@@ -62,7 +62,7 @@ from mission_control.planner_context import build_planner_context, update_missio
 from mission_control.session import parse_mc_result
 from mission_control.token_parser import compute_token_cost, parse_stream_json
 from mission_control.tracing import MissionTracer
-from mission_control.worker import load_specialist_template, render_mission_worker_prompt
+from mission_control.worker import CONFLICT_RESOLUTION_PROMPT, load_specialist_template, render_mission_worker_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -1434,12 +1434,25 @@ class ContinuousController:
 				except Exception as exc:
 					logger.debug("Batch analysis failed: %s", exc)
 
+			# Build locked_files: already-merged + in-flight units
+			locked_files: dict[str, list[str]] = {}
+			for f in self._merged_files:
+				locked_files[f] = ["already merged"]
+			try:
+				running_units = self.db.get_running_units()
+				for ru in running_units:
+					for f in _parse_files_hint(ru.files_hint):
+						locked_files.setdefault(f, []).append(f"in-flight: {ru.title[:40]}")
+			except Exception as exc:
+				logger.debug("Failed to gather in-flight locked files: %s", exc)
+
 			try:
 				plan, units, epoch = await self._planner.get_next_units(
 					mission,
 					max_units=num_workers,
 					feedback_context=state,
 					knowledge_context=knowledge_context,
+					locked_files=locked_files or None,
 					batch_signals=batch_signals,
 				)
 			except Exception as exc:
@@ -2169,24 +2182,28 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 			is_merge_conflict = merge_result.failure_stage == "merge_conflict"
 			green_branch = self.config.green_branch.green_branch
 
+			# Sync latest mc/green into the worker's workspace so it can
+			# rebase against already-merged work during conflict resolution.
+			if is_merge_conflict and self._green_branch:
+				green_ws = self._green_branch.workspace
+				if green_ws:
+					sync_proc = await asyncio.create_subprocess_exec(
+						"git", "fetch", green_ws,
+						f"+{green_branch}:{green_branch}",
+						cwd=workspace,
+						stdout=asyncio.subprocess.PIPE,
+						stderr=asyncio.subprocess.STDOUT,
+					)
+					await sync_proc.communicate()
+
 			if unit.session_id:
 				# Resume: the session already has the full task context,
 				# so we only need to describe the failure.
 				if is_merge_conflict:
-					prompt = (
-						f"Your changes could not be merged into {green_branch} due to "
-						f"conflicts with changes merged by other workers.\n\n"
-						f"## Conflict Output\n{merge_result.failure_output}\n\n"
-						f"## Instructions\n"
-						f"1. Fetch the latest {green_branch}: "
-						f"`git fetch origin {green_branch}`\n"
-						f"2. Rebase your branch onto it: "
-						f"`git rebase origin/{green_branch}`\n"
-						f"3. Resolve any conflicts, keeping the intent of your changes "
-						f"while integrating the other workers' updates.\n"
-						f"4. After resolving, run the verification command to confirm "
-						f"nothing is broken: `{self.config.target.verification.command}`\n"
-						f"5. Commit your resolved changes."
+					prompt = CONFLICT_RESOLUTION_PROMPT.format(
+						green_branch=green_branch,
+						failure_output=merge_result.failure_output,
+						verification_command=self.config.target.verification.command,
 					)
 				else:
 					prompt = (
@@ -2207,20 +2224,12 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 				# Cold fixup: no session to resume, include full task context.
 				if is_merge_conflict:
 					prompt = (
-						f"Your previous work on this task has merge conflicts with "
-						f"changes merged by other workers.\n\n"
 						f"## Original Task\n{unit.title}\n{unit.description}\n\n"
-						f"## Conflict Output\n{merge_result.failure_output}\n\n"
-						f"## Instructions\n"
-						f"1. Fetch the latest {green_branch}: "
-						f"`git fetch origin {green_branch}`\n"
-						f"2. Rebase your branch onto it: "
-						f"`git rebase origin/{green_branch}`\n"
-						f"3. Resolve any conflicts, keeping the intent of your changes "
-						f"while integrating the other workers' updates.\n"
-						f"4. After resolving, run the verification command to confirm "
-						f"nothing is broken: `{self.config.target.verification.command}`\n"
-						f"5. Commit your resolved changes."
+						+ CONFLICT_RESOLUTION_PROMPT.format(
+							green_branch=green_branch,
+							failure_output=merge_result.failure_output,
+							verification_command=self.config.target.verification.command,
+						)
 					)
 				else:
 					prompt = (

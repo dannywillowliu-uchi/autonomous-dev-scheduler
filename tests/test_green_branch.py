@@ -173,9 +173,10 @@ class TestMergeUnit:
 
 		await mgr.merge_unit("/tmp/worker", "feat/branch")
 
+		# Rebase-first flow: merge target is the rebased branch, not the remote
 		merge_calls = [c for c in git_calls if c[0] == "merge" and "--no-ff" in c]
 		assert len(merge_calls) == 1
-		assert "worker-feat/branch/feat/branch" in merge_calls[0][2]
+		assert "mc/rebase-feat/branch" in merge_calls[0][2]
 
 	async def test_auto_push(self) -> None:
 		mgr = _manager()
@@ -522,7 +523,8 @@ class TestParallelMergeConflicts:
 		)
 
 		assert len(execution_order) == 3
-		assert set(execution_order) == {"unit-a", "unit-b", "unit-c"}
+		# Rebase-first flow: merge target is mc/rebase-{branch}, not the branch itself
+		assert set(execution_order) == {"rebase-unit-a", "rebase-unit-b", "rebase-unit-c"}
 
 
 class TestRunDeploy:
@@ -2129,8 +2131,8 @@ class TestLockedFilesInPlannerPrompt:
 	"""Locked files section is injected into the planner prompt."""
 
 	@pytest.mark.asyncio
-	async def test_locked_files_not_forwarded_to_planner(self) -> None:
-		"""ContinuousPlanner no longer forwards locked_files (flat planner uses DB state)."""
+	async def test_locked_files_forwarded_to_planner(self) -> None:
+		"""ContinuousPlanner forwards locked_files to RecursivePlanner.plan_round()."""
 		config = _conflict_config()
 		db = Database(":memory:")
 		planner = ContinuousPlanner(config, db)
@@ -2149,7 +2151,7 @@ class TestLockedFilesInPlannerPrompt:
 
 		await planner.get_next_units(mission, locked_files=locked)
 
-		assert "locked_files" not in captured_kwargs
+		assert captured_kwargs.get("locked_files") == locked
 
 	@pytest.mark.asyncio
 	async def test_locked_section_in_prompt(self) -> None:
