@@ -314,6 +314,15 @@ class TracingConfig:
 
 
 @dataclass
+class TraceLogConfig:
+	"""Structured JSON-lines trace logging settings."""
+
+	enabled: bool = False
+	path: str = "trace.jsonl"
+	max_file_size: int = 50_000_000
+
+
+@dataclass
 class HITLGateConfig:
 	"""Configuration for a single HITL approval gate."""
 
@@ -479,6 +488,7 @@ class MissionConfig:
 	deliberation: DeliberationConfig = field(default_factory=DeliberationConfig)
 	security: SecurityConfig = field(default_factory=SecurityConfig)
 	tracing: TracingConfig = field(default_factory=TracingConfig)
+	trace_log: TraceLogConfig = field(default_factory=TraceLogConfig)
 	hitl: HITLConfig = field(default_factory=HITLConfig)
 	zfc: ZFCConfig = field(default_factory=ZFCConfig)
 	degradation: DegradationConfig = field(default_factory=DegradationConfig)
@@ -813,6 +823,17 @@ def _build_tracing(data: dict[str, Any]) -> TracingConfig:
 		tc.exporter = str(data["exporter"])
 	if "otlp_endpoint" in data:
 		tc.otlp_endpoint = str(data["otlp_endpoint"])
+	return tc
+
+
+def _build_trace_log(data: dict[str, Any]) -> TraceLogConfig:
+	tc = TraceLogConfig()
+	if "enabled" in data:
+		tc.enabled = bool(data["enabled"])
+	if "path" in data:
+		tc.path = str(data["path"])
+	if "max_file_size" in data:
+		tc.max_file_size = int(data["max_file_size"])
 	return tc
 
 
@@ -1202,6 +1223,8 @@ def load_config(path: str | Path) -> MissionConfig:
 		mc.security = _build_security(data["security"])
 	if "tracing" in data:
 		mc.tracing = _build_tracing(data["tracing"])
+	if "trace_log" in data:
+		mc.trace_log = _build_trace_log(data["trace_log"])
 	if "hitl" in data:
 		mc.hitl = _build_hitl(data["hitl"])
 	if "zfc" in data:

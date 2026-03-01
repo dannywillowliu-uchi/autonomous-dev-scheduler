@@ -12,14 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
-@dataclass
-class TraceLogConfig:
-	"""Configuration for trace logging."""
-
-	enabled: bool = False
-	path: str = "trace.jsonl"
-	max_file_size: int = 50_000_000
+from mission_control.config import TraceLogConfig
 
 
 @dataclass
@@ -65,6 +58,10 @@ class TraceLogger:
 			self._maybe_rotate(path)
 			with open(path, "a") as f:
 				f.write(json.dumps(event.to_dict()) + "\n")
+
+	def close(self) -> None:
+		"""No-op: file handles are not held open between writes."""
+		pass
 
 	def _maybe_rotate(self, path: Path) -> None:
 		if not path.exists():

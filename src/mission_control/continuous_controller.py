@@ -11,6 +11,7 @@ import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +62,7 @@ from mission_control.overlap import _parse_files_hint, topological_layers
 from mission_control.planner_context import build_planner_context, update_mission_state
 from mission_control.session import parse_mc_result
 from mission_control.token_parser import compute_token_cost, parse_stream_json
+from mission_control.trace_log import TraceEvent, TraceLogger
 from mission_control.tracing import MissionTracer
 from mission_control.worker import CONFLICT_RESOLUTION_PROMPT, load_specialist_template, render_mission_worker_prompt
 
@@ -197,6 +199,7 @@ class ContinuousController:
 		)
 		self._causal_attributor: CausalAttributor = CausalAttributor(db)
 		self._tracer: MissionTracer = MissionTracer(config.tracing)
+		self._trace_logger: TraceLogger = TraceLogger(config.trace_log)
 		self._a2a_server: Any = None
 		try:
 			if config.a2a.enabled is True:
@@ -252,6 +255,16 @@ class ContinuousController:
 	def _record_db_success(self) -> None:
 		"""Record a DB success via degradation manager."""
 		self._degradation.record_db_success()
+
+	def _trace(self, worker_id: str, unit_id: str, event_type: str, **details: Any) -> None:
+		"""Emit a structured trace event to the trace logger."""
+		self._trace_logger.write(TraceEvent(
+			timestamp=datetime.now(timezone.utc).isoformat(),
+			worker_id=worker_id,
+			unit_id=unit_id,
+			event_type=event_type,
+			details=details,
+		))
 
 	def _on_degradation_transition(self, transition: DegradationTransition) -> None:
 		"""Emit event and persist degradation level on transition."""
@@ -605,6 +618,8 @@ class ContinuousController:
 					self._mission_span_ctx.__exit__(None, None, None)
 				except Exception:
 					pass
+
+			self._trace_logger.close()
 
 		return result
 
@@ -1078,6 +1093,7 @@ class ContinuousController:
 		merged = False
 		if unit.status == "completed" and unit.commit_hash:
 			try:
+				self._trace(unit.id, unit.id, "merge_attempted")
 				merge_result = await self._green_branch.merge_unit(
 					workspace, unit.branch_name,
 					acceptance_criteria=unit.acceptance_criteria,
@@ -1104,6 +1120,7 @@ class ContinuousController:
 
 				# Post-merge bookkeeping (review, counters, sync)
 				if merge_result.merged:
+					self._trace(unit.id, unit.id, "merge_succeeded")
 					self._accept_merge(
 						unit, merge_result, workspace,
 						mission, epoch, result,
@@ -1111,6 +1128,10 @@ class ContinuousController:
 					merged = True
 
 				if not merged:
+					self._trace(
+						unit.id, unit.id, "merge_failed",
+						failure_stage=merge_result.failure_stage,
+					)
 					# Log merge_failed event
 					_fail_details = {
 						"failure_output": merge_result.failure_output[-2000:],
@@ -2170,6 +2191,7 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 		Returns a successful UnitMergeResult if fixup worked, None otherwise.
 		"""
 		for attempt in range(max_fixup_attempts):
+			self._trace(unit.id, unit.id, "fixup_started", attempt=attempt + 1)
 			logger.info(
 				"Worker fixup attempt %d/%d for unit %s in %s (resume=%s)",
 				attempt + 1, max_fixup_attempts, unit.id[:12], workspace,
@@ -2282,6 +2304,7 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 				acceptance_criteria=unit.acceptance_criteria,
 			)
 			if new_result.merged:
+				self._trace(unit.id, unit.id, "fixup_succeeded", attempt=attempt + 1)
 				return new_result
 
 			# Update failure info for next attempt
@@ -2291,6 +2314,7 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 				attempt + 1, unit.id[:12], new_result.failure_output[-200:],
 			)
 
+		self._trace(unit.id, unit.id, "fixup_failed", attempts=max_fixup_attempts)
 		return None
 
 	def _schedule_retry(
@@ -2584,6 +2608,7 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 				unit.id, workspace, cmd,
 				timeout=effective_timeout,
 			)
+			self._trace(unit.id, unit.id, "worker_spawned", prompt_length=len(prompt))
 
 			# Track worker subprocess lifecycle
 			worker = Worker(
@@ -2598,6 +2623,7 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 				await self.db.locked_call("insert_worker", worker)
 			except Exception:
 				logger.debug("Worker record insert failed for %s", unit.id)
+			self._trace(unit.id, unit.id, "session_started", pid=handle.pid, workspace=workspace)
 			if self._event_stream:
 				self._event_stream.emit(
 					"worker_started",
@@ -2717,6 +2743,13 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 						self._record_db_success()
 					except Exception:
 						self._record_db_error()
+
+			self._trace(
+				unit.id, unit.id, "session_ended",
+				exit_code=unit.status,
+				input_tokens=unit.input_tokens,
+				output_tokens=unit.output_tokens,
+			)
 
 			completion = WorkerCompletion(
 				unit=unit, handoff=handoff, workspace=workspace, epoch=epoch,
