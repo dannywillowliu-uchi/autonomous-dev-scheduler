@@ -132,6 +132,7 @@ CREATE TABLE IF NOT EXISTS work_units (
 );
 
 CREATE INDEX IF NOT EXISTS idx_work_units_status ON work_units(status, priority);
+CREATE INDEX IF NOT EXISTS idx_work_units_worker ON work_units(worker_id);
 
 CREATE TABLE IF NOT EXISTS workers (
 	id TEXT PRIMARY KEY,
@@ -1440,6 +1441,52 @@ class Database:
 	def get_all_workers(self) -> list[Worker]:
 		rows = self.conn.execute("SELECT * FROM workers ORDER BY started_at").fetchall()
 		return [self._row_to_worker(r) for r in rows]
+
+	def get_units_for_worker(self, worker_id: str) -> list[WorkUnit]:
+		"""Get all work units assigned to a specific worker."""
+		rows = self.conn.execute(
+			"SELECT * FROM work_units WHERE worker_id=? ORDER BY started_at ASC NULLS LAST",
+			(worker_id,),
+		).fetchall()
+		return [self._row_to_work_unit(r) for r in rows]
+
+	def get_unit_events_for_worker(self, worker_id: str, limit: int = 500) -> list[UnitEvent]:
+		"""Get all unit events for a worker's units via JOIN."""
+		rows = self.conn.execute(
+			"""SELECT ue.* FROM unit_events ue
+			JOIN work_units wu ON ue.work_unit_id = wu.id
+			WHERE wu.worker_id = ?
+			ORDER BY ue.timestamp ASC
+			LIMIT ?""",
+			(worker_id, limit),
+		).fetchall()
+		return [self._row_to_unit_event(r) for r in rows]
+
+	def get_worker_stats(self, worker_id: str) -> dict[str, Any]:
+		"""Aggregate stats for a worker across all their units."""
+		row = self.conn.execute(
+			"""SELECT
+				COUNT(*) AS units_total,
+				SUM(CASE WHEN status IN ('completed', 'merged') THEN 1 ELSE 0 END) AS units_completed,
+				SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS units_failed,
+				COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
+				COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
+				COALESCE(SUM(cost_usd), 0.0) AS total_cost_usd,
+				MIN(started_at) AS first_unit_at,
+				MAX(COALESCE(finished_at, started_at)) AS last_unit_at
+			FROM work_units WHERE worker_id = ?""",
+			(worker_id,),
+		).fetchone()
+		return {
+			"units_total": row["units_total"] or 0,
+			"units_completed": row["units_completed"] or 0,
+			"units_failed": row["units_failed"] or 0,
+			"total_input_tokens": row["total_input_tokens"] or 0,
+			"total_output_tokens": row["total_output_tokens"] or 0,
+			"total_cost_usd": row["total_cost_usd"] or 0.0,
+			"first_unit_at": row["first_unit_at"],
+			"last_unit_at": row["last_unit_at"],
+		}
 
 	@staticmethod
 	def _row_to_worker(row: sqlite3.Row) -> Worker:
