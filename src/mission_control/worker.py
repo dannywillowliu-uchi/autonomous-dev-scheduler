@@ -46,6 +46,28 @@ def load_specialist_template(specialist: str) -> str:
 class _SpawnError(Exception):
 	"""Raised by _spawn_and_wait on timeout."""
 
+
+CONFLICT_RESOLUTION_PROMPT = """\
+Your changes conflict with work already merged into {green_branch}.
+
+## Conflict Details
+{failure_output}
+
+## Instructions
+1. Run: git rebase {green_branch}
+2. For each conflicting file, git will pause and show the conflict.
+   - Read the EXISTING version (from {green_branch}) carefully -- another worker created it.
+   - Read YOUR version -- this is what you were trying to create.
+   - Write a MERGED version that preserves both workers' intent. Import from existing
+     code rather than duplicating it.
+3. After resolving each file: git add <file>
+4. Continue: git rebase --continue
+5. If the rebase has multiple conflicting commits, repeat steps 2-4 for each.
+6. Run verification: {verification_command}
+7. If verification passes, you are done. If not, fix the issues and commit.
+"""
+
+
 WORKER_PROMPT_TEMPLATE = """\
 You are a parallel worker agent for {target_name} at {workspace_path}.
 

@@ -41,6 +41,7 @@ class ContinuousPlanner:
 		max_units: int = 3,
 		feedback_context: str = "",
 		knowledge_context: str = "",
+		locked_files: dict[str, list[str]] | None = None,
 		**kwargs,
 	) -> tuple[Plan, list[WorkUnit], Epoch]:
 		"""Plan the next batch of units using the flat impact prompt."""
@@ -66,6 +67,7 @@ class ContinuousPlanner:
 			objective=mission.objective,
 			round_number=self._epoch_count,
 			feedback_context=enriched_context,
+			locked_files=locked_files,
 		)
 
 		# Resolve file overlaps
