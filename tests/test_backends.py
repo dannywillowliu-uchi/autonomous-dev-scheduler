@@ -81,9 +81,30 @@ class TestLocalBackend:
 				pool_dir="/pool",
 				max_clones=8,
 				base_branch="develop",
+				green_branch=None,
 			)
 		assert b._processes == {}
 		assert b._stdout_bufs == {}
+
+	def test_init_passes_green_branch_from_config(self) -> None:
+		"""Constructor passes green_branch from config to WorkspacePool."""
+		cfg = MissionConfig()
+		cfg.green_branch.green_branch = "mc/green"
+		with patch("mission_control.backends.local.WorkspacePool") as mock_pool_cls:
+			LocalBackend(
+				source_repo="/repo",
+				pool_dir="/pool",
+				max_clones=5,
+				base_branch="main",
+				config=cfg,
+			)
+			mock_pool_cls.assert_called_once_with(
+				source_repo="/repo",
+				pool_dir="/pool",
+				max_clones=5,
+				base_branch="main",
+				green_branch="mc/green",
+			)
 
 	@patch("mission_control.backends.local.asyncio.create_subprocess_exec")
 	async def test_provision_workspace(
@@ -102,8 +123,8 @@ class TestLocalBackend:
 
 		assert result == "/pool/clone-1"
 		backend._pool.acquire.assert_awaited_once()
-		# Three subprocess calls: fetch, checkout base_branch, checkout -B feature branch
-		assert mock_exec.await_count == 3
+		# Four subprocess calls: fetch, checkout base_branch, checkout -B feature branch, pushUrl config
+		assert mock_exec.await_count == 4
 		fetch_call = mock_exec.call_args_list[0]
 		assert fetch_call[0] == ("git", "fetch", "origin")
 		assert fetch_call[1]["cwd"] == "/pool/clone-1"
@@ -113,6 +134,9 @@ class TestLocalBackend:
 		branch_call = mock_exec.call_args_list[2]
 		assert branch_call[0] == ("git", "checkout", "-B", "mc/unit-w1")
 		assert branch_call[1]["cwd"] == "/pool/clone-1"
+		pushurl_call = mock_exec.call_args_list[3]
+		assert pushurl_call[0] == ("git", "config", "remote.origin.pushUrl", "no_push_allowed")
+		assert pushurl_call[1]["cwd"] == "/pool/clone-1"
 
 	@patch("mission_control.backends.local.asyncio.create_subprocess_exec")
 	async def test_provision_creates_marker_file(

@@ -101,6 +101,11 @@ Run: {verification_command}
 4. If verification fails, diagnose the issue and fix it. Stop and report if truly stuck.
 - Do NOT run `pip install`, `uv pip install`, or modify the Python environment -- it is pre-configured via symlink
 
+## Git Rules
+- You are on branch `{branch_name}`. Commit ONLY to this branch.
+- Do NOT run `git push` under any circumstances. The orchestrator handles pushing.
+- Do NOT switch branches. Stay on `{branch_name}`.
+
 ## Research & MCP Tools
 - Use WebSearch to find latest best practices, libraries, and API docs before implementing unfamiliar patterns
 - Use WebFetch to read specific documentation pages found via search
@@ -378,6 +383,11 @@ Use these when you need to understand unfamiliar APIs, find implementation examp
 - Do NOT run `pip install`, `uv pip install`, or modify the Python environment -- it is pre-configured via symlink
 - Commit when done or explain why blocked
 
+## Git Rules
+- You are on branch `{branch_name}`. Commit ONLY to this branch.
+- Do NOT run `git push` under any circumstances. The orchestrator handles pushing.
+- Do NOT switch branches. Stay on `{branch_name}`.
+
 ## Verification
 Run: {verification_command}
 
@@ -516,6 +526,7 @@ def render_mission_worker_prompt(
 		mission_state_block=ms_block,
 		overlap_warnings_block=ow_block,
 		acceptance_criteria_block=ac_block,
+		branch_name=branch_name,
 	)
 	if specialist_template:
 		specialist_section = f"## Specialist Role\n{specialist_template}\n\n"
@@ -726,10 +737,13 @@ class WorkerAgent:
 			# Provision workspace via backend
 			workspace_path = self.worker.workspace_path
 			if not workspace_path:
+				gb_cfg = getattr(self.config, "green_branch", None)
+				gb_name = getattr(gb_cfg, "green_branch", None) if gb_cfg else None
+				base = gb_name or self.config.target.branch
 				workspace_path = await self.backend.provision_workspace(
 					worker_id=self.worker.id,
 					source_repo=str(self.config.target.resolved_path),
-					base_branch=self.config.target.branch,
+					base_branch=base,
 				)
 				self.worker.workspace_path = workspace_path
 				await self.db.locked_call("update_worker", self.worker)

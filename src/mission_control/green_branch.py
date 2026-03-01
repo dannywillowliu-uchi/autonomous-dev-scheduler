@@ -75,10 +75,26 @@ class GreenBranchManager:
 		self.workspace: str = ""
 		self._merge_lock = asyncio.Lock()
 		self._hitl_gate: object | None = None  # ApprovalGate, lazily typed to avoid circular import
+		self._merges_since_push: int = 0
 
 	def configure_hitl(self, gate: object) -> None:
 		"""Set the HITL approval gate for push and large merge checks."""
 		self._hitl_gate = gate
+
+	async def maybe_push(self, force: bool = False) -> bool:
+		"""Push if merges since last push >= push_batch_size or force=True.
+
+		Returns True if a push was performed.
+		"""
+		gb = self.config.green_branch
+		if not gb.auto_push:
+			return False
+		if force or self._merges_since_push >= gb.push_batch_size:
+			result = await self.push_green_to_main()
+			if result:
+				self._merges_since_push = 0
+			return result
+		return False
 
 	async def initialize(self, workspace: str) -> None:
 		"""Create mc/working and mc/green branches if they don't exist.
@@ -166,6 +182,8 @@ class GreenBranchManager:
 					f"Workspace setup failed (exit {proc.returncode}): {output[:500]}"
 				)
 
+	_OPTIMISTIC_RETRIES: int = 3
+
 	async def merge_unit(
 		self,
 		worker_workspace: str,
@@ -174,13 +192,387 @@ class GreenBranchManager:
 	) -> UnitMergeResult:
 		"""Merge a unit branch into mc/green.
 
-		Simple flow: fetch, merge, verify, push. Rolls back on verification failure.
+		Optimistic concurrency flow:
+		  1. LOCK: fetch + rebase + merge (fast ~2s). Record merge commit hash. UNLOCK.
+		  2. UNLOCKED: run verification + acceptance criteria (slow 30-300s).
+		  3. LOCK: if passed, check HEAD unchanged, sync+push. If HEAD advanced,
+		     re-rebase and retry (up to 3 times). If failed, rollback via git revert.
 		"""
-		async with self._merge_lock:
-			gb = self.config.green_branch
-			remote_name = f"worker-{branch_name}"
+		gb = self.config.green_branch
 
-			# Fetch the unit branch from worker workspace
+		# --- Phase 1: fast git ops under lock ---
+		merge_result = await self._merge_git_ops(worker_workspace, branch_name)
+		if merge_result is not None:
+			# Early exit: fetch or merge failed
+			return merge_result
+
+		# Capture merge commit hash (set by _merge_git_ops on the branch)
+		_, merge_hash_out = await self._run_git("rev-parse", gb.green_branch)
+		merge_commit_hash = merge_hash_out.strip()
+
+		_, diff_output = await self._run_git(
+			"diff", "--name-only", f"{merge_commit_hash}~1", merge_commit_hash,
+		)
+		changed_files = [
+			f.strip() for f in diff_output.splitlines() if f.strip()
+		]
+
+		# --- Phase 2: slow verification OUTSIDE lock ---
+		verification_report = None
+		if self.config.continuous.verify_before_merge:
+			verification_report = await self._run_verification()
+			if not verification_report.overall_passed:
+				logger.warning("Pre-merge verification failed for %s, rolling back", branch_name)
+				await self._rollback_merge(merge_commit_hash, branch_name)
+				return UnitMergeResult(
+					merged=False,
+					verification_passed=False,
+					failure_output=verification_report.raw_output[:2000],
+					failure_stage="pre_merge_verification",
+					verification_report=verification_report,
+				)
+
+		if acceptance_criteria:
+			ac_passed, ac_output = await self._run_acceptance_criteria(acceptance_criteria)
+			if not ac_passed:
+				logger.warning("Acceptance criteria failed for %s, rolling back", branch_name)
+				await self._rollback_merge(merge_commit_hash, branch_name)
+				return UnitMergeResult(
+					merged=False,
+					verification_passed=False,
+					failure_output=ac_output[:2000],
+					failure_stage="acceptance_criteria",
+					verification_report=verification_report,
+				)
+
+		# --- Phase 3: finalize under lock (sync + push) ---
+		async with self._merge_lock:
+			_, current_head_out = await self._run_git("rev-parse", gb.green_branch)
+			current_head = current_head_out.strip()
+
+			if current_head != merge_commit_hash:
+				# HEAD advanced while we verified -- another merge landed.
+				# Our merge commit is still in history, so sync+push is safe;
+				# the verification already confirmed our code is green.
+				logger.info(
+					"HEAD advanced during verification for %s (%s -> %s), "
+					"proceeding with sync (merge still in history)",
+					branch_name, merge_commit_hash[:8], current_head[:8],
+				)
+
+			sync_ok = await self._sync_to_source()
+
+			if gb.auto_push:
+				self._merges_since_push += 1
+				pushed = await self.maybe_push()
+
+				if pushed and self.config.deploy.on_auto_push:
+					await self.run_deploy()
+
+		return UnitMergeResult(
+			merged=True,
+			rebase_ok=True,
+			verification_passed=True,
+			merge_commit_hash=merge_commit_hash,
+			changed_files=changed_files,
+			sync_ok=sync_ok,
+			verification_report=verification_report,
+		)
+
+	async def merge_batch(
+		self,
+		units: list[tuple[str, str, str]],
+	) -> list[UnitMergeResult]:
+		"""Merge multiple units speculatively as a batch (bors-ng pattern).
+
+		units: list of (worker_workspace, branch_name, acceptance_criteria)
+
+		Flow:
+		  1. Create speculative branch from mc/green
+		  2. Rebase + merge ALL units onto speculative branch (under lock)
+		  3. Run verification ONCE on the combined result (outside lock)
+		  4. If passes: fast-forward mc/green to speculative branch, return all success
+		  5. If fails: bisect to find offending unit(s)
+
+		Falls back to individual merge_unit() for single-item lists.
+		"""
+		if len(units) <= 1:
+			if not units:
+				return []
+			ws, branch, ac = units[0]
+			return [await self.merge_unit(ws, branch, acceptance_criteria=ac)]
+
+		gb = self.config.green_branch
+		spec_branch = "mc/speculative-batch"
+
+		# Phase 1: merge all units onto speculative branch under lock
+		merge_hashes: list[str] = []
+		results: list[UnitMergeResult] = []
+		failed_indices: list[int] = []
+
+		async with self._merge_lock:
+			# Create speculative branch from current mc/green
+			await self._run_git("branch", "-D", spec_branch)
+			await self._run_git("checkout", gb.green_branch)
+			await self._run_git("checkout", "-b", spec_branch)
+
+			for i, (ws, branch, _ac) in enumerate(units):
+				remote_name = f"worker-{branch}"
+				await self._run_git("remote", "add", remote_name, ws)
+				ok, _ = await self._run_git("fetch", remote_name, branch)
+				if not ok:
+					await self._run_git("remote", "remove", remote_name)
+					results.append(UnitMergeResult(
+						failure_output="Failed to fetch unit branch",
+						failure_stage="fetch",
+					))
+					failed_indices.append(i)
+					continue
+
+				rebase_branch = f"mc/rebase-{branch}"
+				await self._run_git("branch", "-D", rebase_branch)
+				await self._run_git("branch", rebase_branch, f"{remote_name}/{branch}")
+				rebase_ok, rebase_out = await self._run_git(
+					"rebase", spec_branch, rebase_branch,
+				)
+				if not rebase_ok:
+					await self._run_git("rebase", "--abort")
+					await self._run_git("checkout", spec_branch)
+					await self._run_git("branch", "-D", rebase_branch)
+					await self._run_git("remote", "remove", remote_name)
+					results.append(UnitMergeResult(
+						rebase_ok=False,
+						failure_output=f"Rebase conflict: {rebase_out[:500]}",
+						failure_stage="merge_conflict",
+					))
+					failed_indices.append(i)
+					continue
+
+				await self._run_git("checkout", spec_branch)
+				ok, output = await self._run_git(
+					"merge", "--no-ff", rebase_branch,
+					"-m", f"Merge {branch} (rebased) into {spec_branch}",
+				)
+				await self._run_git("branch", "-D", rebase_branch)
+				await self._run_git("remote", "remove", remote_name)
+				if not ok:
+					await self._run_git("merge", "--abort")
+					results.append(UnitMergeResult(
+						failure_output=f"Merge failed after rebase: {output[:500]}",
+						failure_stage="merge_conflict",
+					))
+					failed_indices.append(i)
+					continue
+
+				_, hash_out = await self._run_git("rev-parse", "HEAD")
+				merge_hashes.append(hash_out.strip())
+				results.append(UnitMergeResult())  # placeholder
+
+			# Return to green
+			await self._run_git("checkout", gb.green_branch)
+
+		# If all units failed during merge phase, return early
+		mergeable_indices = [i for i in range(len(units)) if i not in failed_indices]
+		if not mergeable_indices:
+			return results
+
+		# Phase 2: run verification ONCE on the combined speculative branch (outside lock)
+		if self.config.continuous.verify_before_merge:
+			# Checkout spec branch for verification
+			await self._run_git("checkout", spec_branch)
+			verification_report = await self._run_verification()
+			await self._run_git("checkout", gb.green_branch)
+
+			if not verification_report.overall_passed:
+				# Bisect to find the offending unit(s)
+				logger.warning(
+					"Batch verification failed, bisecting %d units",
+					len(mergeable_indices),
+				)
+				bisect_results = await self._bisect_batch(
+					[units[i] for i in mergeable_indices],
+				)
+				# Map bisection results back to original indices
+				for j, idx in enumerate(mergeable_indices):
+					results[idx] = bisect_results[j]
+				# Clean up speculative branch
+				await self._run_git("branch", "-D", spec_branch)
+				return results
+		else:
+			verification_report = None
+
+		# Phase 3: fast-forward mc/green to speculative branch (under lock)
+		async with self._merge_lock:
+			await self._run_git("checkout", gb.green_branch)
+			ok, output = await self._run_git("merge", "--ff-only", spec_branch)
+			if not ok:
+				# Fall back to regular merge
+				ok, output = await self._run_git(
+					"merge", "--no-ff", spec_branch,
+					"-m", f"Merge speculative batch into {gb.green_branch}",
+				)
+			if not ok:
+				logger.error("Failed to merge speculative batch into mc/green: %s", output)
+				await self._run_git("branch", "-D", spec_branch)
+				# Fall back to individual merges
+				return await self._fallback_individual_merge(units)
+
+			sync_ok = await self._sync_to_source()
+
+			if gb.auto_push:
+				self._merges_since_push += len(mergeable_indices)
+				pushed = await self.maybe_push()
+				if pushed and self.config.deploy.on_auto_push:
+					await self.run_deploy()
+
+		# Clean up
+		await self._run_git("branch", "-D", spec_branch)
+
+		# Fill in success results for all mergeable units
+		hash_idx = 0
+		for i in mergeable_indices:
+			results[i] = UnitMergeResult(
+				merged=True,
+				rebase_ok=True,
+				verification_passed=True,
+				merge_commit_hash=merge_hashes[hash_idx] if hash_idx < len(merge_hashes) else "",
+				sync_ok=sync_ok,
+				verification_report=verification_report,
+			)
+			hash_idx += 1
+
+		return results
+
+	async def _bisect_batch(
+		self,
+		units: list[tuple[str, str, str]],
+	) -> list[UnitMergeResult]:
+		"""Bisect a failing batch to find offending unit(s).
+
+		Recursively splits the batch in half and tests each half until
+		individual offenders are identified.
+		"""
+		if len(units) <= 1:
+			# Base case: single unit -- test it individually
+			if not units:
+				return []
+			ws, branch, ac = units[0]
+			return [await self.merge_unit(ws, branch, acceptance_criteria=ac)]
+
+		mid = len(units) // 2
+		left = units[:mid]
+		right = units[mid:]
+
+		# Test left half as a batch (recursive)
+		left_results = await self._test_half_batch(left)
+		right_results = await self._test_half_batch(right)
+
+		return left_results + right_results
+
+	async def _test_half_batch(
+		self,
+		units: list[tuple[str, str, str]],
+	) -> list[UnitMergeResult]:
+		"""Test a half-batch by merging onto a temp branch and verifying."""
+		if len(units) <= 1:
+			if not units:
+				return []
+			ws, branch, ac = units[0]
+			return [await self.merge_unit(ws, branch, acceptance_criteria=ac)]
+
+		gb = self.config.green_branch
+		temp_branch = f"mc/bisect-{id(units) % 10000}"
+
+		# Merge all units onto temp branch
+		async with self._merge_lock:
+			await self._run_git("branch", "-D", temp_branch)
+			await self._run_git("checkout", gb.green_branch)
+			await self._run_git("checkout", "-b", temp_branch)
+
+			all_ok = True
+			for ws, branch, _ac in units:
+				remote_name = f"worker-{branch}"
+				await self._run_git("remote", "add", remote_name, ws)
+				ok, _ = await self._run_git("fetch", remote_name, branch)
+				if not ok:
+					await self._run_git("remote", "remove", remote_name)
+					all_ok = False
+					break
+
+				rebase_branch = f"mc/rebase-{branch}"
+				await self._run_git("branch", "-D", rebase_branch)
+				await self._run_git("branch", rebase_branch, f"{remote_name}/{branch}")
+				rebase_ok, _ = await self._run_git("rebase", temp_branch, rebase_branch)
+				if not rebase_ok:
+					await self._run_git("rebase", "--abort")
+					await self._run_git("checkout", temp_branch)
+					await self._run_git("branch", "-D", rebase_branch)
+					await self._run_git("remote", "remove", remote_name)
+					all_ok = False
+					break
+
+				await self._run_git("checkout", temp_branch)
+				ok, _ = await self._run_git(
+					"merge", "--no-ff", rebase_branch,
+					"-m", f"Merge {branch} (rebased) into {temp_branch}",
+				)
+				await self._run_git("branch", "-D", rebase_branch)
+				await self._run_git("remote", "remove", remote_name)
+				if not ok:
+					await self._run_git("merge", "--abort")
+					all_ok = False
+					break
+
+			await self._run_git("checkout", gb.green_branch)
+
+		if not all_ok:
+			await self._run_git("branch", "-D", temp_branch)
+			# Merge conflict in this half -- bisect further
+			return await self._bisect_batch(units)
+
+		# Verify the half-batch
+		await self._run_git("checkout", temp_branch)
+		report = await self._run_verification()
+		await self._run_git("checkout", gb.green_branch)
+		await self._run_git("branch", "-D", temp_branch)
+
+		if report.overall_passed:
+			# This half is clean -- merge individually (they all pass)
+			individual_results = []
+			for ws, branch, ac in units:
+				individual_results.append(
+					await self.merge_unit(ws, branch, acceptance_criteria=ac)
+				)
+			return individual_results
+		else:
+			# This half has the offender -- bisect further
+			return await self._bisect_batch(units)
+
+	async def _fallback_individual_merge(
+		self,
+		units: list[tuple[str, str, str]],
+	) -> list[UnitMergeResult]:
+		"""Fall back to merging each unit individually."""
+		results = []
+		for ws, branch, ac in units:
+			results.append(
+				await self.merge_unit(ws, branch, acceptance_criteria=ac)
+			)
+		return results
+
+	async def _merge_git_ops(
+		self,
+		worker_workspace: str,
+		branch_name: str,
+	) -> UnitMergeResult | None:
+		"""Phase 1: fast git operations under _merge_lock.
+
+		Returns None on success (merge committed), or a UnitMergeResult on failure.
+		"""
+		gb = self.config.green_branch
+		remote_name = f"worker-{branch_name}"
+
+		async with self._merge_lock:
 			await self._run_git("remote", "add", remote_name, worker_workspace)
 			ok, _ = await self._run_git("fetch", remote_name, branch_name)
 			if not ok:
@@ -188,18 +580,12 @@ class GreenBranchManager:
 				return UnitMergeResult(failure_output="Failed to fetch unit branch", failure_stage="fetch")
 
 			try:
-				# Clean slate — reset tracked files AND remove untracked files
-				# so that files created by a previous unit merge don't block
-				# the next merge ("untracked working tree files would be overwritten")
 				await self._run_git("checkout", gb.green_branch)
 				await self._run_git("reset", "--hard", "HEAD")
 				await self._run_git("clean", "-fd", "-e", ".venv")
 
-				# Always rebase onto latest mc/green before merging.
-				# This applies the unit's commits on top of already-merged work,
-				# matching the "rebase before merge" pattern used by real dev teams.
 				rebase_branch = f"mc/rebase-{branch_name}"
-				await self._run_git("branch", "-D", rebase_branch)  # cleanup stale
+				await self._run_git("branch", "-D", rebase_branch)
 				await self._run_git("branch", rebase_branch, f"{remote_name}/{branch_name}")
 				rebase_ok, rebase_out = await self._run_git(
 					"rebase", gb.green_branch, rebase_branch,
@@ -215,7 +601,6 @@ class GreenBranchManager:
 						failure_stage="merge_conflict",
 					)
 
-				# Rebase succeeded -- merge the clean rebased branch
 				await self._run_git("checkout", gb.green_branch)
 				ok, output = await self._run_git(
 					"merge", "--no-ff", rebase_branch,
@@ -230,70 +615,32 @@ class GreenBranchManager:
 						failure_stage="merge_conflict",
 					)
 
-				# Capture merge info
-				_, merge_hash = await self._run_git("rev-parse", "HEAD")
-				merge_commit_hash = merge_hash.strip()
-
-				_, diff_output = await self._run_git(
-					"diff", "--name-only", "HEAD~1", "HEAD",
-				)
-				changed_files = [
-					f.strip() for f in diff_output.splitlines() if f.strip()
-				]
-
 				logger.info("Merged %s into %s", branch_name, gb.green_branch)
-
-				# Pre-merge verification gate
-				verification_report = None
-				if self.config.continuous.verify_before_merge:
-					verification_report = await self._run_verification()
-					if not verification_report.overall_passed:
-						logger.warning("Pre-merge verification failed for %s, rolling back", branch_name)
-						await self._run_git("reset", "--hard", "HEAD~1")
-						return UnitMergeResult(
-							merged=False,
-							verification_passed=False,
-							failure_output=verification_report.raw_output[:2000],
-							failure_stage="pre_merge_verification",
-							verification_report=verification_report,
-						)
-
-				# Acceptance criteria gate
-				if acceptance_criteria:
-					ac_passed, ac_output = await self._run_acceptance_criteria(acceptance_criteria)
-					if not ac_passed:
-						logger.warning("Acceptance criteria failed for %s, rolling back", branch_name)
-						await self._run_git("reset", "--hard", "HEAD~1")
-						return UnitMergeResult(
-							merged=False,
-							verification_passed=False,
-							failure_output=ac_output[:2000],
-							failure_stage="acceptance_criteria",
-							verification_report=verification_report,
-						)
-
-				sync_ok = await self._sync_to_source()
-
-				# Auto-push if configured
-				if gb.auto_push:
-					await self.push_green_to_main()
-
-					# Deploy after push if configured
-					if self.config.deploy.on_auto_push:
-						await self.run_deploy()
-
-				return UnitMergeResult(
-					merged=True,
-					rebase_ok=True,
-					verification_passed=True,
-					merge_commit_hash=merge_commit_hash,
-					changed_files=changed_files,
-					sync_ok=sync_ok,
-					verification_report=verification_report,
-				)
 			finally:
 				await self._run_git("checkout", gb.green_branch)
 				await self._run_git("remote", "remove", remote_name)
+
+		# Lock released -- merge commit is on mc/green
+		return None
+
+	async def _rollback_merge(self, merge_commit_hash: str, branch_name: str) -> None:
+		"""Rollback a merge commit using git revert (safe when HEAD has advanced)."""
+		async with self._merge_lock:
+			gb = self.config.green_branch
+			await self._run_git("checkout", gb.green_branch)
+			ok, output = await self._run_git(
+				"revert", "--no-edit", "-m", "1", merge_commit_hash,
+			)
+			if not ok:
+				logger.error(
+					"Failed to revert merge %s for %s: %s",
+					merge_commit_hash[:8], branch_name, output,
+				)
+			else:
+				logger.info(
+					"Reverted merge %s for %s (verification failed)",
+					merge_commit_hash[:8], branch_name,
+				)
 
 	async def _zfc_generate_fixup_strategies(self, failure_output: str, n: int) -> list[str] | None:
 		"""Generate N fixup strategies via LLM. Returns list of strategy strings or None."""

@@ -24,11 +24,13 @@ class WorkspacePool:
 		pool_dir: str | Path,
 		max_clones: int = 10,
 		base_branch: str = "main",
+		green_branch: str | None = None,
 	) -> None:
 		self.source_repo = Path(source_repo)
 		self.pool_dir = Path(pool_dir)
 		self.max_clones = max_clones
 		self.base_branch = base_branch
+		self.green_branch = green_branch
 		self._available: list[Path] = []
 		self._in_use: set[Path] = set()
 
@@ -119,6 +121,10 @@ class WorkspacePool:
 		this, resetting while on mc/unit-X moves that branch ref to
 		origin/main, destroying the worker's commit before the green-branch
 		merge processor can fetch it.
+
+		When a green_branch is configured, try resetting to origin/{green_branch}
+		first (latest merged state). Falls back to origin/{base_branch} if the
+		green branch ref does not exist yet.
 		"""
 		cwd = str(clone_path)
 
@@ -139,8 +145,21 @@ class WorkspacePool:
 		)
 		await fetch.communicate()
 
+		# Prefer green branch (latest merged state) over base branch
+		reset_ref = f"origin/{self.base_branch}"
+		if self.green_branch:
+			verify = await asyncio.create_subprocess_exec(
+				"git", "rev-parse", "--verify", f"origin/{self.green_branch}",
+				cwd=cwd,
+				stdout=asyncio.subprocess.PIPE,
+				stderr=asyncio.subprocess.STDOUT,
+			)
+			await verify.communicate()
+			if verify.returncode == 0:
+				reset_ref = f"origin/{self.green_branch}"
+
 		reset = await asyncio.create_subprocess_exec(
-			"git", "reset", "--hard", f"origin/{self.base_branch}",
+			"git", "reset", "--hard", reset_ref,
 			cwd=cwd,
 			stdout=asyncio.subprocess.PIPE,
 			stderr=asyncio.subprocess.STDOUT,

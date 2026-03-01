@@ -149,6 +149,7 @@ class ContinuousConfig:
 	circuit_breaker_cooldown_seconds: int = 120
 	layer_drain_timeout_base: int = 300
 	layer_drain_timeout_per_unit: int = 120
+	reconcile_interval: int = 5  # run reconciler every N merges regardless of verify_before_merge
 
 
 @dataclass
@@ -162,6 +163,9 @@ class GreenBranchConfig:
 	reset_on_init: bool = True
 	auto_push: bool = False
 	push_branch: str = "main"
+	push_batch_size: int = 5
+	batch_merge_min_size: int = 1
+	batch_merge_wait_seconds: float = 10.0
 
 
 @dataclass
@@ -664,6 +668,8 @@ def _build_continuous(data: dict[str, Any]) -> ContinuousConfig:
 		cc.layer_drain_timeout_base = int(data["layer_drain_timeout_base"])
 	if "layer_drain_timeout_per_unit" in data:
 		cc.layer_drain_timeout_per_unit = int(data["layer_drain_timeout_per_unit"])
+	if "reconcile_interval" in data:
+		cc.reconcile_interval = int(data["reconcile_interval"])
 	return cc
 
 
@@ -682,6 +688,8 @@ def _build_green_branch(data: dict[str, Any]) -> GreenBranchConfig:
 		gc.auto_push = bool(data["auto_push"])
 	if "push_branch" in data:
 		gc.push_branch = str(data["push_branch"])
+	if "push_batch_size" in data:
+		gc.push_batch_size = int(data["push_batch_size"])
 	return gc
 
 

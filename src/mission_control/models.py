@@ -211,6 +211,7 @@ class WorkUnit:
 	cost_usd: float = 0.0
 	speculation_score: float = 0.0
 	speculation_parent_id: str = ""
+	write_scope: list[str] = field(default_factory=list)  # files/dirs this unit intends to modify
 
 
 @dataclass

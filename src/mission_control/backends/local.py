@@ -30,11 +30,14 @@ class LocalBackend(WorkerBackend):
 		config: MissionConfig | None = None,
 	) -> None:
 		self._config = config
+		gb = getattr(config, "green_branch", None) if config else None
+		green_branch_name = getattr(gb, "green_branch", None) if gb else None
 		self._pool = WorkspacePool(
 			source_repo=source_repo,
 			pool_dir=pool_dir,
 			max_clones=max_clones,
 			base_branch=base_branch,
+			green_branch=green_branch_name,
 		)
 		self._processes: dict[str, asyncio.subprocess.Process] = {}
 		self._stdout_bufs: dict[str, bytes] = {}
@@ -123,6 +126,15 @@ class LocalBackend(WorkerBackend):
 				f"Failed to create branch {branch_name}: "
 				f"{stdout.decode(errors='replace')}"
 			)
+
+		# Block workers from pushing directly to origin.
+		# The orchestrator handles all pushes via the green branch manager.
+		await asyncio.create_subprocess_exec(
+			"git", "config", "remote.origin.pushUrl", "no_push_allowed",
+			cwd=str(workspace),
+			stdout=asyncio.subprocess.PIPE,
+			stderr=asyncio.subprocess.STDOUT,
+		)
 
 		# Symlink source .venv into worker workspace for verification commands.
 		# _reset_clone() runs git clean -fdx which deletes symlinks, so this

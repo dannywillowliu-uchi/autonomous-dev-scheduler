@@ -100,6 +100,64 @@ class TestWorkspacePool:
 
 		await pool.cleanup()
 
+	async def test_reset_clone_uses_green_branch_when_available(
+		self, source_repo: Path, pool_dir: Path,
+	) -> None:
+		"""Release resets to green branch when configured and ref exists."""
+		import subprocess
+
+		env = {
+			"GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "test@test.com",
+			"GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "test@test.com",
+			"PATH": subprocess.check_output(["bash", "-c", "echo $PATH"]).decode().strip(),
+		}
+
+		# Create mc/green branch with an extra file in source
+		subprocess.run(["git", "checkout", "-b", "mc/green"], cwd=str(source_repo), check=True, capture_output=True)
+		green_file = source_repo / "green.txt"
+		green_file.write_text("from green branch")
+		subprocess.run(["git", "add", "."], cwd=str(source_repo), check=True, capture_output=True)
+		subprocess.run(
+			["git", "commit", "-m", "green commit"],
+			cwd=str(source_repo), check=True, capture_output=True, env=env,
+		)
+		subprocess.run(["git", "checkout", "main"], cwd=str(source_repo), check=True, capture_output=True)
+
+		pool = WorkspacePool(source_repo, pool_dir, max_clones=3, green_branch="mc/green")
+		await pool.initialize()
+
+		workspace = await pool.acquire()
+		assert workspace is not None
+
+		# Release triggers _reset_clone which should reset to origin/mc/green
+		await pool.release(workspace)
+
+		# After reset, the workspace should have the green branch content
+		assert (workspace / "green.txt").exists()
+
+		await pool.cleanup()
+
+	async def test_reset_clone_falls_back_to_base_when_green_missing(
+		self, source_repo: Path, pool_dir: Path,
+	) -> None:
+		"""Release falls back to base branch when green ref does not exist."""
+		pool = WorkspacePool(source_repo, pool_dir, max_clones=3, green_branch="mc/nonexistent")
+		await pool.initialize()
+
+		workspace = await pool.acquire()
+		assert workspace is not None
+
+		# Create a dirty file to verify reset actually ran
+		dirty_file = workspace / "dirty.txt"
+		dirty_file.write_text("dirty")
+
+		await pool.release(workspace)
+
+		# Dirty file should be cleaned (reset to base branch worked)
+		assert not dirty_file.exists()
+
+		await pool.cleanup()
+
 	async def test_max_clones_enforced(
 		self, source_repo: Path, pool_dir: Path,
 	) -> None:

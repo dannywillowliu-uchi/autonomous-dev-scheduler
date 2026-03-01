@@ -178,15 +178,36 @@ class TestMergeUnit:
 		assert len(merge_calls) == 1
 		assert "mc/rebase-feat/branch" in merge_calls[0][2]
 
-	async def test_auto_push(self) -> None:
+	async def test_auto_push_batched(self) -> None:
+		"""Push only fires after push_batch_size merges, not every merge."""
 		mgr = _manager()
 		mgr.config.green_branch.auto_push = True
+		mgr.config.green_branch.push_batch_size = 3
+		mgr._run_git = AsyncMock(return_value=(True, ""))
+		mgr._sync_to_source = AsyncMock()  # type: ignore[method-assign]
+		mgr.push_green_to_main = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+		# First two merges: no push
+		for i in range(2):
+			result = await mgr.merge_unit("/tmp/worker", f"feat/branch-{i}")
+			assert result.merged is True
+		mgr.push_green_to_main.assert_not_awaited()
+
+		# Third merge: push fires (batch_size reached)
+		result = await mgr.merge_unit("/tmp/worker", "feat/branch-2")
+		assert result.merged is True
+		mgr.push_green_to_main.assert_awaited_once()
+
+	async def test_auto_push_batch_size_1_pushes_every_merge(self) -> None:
+		"""With push_batch_size=1, every merge triggers a push (legacy behavior)."""
+		mgr = _manager()
+		mgr.config.green_branch.auto_push = True
+		mgr.config.green_branch.push_batch_size = 1
 		mgr._run_git = AsyncMock(return_value=(True, ""))
 		mgr._sync_to_source = AsyncMock()  # type: ignore[method-assign]
 		mgr.push_green_to_main = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
 		result = await mgr.merge_unit("/tmp/worker", "feat/branch")
-
 		assert result.merged is True
 		mgr.push_green_to_main.assert_awaited_once()
 
@@ -238,6 +259,86 @@ class TestMergeUnit:
 
 		assert result.merged is False
 		assert result.failure_stage == "merge_conflict"
+
+
+class TestMaybePush:
+	"""Tests for maybe_push() batch push logic."""
+
+	async def test_maybe_push_below_threshold_no_push(self) -> None:
+		"""No push when merges_since_push < push_batch_size."""
+		mgr = _manager()
+		mgr.config.green_branch.auto_push = True
+		mgr.config.green_branch.push_batch_size = 5
+		mgr._merges_since_push = 3
+		mgr.push_green_to_main = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+		result = await mgr.maybe_push()
+
+		assert result is False
+		mgr.push_green_to_main.assert_not_awaited()
+
+	async def test_maybe_push_at_threshold_pushes(self) -> None:
+		"""Push fires when merges_since_push >= push_batch_size."""
+		mgr = _manager()
+		mgr.config.green_branch.auto_push = True
+		mgr.config.green_branch.push_batch_size = 5
+		mgr._merges_since_push = 5
+		mgr.push_green_to_main = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+		result = await mgr.maybe_push()
+
+		assert result is True
+		mgr.push_green_to_main.assert_awaited_once()
+		assert mgr._merges_since_push == 0
+
+	async def test_maybe_push_force_flushes(self) -> None:
+		"""force=True pushes regardless of counter."""
+		mgr = _manager()
+		mgr.config.green_branch.auto_push = True
+		mgr.config.green_branch.push_batch_size = 100
+		mgr._merges_since_push = 1
+		mgr.push_green_to_main = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+		result = await mgr.maybe_push(force=True)
+
+		assert result is True
+		mgr.push_green_to_main.assert_awaited_once()
+		assert mgr._merges_since_push == 0
+
+	async def test_maybe_push_auto_push_disabled(self) -> None:
+		"""Returns False when auto_push is disabled."""
+		mgr = _manager()
+		mgr.config.green_branch.auto_push = False
+		mgr.push_green_to_main = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+		result = await mgr.maybe_push(force=True)
+
+		assert result is False
+		mgr.push_green_to_main.assert_not_awaited()
+
+	async def test_maybe_push_counter_resets_on_success(self) -> None:
+		"""Counter resets to 0 after a successful push."""
+		mgr = _manager()
+		mgr.config.green_branch.auto_push = True
+		mgr.config.green_branch.push_batch_size = 2
+		mgr._merges_since_push = 2
+		mgr.push_green_to_main = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+		await mgr.maybe_push()
+		assert mgr._merges_since_push == 0
+
+	async def test_maybe_push_counter_not_reset_on_push_failure(self) -> None:
+		"""Counter is NOT reset when push_green_to_main returns False."""
+		mgr = _manager()
+		mgr.config.green_branch.auto_push = True
+		mgr.config.green_branch.push_batch_size = 2
+		mgr._merges_since_push = 2
+		mgr.push_green_to_main = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+		result = await mgr.maybe_push()
+
+		assert result is False
+		assert mgr._merges_since_push == 2
 
 
 class TestPushGreenToMain:
@@ -527,6 +628,226 @@ class TestParallelMergeConflicts:
 		assert set(execution_order) == {"rebase-unit-a", "rebase-unit-b", "rebase-unit-c"}
 
 
+class TestVerificationOutsideLock:
+	"""Tests for optimistic concurrency: verification runs outside _merge_lock."""
+
+	async def test_lock_not_held_during_verification(self) -> None:
+		"""Verification runs outside _merge_lock so other merges can proceed."""
+		mgr = _gate_manager()
+		lock_held_during_verify = False
+
+		async def tracking_git(*args: str) -> tuple[bool, str]:
+			return (True, "")
+
+		mgr._run_git = AsyncMock(side_effect=tracking_git)
+		mgr._sync_to_source = AsyncMock()  # type: ignore[method-assign]
+
+		async def slow_verify() -> VerificationReport:
+			nonlocal lock_held_during_verify
+			lock_held_during_verify = mgr._merge_lock.locked()
+			return VerificationReport(
+				results=[VerificationResult(kind=VerificationNodeKind.PYTEST, passed=True)],
+				raw_output="ok",
+			)
+
+		mgr._run_verification = AsyncMock(side_effect=slow_verify)  # type: ignore[method-assign]
+
+		result = await mgr.merge_unit("/tmp/worker", "feat/branch")
+
+		assert result.merged is True
+		assert lock_held_during_verify is False
+
+	async def test_rollback_uses_git_revert_not_reset(self) -> None:
+		"""Rollback uses git revert (safe when HEAD advanced) instead of reset --hard."""
+		mgr = _gate_manager()
+		git_calls: list[tuple[str, ...]] = []
+
+		async def tracking_git(*args: str) -> tuple[bool, str]:
+			git_calls.append(args)
+			if args[0] == "rev-parse" and args[1] == "mc/green":
+				return (True, "abc123def456\n")
+			return (True, "")
+
+		mgr._run_git = AsyncMock(side_effect=tracking_git)
+
+		failing_report = VerificationReport(
+			results=[VerificationResult(kind=VerificationNodeKind.PYTEST, passed=False)],
+			raw_output="FAIL",
+		)
+		mgr._run_verification = AsyncMock(return_value=failing_report)  # type: ignore[method-assign]
+
+		result = await mgr.merge_unit("/tmp/worker", "feat/branch")
+
+		assert result.merged is False
+		revert_calls = [c for c in git_calls if c[0] == "revert"]
+		assert len(revert_calls) >= 1
+		# The revert should target the specific merge commit hash
+		assert "abc123def456" in revert_calls[0]
+
+	async def test_finalize_sync_under_lock(self) -> None:
+		"""Phase 3 (sync+push) runs under _merge_lock."""
+		mgr = _gate_manager()
+		lock_held_during_sync = False
+
+		async def tracking_git(*args: str) -> tuple[bool, str]:
+			return (True, "")
+
+		mgr._run_git = AsyncMock(side_effect=tracking_git)
+
+		async def check_lock_sync() -> bool:
+			nonlocal lock_held_during_sync
+			lock_held_during_sync = mgr._merge_lock.locked()
+			return True
+
+		mgr._sync_to_source = AsyncMock(side_effect=check_lock_sync)  # type: ignore[method-assign]
+
+		passing_report = VerificationReport(
+			results=[VerificationResult(kind=VerificationNodeKind.PYTEST, passed=True)],
+			raw_output="ok",
+		)
+		mgr._run_verification = AsyncMock(return_value=passing_report)  # type: ignore[method-assign]
+
+		result = await mgr.merge_unit("/tmp/worker", "feat/branch")
+
+		assert result.merged is True
+		assert lock_held_during_sync is True
+
+
+class TestMergeBatch:
+	"""Tests for merge_batch() -- speculative batch merge with bisection."""
+
+	async def test_batch_single_falls_back_to_merge_unit(self) -> None:
+		"""A single-item batch delegates to merge_unit."""
+		mgr = _manager()
+		mgr._run_git = AsyncMock(return_value=(True, ""))
+		mgr._sync_to_source = AsyncMock()  # type: ignore[method-assign]
+
+		results = await mgr.merge_batch([("/tmp/w1", "feat/a", "")])
+
+		assert len(results) == 1
+		assert results[0].merged is True
+
+	async def test_batch_empty_returns_empty(self) -> None:
+		"""An empty batch returns an empty list."""
+		mgr = _manager()
+		results = await mgr.merge_batch([])
+		assert results == []
+
+	async def test_batch_all_pass_single_verification(self) -> None:
+		"""Multiple units merged + verified in one pass."""
+		mgr = _gate_manager()
+		mgr._run_git = AsyncMock(return_value=(True, ""))
+		mgr._sync_to_source = AsyncMock()  # type: ignore[method-assign]
+
+		passing_report = VerificationReport(
+			results=[VerificationResult(kind=VerificationNodeKind.PYTEST, passed=True)],
+			raw_output="ok",
+		)
+		mgr._run_verification = AsyncMock(return_value=passing_report)  # type: ignore[method-assign]
+
+		units = [
+			("/tmp/w1", "feat/a", ""),
+			("/tmp/w2", "feat/b", ""),
+			("/tmp/w3", "feat/c", ""),
+		]
+		results = await mgr.merge_batch(units)
+
+		assert len(results) == 3
+		for r in results:
+			assert r.merged is True
+			assert r.verification_passed is True
+		# Verification should have been called only once for the batch
+		mgr._run_verification.assert_awaited_once()
+
+	async def test_batch_verification_disabled(self) -> None:
+		"""When verify_before_merge=False, no verification runs."""
+		mgr = _manager()  # verify_before_merge=False
+		mgr._run_git = AsyncMock(return_value=(True, ""))
+		mgr._sync_to_source = AsyncMock()  # type: ignore[method-assign]
+		mgr._run_verification = AsyncMock()  # type: ignore[method-assign]
+
+		units = [
+			("/tmp/w1", "feat/a", ""),
+			("/tmp/w2", "feat/b", ""),
+		]
+		results = await mgr.merge_batch(units)
+
+		assert len(results) == 2
+		for r in results:
+			assert r.merged is True
+		mgr._run_verification.assert_not_awaited()
+
+	async def test_batch_fetch_failure_partial(self) -> None:
+		"""If one unit fails to fetch, others still succeed."""
+		mgr = _manager()
+		call_count = 0
+
+		async def selective_git(*args: str) -> tuple[bool, str]:
+			nonlocal call_count
+			if args[0] == "fetch" and "feat/bad" in args:
+				return (False, "fetch failed")
+			return (True, "")
+
+		mgr._run_git = AsyncMock(side_effect=selective_git)
+		mgr._sync_to_source = AsyncMock()  # type: ignore[method-assign]
+
+		units = [
+			("/tmp/w1", "feat/good", ""),
+			("/tmp/w2", "feat/bad", ""),
+		]
+		results = await mgr.merge_batch(units)
+
+		assert len(results) == 2
+		# The good unit should succeed
+		assert results[0].merged is True
+		# The bad unit should fail with fetch error
+		assert results[1].merged is False
+		assert results[1].failure_stage == "fetch"
+
+	async def test_batch_bisection_on_verification_failure(self) -> None:
+		"""When batch verification fails, bisection runs and uses merge_unit."""
+		mgr = _gate_manager()
+
+		async def tracking_git(*args: str) -> tuple[bool, str]:
+			return (True, "")
+
+		mgr._run_git = AsyncMock(side_effect=tracking_git)
+		mgr._sync_to_source = AsyncMock()  # type: ignore[method-assign]
+
+		failing_report = VerificationReport(
+			results=[VerificationResult(kind=VerificationNodeKind.PYTEST, passed=False)],
+			raw_output="FAIL",
+		)
+		passing_report = VerificationReport(
+			results=[VerificationResult(kind=VerificationNodeKind.PYTEST, passed=True)],
+			raw_output="ok",
+		)
+
+		verify_calls = 0
+
+		async def conditional_verify() -> VerificationReport:
+			nonlocal verify_calls
+			verify_calls += 1
+			if verify_calls == 1:
+				# First call (batch) fails
+				return failing_report
+			# Subsequent calls (bisection / individual) pass
+			return passing_report
+
+		mgr._run_verification = AsyncMock(side_effect=conditional_verify)  # type: ignore[method-assign]
+
+		units = [
+			("/tmp/w1", "feat/a", ""),
+			("/tmp/w2", "feat/b", ""),
+		]
+		results = await mgr.merge_batch(units)
+
+		assert len(results) == 2
+		# Both should eventually succeed via bisection -> individual merge
+		# (since individual verifications pass)
+		assert verify_calls >= 2  # at least batch + bisect calls
+
+
 class TestRunDeploy:
 	"""Tests for run_deploy() with mock subprocess."""
 
@@ -598,9 +919,10 @@ class TestRunDeploy:
 		assert "timed out" in output
 
 	async def test_deploy_after_auto_push(self) -> None:
-		"""When auto_push and on_auto_push, deploy runs after push."""
+		"""When auto_push and on_auto_push, deploy runs after push (batch_size=1)."""
 		config = self._deploy_config()
 		config.green_branch.auto_push = True
+		config.green_branch.push_batch_size = 1  # push every merge so deploy fires
 		config.deploy.on_auto_push = True
 		db = Database(":memory:")
 		mgr = GreenBranchManager(config, db)
@@ -1252,7 +1574,7 @@ class TestPreMergeVerificationGate:
 		mgr._run_verification.assert_awaited_once()
 
 	async def test_pre_merge_verification_fail_rollback(self) -> None:
-		"""When verification fails, merge is rolled back."""
+		"""When verification fails, merge is rolled back via git revert."""
 		mgr = _gate_manager()
 		git_calls: list[tuple[str, ...]] = []
 
@@ -1275,9 +1597,9 @@ class TestPreMergeVerificationGate:
 		assert result.failure_stage == "pre_merge_verification"
 		assert "2 tests failed" in result.failure_output
 		assert result.verification_report is failing_report
-		# Verify git reset was called
-		reset_calls = [c for c in git_calls if c[0] == "reset" and "--hard" in c]
-		assert len(reset_calls) >= 1
+		# Verify git revert was called (safe rollback even if HEAD advanced)
+		revert_calls = [c for c in git_calls if c[0] == "revert"]
+		assert len(revert_calls) >= 1
 
 	async def test_pre_merge_verification_skipped_when_disabled(self) -> None:
 		"""When verify_before_merge is False, _run_verification is not called."""
@@ -1317,7 +1639,7 @@ class TestAcceptanceCriteria:
 		mgr._run_acceptance_criteria.assert_awaited_once_with("pytest tests/test_x.py -q")
 
 	async def test_acceptance_criteria_fail_rollback(self) -> None:
-		"""When acceptance criteria fail, merge is rolled back."""
+		"""When acceptance criteria fail, merge is rolled back via git revert."""
 		mgr = _gate_manager()
 		git_calls: list[tuple[str, ...]] = []
 
@@ -1339,9 +1661,9 @@ class TestAcceptanceCriteria:
 		assert result.merged is False
 		assert result.failure_stage == "acceptance_criteria"
 		assert "assertion failed" in result.failure_output
-		# Verify git reset was called
-		reset_calls = [c for c in git_calls if c[0] == "reset" and "--hard" in c]
-		assert len(reset_calls) >= 1
+		# Verify git revert was called (safe rollback even if HEAD advanced)
+		revert_calls = [c for c in git_calls if c[0] == "revert"]
+		assert len(revert_calls) >= 1
 
 	async def test_acceptance_criteria_empty_skips(self) -> None:
 		"""When acceptance_criteria is empty, it's skipped."""
@@ -2419,4 +2741,45 @@ class TestReconcilerSweep:
 		await ctrl._process_single_completion(completion2, Mission(id="m1"), result)
 
 		# Reconciler should have run once (after first merge) but not again for the failure
+		assert mock_gbm.run_reconciliation_check.await_count == 1
+
+	@pytest.mark.asyncio
+	async def test_reconciler_runs_periodically_with_verify_before_merge(
+		self, config: MissionConfig, db: Database,
+	) -> None:
+		"""Reconciler fires every reconcile_interval merges even when verify_before_merge=True."""
+		config.continuous.verify_before_merge = True
+		config.continuous.reconcile_interval = 3
+		db.insert_mission(Mission(id="m1", objective="test"))
+		ctrl = ContinuousController(config, db)
+		result = ContinuousMissionResult(mission_id="m1")
+
+		mock_gbm = MagicMock()
+		mock_gbm.merge_unit = AsyncMock(
+			return_value=UnitMergeResult(
+				merged=True, rebase_ok=True, verification_passed=True,
+			),
+		)
+		mock_gbm.run_reconciliation_check = AsyncMock(return_value=(True, "all pass"))
+		ctrl._green_branch = mock_gbm
+
+		epoch = Epoch(id="ep1", mission_id="m1", number=1)
+		db.insert_epoch(epoch)
+		plan = Plan(id="p1", objective="test")
+		db.insert_plan(plan)
+
+		# Process 3 successful merges; reconciler should fire on the 3rd
+		for i in range(3):
+			unit = WorkUnit(
+				id=f"wu{i}", plan_id="p1", title=f"Task {i}",
+				status="completed", commit_hash=f"abc{i}",
+				branch_name=f"mc/unit-wu{i}",
+			)
+			db.insert_work_unit(unit)
+			completion = WorkerCompletion(
+				unit=unit, handoff=None, workspace="/tmp/ws", epoch=epoch,
+			)
+			await ctrl._process_single_completion(completion, Mission(id="m1"), result)
+
+		# With verify_before_merge=True, reconciler only fires at interval (3rd merge)
 		assert mock_gbm.run_reconciliation_check.await_count == 1
