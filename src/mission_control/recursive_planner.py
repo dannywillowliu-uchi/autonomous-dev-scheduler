@@ -306,7 +306,16 @@ IMPORTANT: Put all reasoning BEFORE the <!-- PLAN --> block. The block must cont
 			env=claude_subprocess_env(self.config),
 			cwd=str(cwd),
 		)
-		stdout, stderr = await proc.communicate(input=prompt.encode())
+		try:
+			stdout, stderr = await proc.communicate(input=prompt.encode())
+		except (asyncio.TimeoutError, TimeoutError):
+			log.warning("Planner LLM subprocess timed out, killing process")
+			proc.kill()
+			await proc.wait()
+			fallback = {"title": "Execute scope", "description": prompt[:500], "files_hint": "", "priority": 1}
+			result = PlannerResult(type="leaves", units=[fallback])
+			result._infra_fallback = True  # type: ignore[attr-defined]
+			return result
 		output = stdout.decode() if stdout else ""
 		stderr_text = stderr.decode() if stderr else ""
 		if stderr_text:
