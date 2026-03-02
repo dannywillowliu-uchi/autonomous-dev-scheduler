@@ -286,7 +286,6 @@ IMPORTANT: Put all reasoning BEFORE the <!-- PLAN --> block. The block must cont
 		budget = self.config.planner.budget_per_call_usd
 		models = getattr(self.config, "models", None)
 		model = getattr(models, "planner_model", None) or self.config.scheduler.model
-		timeout = self.config.target.verification.timeout
 
 		# CRITICAL: cwd must be the target project path, not the scheduler's own directory.
 		# Without this, the planner LLM sees the scheduler's file tree and generates
@@ -299,35 +298,20 @@ IMPORTANT: Put all reasoning BEFORE the <!-- PLAN --> block. The block must cont
 
 		allowed_tools = self.config.planner.allowed_tools or None
 		cmd = build_claude_cmd(self.config, model=model, budget=budget, allowed_tools=allowed_tools)
-		try:
-			proc = await asyncio.create_subprocess_exec(
-				*cmd,
-				stdin=asyncio.subprocess.PIPE,
-				stdout=asyncio.subprocess.PIPE,
-				stderr=asyncio.subprocess.PIPE,
-				env=claude_subprocess_env(self.config),
-				cwd=str(cwd),
-			)
-			stdout, stderr = await asyncio.wait_for(
-				proc.communicate(input=prompt.encode()),
-				timeout=timeout,
-			)
-			output = stdout.decode() if stdout else ""
-			stderr_text = stderr.decode() if stderr else ""
-			if stderr_text:
-				log.debug("Planner stderr: %s", stderr_text[:500])
-			log.info("Planner LLM output (%d chars): %s", len(output), output[:1000])
-		except asyncio.TimeoutError:
-			log.error("Planner LLM timed out after %ds", timeout)
-			try:
-				proc.kill()
-				await proc.wait()
-			except ProcessLookupError:
-				pass
-			fallback = {"title": "Execute scope", "description": prompt[:500], "files_hint": "", "priority": 1}
-			result = PlannerResult(type="leaves", units=[fallback])
-			result._infra_fallback = True  # type: ignore[attr-defined]
-			return result
+		proc = await asyncio.create_subprocess_exec(
+			*cmd,
+			stdin=asyncio.subprocess.PIPE,
+			stdout=asyncio.subprocess.PIPE,
+			stderr=asyncio.subprocess.PIPE,
+			env=claude_subprocess_env(self.config),
+			cwd=str(cwd),
+		)
+		stdout, stderr = await proc.communicate(input=prompt.encode())
+		output = stdout.decode() if stdout else ""
+		stderr_text = stderr.decode() if stderr else ""
+		if stderr_text:
+			log.debug("Planner stderr: %s", stderr_text[:500])
+		log.info("Planner LLM output (%d chars): %s", len(output), output[:1000])
 
 		if proc.returncode != 0:
 			log.warning("Planner LLM failed (rc=%d): %s", proc.returncode, stderr.decode()[:200])

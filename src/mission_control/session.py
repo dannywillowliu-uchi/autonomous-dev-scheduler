@@ -56,6 +56,13 @@ _MC_RESULT_DEFAULTS: dict[str, object] = {
 }
 
 
+_STATUS_ALIASES: dict[str, str] = {
+	"success": "completed",
+	"failure": "failed",
+	"error": "failed",
+}
+
+
 def validate_mc_result(raw: dict[str, object]) -> dict[str, object]:
 	"""Validate an MC_RESULT dict against MCResultSchema.
 
@@ -63,6 +70,12 @@ def validate_mc_result(raw: dict[str, object]) -> dict[str, object]:
 	whatever valid fields exist and returns a degraded dict with defaults
 	for missing/invalid fields. Logs a warning on degraded parse.
 	"""
+	# Normalize common status aliases before validation
+	if raw.get("status") in _STATUS_ALIASES:
+		raw = {**raw, "status": _STATUS_ALIASES[raw["status"]]}  # type: ignore[index]
+	# Normalize common field name aliases
+	if "files_modified" in raw and "files_changed" not in raw:
+		raw = {**raw, "files_changed": raw["files_modified"]}
 	try:
 		validated = MCResultSchema.model_validate(raw)
 		return validated.model_dump()
