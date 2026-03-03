@@ -326,7 +326,7 @@ class TestCmdTrace:
 
 
 # Minimal valid TOML that load_config can parse
-_DIAG_TOML = '[target]\nname = "test"\npath = "/tmp/test"\n'
+_DIAG_TOML = '[target]\nname = "test"\npath = "/tmp/test"\n\n[target.verification]\ncommand = "true"\ntimeout = 60\n'
 
 
 class TestCmdDiagnose:
