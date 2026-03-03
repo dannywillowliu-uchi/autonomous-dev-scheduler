@@ -45,7 +45,20 @@ class WorkspacePool:
 		return self.max_clones - len(self._in_use)
 
 	async def initialize(self, warm_count: int = 0) -> None:
-		"""Create pool directory and optionally pre-warm clones."""
+		"""Create pool directory and optionally pre-warm clones.
+
+		Removes leftover worker directories from prior runs that are not
+		tracked in this process's in-memory sets (e.g. after a crash or kill).
+		"""
+		if self.pool_dir.exists():
+			stale = [
+				p for p in self.pool_dir.iterdir()
+				if p.is_dir() and p.name.startswith("worker-")
+				and p not in self._available and p not in self._in_use
+			]
+			for p in stale:
+				logger.info("Removing stale worker directory: %s", p.name)
+				shutil.rmtree(p)
 		self.pool_dir.mkdir(parents=True, exist_ok=True)
 		for _ in range(warm_count):
 			clone = await self._create_clone()
