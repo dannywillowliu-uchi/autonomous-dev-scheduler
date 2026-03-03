@@ -8,6 +8,7 @@ import pytest
 
 from mission_control.session import (
 	build_branch_name,
+	extract_fallback_handoff,
 	parse_mc_result,
 	validate_mc_result,
 )
@@ -329,3 +330,137 @@ class TestParseMcResultEdgeCases:
 		assert result is not None
 		assert result["status"] == "completed"
 		assert result["commits"] == ["xyz"]
+
+
+class TestExtractFallbackHandoff:
+	"""Tests for extract_fallback_handoff() -- recovers data when MC_RESULT missing."""
+
+	def test_no_mc_result_with_commits(self) -> None:
+		"""Extract commits and changed files from git output."""
+		output = (
+			"Working on the task...\n"
+			"[mc/unit-abc123 f3dea4e] feat: add fallback extraction\n"
+			" src/session.py | 42 +++++++++\n"
+			" tests/test_session.py | 18 ++++\n"
+			" 2 files changed, 60 insertions(+)\n"
+			"commit f3dea4e26a9e0b1c2d3e4f5a6b7c8d9e0f1a2b3c\n"
+			"Done.\n"
+		)
+		result = extract_fallback_handoff(output, exit_code=0)
+		assert result["status"] == "completed"
+		assert "f3dea4e26a9e0b1c2d3e4f5a6b7c8d9e0f1a2b3c" in result["commits"]
+		assert "f3dea4e" in result["commits"]
+		assert "src/session.py" in result["files_changed"]
+		assert "tests/test_session.py" in result["files_changed"]
+		assert result["discoveries"] == []
+		assert len(result["concerns"]) == 1
+
+	def test_no_mc_result_with_failures_syntax_error(self) -> None:
+		"""Classify as failed when output contains SyntaxError."""
+		output = (
+			"Running tests...\n"
+			"  File \"src/foo.py\", line 10\n"
+			"    def broken(\n"
+			"              ^\n"
+			"SyntaxError: unexpected EOF while parsing\n"
+		)
+		result = extract_fallback_handoff(output, exit_code=1)
+		assert result["status"] == "failed"
+		assert result["commits"] == []
+		assert "[Failed]" in result["summary"]
+
+	def test_no_mc_result_with_failures_test_failure(self) -> None:
+		"""Classify as failed when output contains FAILED test markers."""
+		output = (
+			"=== test session starts ===\n"
+			"tests/test_foo.py::test_bar FAILED\n"
+			"AssertionError: expected 1, got 2\n"
+			"1 failed, 3 passed\n"
+		)
+		result = extract_fallback_handoff(output, exit_code=1)
+		assert result["status"] == "failed"
+
+	def test_no_mc_result_with_failures_import_error(self) -> None:
+		"""Classify as failed when output contains ImportError."""
+		output = "ModuleNotFoundError: No module named 'nonexistent'\n"
+		result = extract_fallback_handoff(output, exit_code=1)
+		assert result["status"] == "failed"
+
+	def test_no_mc_result_with_failures_merge_conflict(self) -> None:
+		"""Classify as failed on merge conflict markers."""
+		output = "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n"
+		result = extract_fallback_handoff(output, exit_code=1)
+		assert result["status"] == "failed"
+
+	def test_no_mc_result_with_failures_timeout(self) -> None:
+		"""Classify as failed on timeout signatures."""
+		output = "Process timed out after 300s\n"
+		result = extract_fallback_handoff(output, exit_code=None)
+		assert result["status"] == "failed"
+
+	def test_empty_output(self) -> None:
+		"""Empty output returns failed with no commits or files."""
+		result = extract_fallback_handoff("", exit_code=None)
+		assert result["status"] == "failed"
+		assert result["commits"] == []
+		assert result["files_changed"] == []
+		assert result["summary"] == "No output captured"
+
+	def test_empty_output_with_zero_exit(self) -> None:
+		"""Empty output with exit_code=0 still returns completed."""
+		result = extract_fallback_handoff("", exit_code=0)
+		assert result["status"] == "completed"
+		assert result["summary"] == "No output captured"
+
+	def test_exit_code_zero_overrides_no_errors(self) -> None:
+		"""Exit code 0 classifies as completed even with ambiguous output."""
+		output = "Some random output\nAll done.\n"
+		result = extract_fallback_handoff(output, exit_code=0)
+		assert result["status"] == "completed"
+		assert "[Fallback]" in result["summary"]
+
+	def test_nonzero_exit_code_with_no_patterns(self) -> None:
+		"""Non-zero exit code with no recognized error patterns → failed."""
+		output = "Something went wrong but no recognizable pattern.\n"
+		result = extract_fallback_handoff(output, exit_code=1)
+		assert result["status"] == "failed"
+
+	def test_multiple_commits_deduplicated(self) -> None:
+		"""Same commit hash appearing multiple times is deduplicated."""
+		output = (
+			"commit abc1234567890\n"
+			"Author: test\n"
+			"commit abc1234567890\n"
+		)
+		result = extract_fallback_handoff(output, exit_code=0)
+		assert result["commits"] == ["abc1234567890"]
+
+	def test_diff_stat_extraction(self) -> None:
+		"""Multiple file paths from diff --stat are all extracted."""
+		output = (
+			" src/models.py        | 15 +++++++++------\n"
+			" src/config.py        |  3 +--\n"
+			" tests/test_models.py | 22 ++++++++++++++++++++++\n"
+			" 3 files changed, 28 insertions(+), 8 deletions(-)\n"
+		)
+		result = extract_fallback_handoff(output, exit_code=0)
+		assert "src/models.py" in result["files_changed"]
+		assert "src/config.py" in result["files_changed"]
+		assert "tests/test_models.py" in result["files_changed"]
+		assert len(result["files_changed"]) == 3
+
+	def test_returns_all_handoff_keys(self) -> None:
+		"""Result dict has all keys expected by Handoff model."""
+		result = extract_fallback_handoff("output", exit_code=0)
+		for key in ("status", "commits", "summary", "files_changed", "discoveries", "concerns"):
+			assert key in result
+
+	def test_lint_error_detected(self) -> None:
+		"""Ruff lint errors in output classify as failed."""
+		output = (
+			"ruff check src/\n"
+			"src/foo.py:10:1: F401 `os` imported but unused\n"
+			"Found 1 error.\n"
+		)
+		result = extract_fallback_handoff(output, exit_code=1)
+		assert result["status"] == "failed"
