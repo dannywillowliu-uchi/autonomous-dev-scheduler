@@ -101,10 +101,25 @@ Each mission:
 ```bash
 git clone git@github.com:dannywillowliu-uchi/autonomous-development.git
 cd autonomous-development
-make setup && make traces && make run
+uv sync --extra dev
+
+# Copy and edit the example config to point at your project
+cp mission-control.toml.example mission-control.toml
+# Edit: target.path, target.objective, target.verification.command
+
+# Launch a mission
+uv run mc mission --config mission-control.toml
 ```
 
-This installs dependencies (including tracing), starts Jaeger for trace collection, and launches a mission. Open http://localhost:16686 for the Jaeger UI and http://localhost:8080 for the live dashboard.
+That's it. mission-control will plan, dispatch parallel workers, merge results, and loop until the objective is met or it stalls.
+
+### Prerequisites
+
+- Python 3.11+
+- [uv](https://docs.astral.sh/uv/) (Python package manager)
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude` command available in PATH)
+- Claude Max subscription or API key with sufficient budget
+- Git
 
 ### Make targets
 
@@ -117,139 +132,64 @@ This installs dependencies (including tracing), starts Jaeger for trace collecti
 | `make run` | Run a mission with default config |
 | `make clean` | Stop Docker containers |
 
-### Manual setup
+### CLI commands
 
 ```bash
-# Configure (edit to point at your repo)
-cp mission-control.toml.example mission-control.toml
-# Edit: target.path, target.objective, target.verification.command
-
 # Run a mission
-.venv/bin/python -m mission_control.cli mission --config mission-control.toml --workers 2
+uv run mc mission --config mission-control.toml
+
+# Run with more workers
+uv run mc mission --config mission-control.toml --workers 4
 
 # Run with auto-chaining (continues after objective is met)
-.venv/bin/python -m mission_control.cli mission --config mission-control.toml --workers 2 --chain
+uv run mc mission --config mission-control.toml --chain
 
 # Live web dashboard
-.venv/bin/python -m mission_control.cli live --config mission-control.toml --port 8080
+uv run mc live --config mission-control.toml --port 8080
+
+# Show current status
+uv run mc status --config mission-control.toml
+
+# TUI dashboard
+uv run mc dashboard --config mission-control.toml
 ```
 
 ## Configuration
 
-All config lives in `mission-control.toml`:
+Copy the example config and edit it for your project:
+
+```bash
+cp mission-control.toml.example mission-control.toml
+```
+
+The three fields you must change:
 
 ```toml
 [target]
 name = "my-project"
-path = "/path/to/repo"
-branch = "main"
-objective = "Add comprehensive test coverage for the auth module"
+path = "/absolute/path/to/your/repo"     # Must be absolute
+objective = """What you want built or improved.
+Be specific about the end state and success criteria."""
 
 [target.verification]
-command = "pytest -q && ruff check src/"
-timeout = 120
-
-[scheduler]
-model = "opus"           # Model for all Claude subprocesses
-session_timeout = 900    # Max seconds per worker session
-
-[scheduler.budget]
-max_per_session_usd = 5.0
-max_per_run_usd = 100.0
-
-[scheduler.parallel]
-num_workers = 2          # Parallel Claude workers
-pool_dir = "/tmp/mc-pool"
-
-[rounds]
-max_rounds = 20          # Max rounds before stopping
-stall_threshold = 5      # Rounds with no improvement before stopping
-
-[planner]
-max_depth = 2            # Recursive decomposition depth
-max_children_per_node = 5
-
-[continuous]
-max_wall_time_seconds = 3600
-min_ambition_score = 4          # Reject trivial plans (1-10 scale)
-max_replan_attempts = 2         # Replan attempts on ambition rejection
-verify_objective_completion = true  # LLM verifies objective before declaring done
-max_objective_checks = 2
-
-[continuous]
-verify_before_merge = true   # Pre-merge verification gate (default: on)
-
-[review]
-gate_completion = true       # Block low-quality units
-min_review_score = 5.0       # Minimum average review score (1-10)
-model = "haiku"              # Cheaper model for diff review
-skip_when_criteria_passed = true  # Skip review when acceptance criteria passed
-
-[evaluator]
-enabled = false              # Opt-in: evaluator agent at mission end
-model = "sonnet"             # Model for evaluator subprocess
-budget_usd = 0.50            # Max cost per evaluation
-timeout = 300                # Seconds before timeout
-max_turns = 10               # Max agentic turns
-
-[green_branch]
-auto_push = true         # Push mc/green to main after each round
-push_branch = "main"
-fixup_max_attempts = 3
-# fixup_candidates = 3   # N-of-M parallel fixup agents
-
-[discovery]
-enabled = true
-tracks = ["feature", "quality", "security"]
-research_enabled = true
-
-[mcp]
-config_path = "~/.claude/settings.local.json"  # MCP JSON config file
-enabled = true                                  # Pass --mcp-config to all subprocesses
-
-[research]
-enabled = true               # Pre-planning research phase
-budget_per_agent_usd = 1.0   # Budget per research agent
-timeout = 300                # Seconds per research agent
-model = ""                   # Defaults to scheduler.model
-
-[models]
-planner = "opus"         # Model for planning calls
-reviewer = "sonnet"      # Model for diff review
-strategist = "opus"      # Model for objective proposal
-
-[hitl]
-enabled = false
-gates = ["push", "large_merge"]  # Actions requiring approval
-poll_timeout = 300               # Seconds to wait for approval
-telegram = true                  # Use Telegram for approval prompts
-
-[speculation]
-enabled = false
-branch_count = 3         # Parallel branches per uncertain unit
-selection = "best_score" # How to pick the winner
-
-[degradation]
-enabled = true
-failure_threshold = 5    # Failures before circuit opens
-reset_timeout = 300      # Seconds before half-open retry
-fallback_strategy = "simple"
-
-[episodic_memory]
-enabled = true
-max_episodes = 100       # Max stored episodes per project
-similarity_threshold = 0.7
-
-[a2a]
-enabled = false
-host = "0.0.0.0"
-port = 5000
-
-[tracing]
-enabled = false
-otlp_endpoint = "http://localhost:4317"  # OTLP gRPC (Jaeger via docker-compose)
-service_name = "mission-control"
+command = "pytest -q && ruff check src/"   # Must exit 0 when healthy
 ```
+
+See [`mission-control.toml.example`](mission-control.toml.example) for the full annotated config with all options. Key sections:
+
+| Section | What it controls |
+|---------|-----------------|
+| `[target]` | Repo path, branch, objective, verification command |
+| `[scheduler]` | Model choice, worker count, budget limits, session timeout |
+| `[planner]` | Decomposition depth, max units per round, deliberation |
+| `[continuous]` | Wall time limit, ambition gate, pre-merge verification |
+| `[green_branch]` | Working/green branch names, auto-push, fixup retries |
+| `[rounds]` | Max planning rounds, stall detection threshold |
+| `[research]` | Pre-planning research phase (3 parallel agents) |
+| `[evaluator]` | End-of-mission evaluator agent (opt-in) |
+| `[mcp]` | MCP tool access for all subprocesses |
+| `[hitl]` | Human-in-the-loop approval gates |
+| `[discovery]` | Auto-discover next objective after completion |
 
 ## Architecture
 
@@ -331,67 +271,97 @@ src/mission_control/
 
 **Live dashboard**: Real-time web dashboard (FastAPI + HTMX) showing mission state, worker status, merge activity, and cost tracking via Server-Sent Events.
 
-## CLI commands
+## Setting up a new project
+
+To point mission-control at any repo:
+
+1. **Create a config file** in the target repo (or anywhere):
+   ```bash
+   cp /path/to/autonomous-development/mission-control.toml.example my-project/mission-control.toml
+   ```
+
+2. **Edit the three required fields**:
+   ```toml
+   [target]
+   name = "my-project"
+   path = "/absolute/path/to/my-project"
+   objective = """Build a REST API with user auth, CRUD endpoints, and tests."""
+
+   [target.verification]
+   command = "pytest -q && ruff check src/"
+   setup_command = "uv sync --extra dev"       # runs once before first worker
+   ```
+
+3. **Launch**:
+   ```bash
+   cd /path/to/autonomous-development
+   uv run mc mission --config /path/to/my-project/mission-control.toml
+   ```
+
+### Tips for writing good objectives
+
+- Be specific about the end state, not the steps to get there
+- Include language/framework constraints: "in Python using FastAPI"
+- Include success criteria: "all tests pass, ruff clean, 80%+ coverage"
+- The planner decomposes objectives into parallel units — broad objectives work well
+
+### For AI agents setting up missions
+
+If you're an AI agent configuring mission-control for a user:
+
+1. Copy `mission-control.toml.example` to the target project
+2. Set `target.path` to the absolute path of the target repo
+3. Set `target.branch` to the repo's default branch
+4. Write the `target.objective` based on user intent — be specific and include constraints
+5. Set `target.verification.command` to the project's test/lint command (must exit 0 when healthy)
+6. Set `target.verification.setup_command` to install dependencies (e.g., `uv sync --extra dev`, `npm install`)
+7. Adjust `scheduler.parallel.num_workers` based on task complexity (2-4 workers typical)
+8. Launch: `cd <autonomous-development-dir> && uv run mc mission --config <path-to-config>`
+
+The config file can live anywhere — pass its path with `--config`.
+
+## All CLI commands
 
 ```bash
-# Run a mission
-mc mission --config mission-control.toml --workers 2 [--chain]
+# Core
+uv run mc mission --config mission-control.toml [--workers N] [--chain]
+uv run mc status --config mission-control.toml
+uv run mc summary --config mission-control.toml
+uv run mc history --config mission-control.toml
 
-# Show current status
-mc status --config mission-control.toml
+# Dashboards
+uv run mc live --config mission-control.toml --port 8080
+uv run mc dashboard --config mission-control.toml
 
-# Show session history
-mc history --config mission-control.toml
+# Discovery and planning
+uv run mc discover --config mission-control.toml
+uv run mc init --config mission-control.toml
+uv run mc validate-config --config mission-control.toml
 
-# Auto-discover improvements
-mc discover --config mission-control.toml
+# Backlog management
+uv run mc priority list --config mission-control.toml
+uv run mc priority set <item-id> <score>
+uv run mc priority import --file BACKLOG.md
+uv run mc priority recalc
 
-# Initialize a mission-control config
-mc init --config mission-control.toml
+# Multi-project
+uv run mc register --config mission-control.toml
+uv run mc unregister --config mission-control.toml
+uv run mc projects
 
-# Live web dashboard
-mc live --config mission-control.toml --port 8080
-
-# TUI dashboard
-mc dashboard --config mission-control.toml
-
-# View mission summary
-mc summary --config mission-control.toml
-
-# Multi-project registry
-mc register --config mission-control.toml
-mc unregister --config mission-control.toml
-mc projects
-
-# Start MCP server (stdio)
-mc mcp --config mission-control.toml
-
-# Start A2A protocol server
-mc a2a --config mission-control.toml
-
-# Validate config file
-mc validate-config --config mission-control.toml
-
-# Manage backlog priority queue
-mc priority list --config mission-control.toml
-mc priority set <item-id> <score>
-mc priority defer <item-id>
-mc priority import --file BACKLOG.md
-mc priority recalc
-mc priority export
+# External interfaces
+uv run mc mcp --config mission-control.toml     # MCP server (stdio)
+uv run mc a2a --config mission-control.toml     # Agent-to-Agent protocol
 ```
 
 ## Tests
 
 ```bash
-uv run pytest -q                           # 1,460+ tests
+uv run pytest -q                           # 2,100+ tests
 uv run ruff check src/ tests/              # Lint
 uv run mypy src/mission_control --ignore-missing-imports  # Types
 ```
 
-## Requirements
+## Example: C compiler built from scratch
 
-- Python 3.11+
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude` command available)
-- Claude Max or API key with sufficient budget
-- Git
+We used mission-control to build a [C compiler](https://github.com/dannywillowliu-uchi/C_compiler_orchestrated) from an empty repo — 8,100 lines of compiler code, 1,788 tests passing, zero human-written code. 4 parallel workers, ~5 hours wall time, ~$55 API cost.
