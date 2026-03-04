@@ -1,0 +1,84 @@
+# mission-control.toml -- Configuration for autonomous development missions
+#
+# Point this at any repo with an objective and a verification command.
+# mission-control will plan, execute, merge, verify, and push autonomously.
+#
+# Usage:
+#   mc mission --config mission-control.toml
+
+[target]
+name = "my-project"
+path = "/absolute/path/to/your/repo"
+branch = "main"
+objective = """Describe what you want built or improved.
+
+Be specific about the end state. The planner decomposes this into parallel work units.
+Include technical constraints, language preferences, and success criteria.
+"""
+
+[target.verification]
+# Shell command that exits 0 when the codebase is healthy.
+# Workers and the merge pipeline run this to verify changes.
+command = "pytest -q && ruff check src/"
+timeout = 300
+# Optional: run once before the first worker to install dependencies
+setup_command = "uv sync --extra dev"
+setup_timeout = 120
+
+[scheduler]
+model = "opus"              # LLM model for all Claude subprocesses
+session_timeout = 3600      # Max seconds per worker session
+
+[scheduler.parallel]
+num_workers = 4             # Parallel Claude Code workers
+pool_dir = "/tmp/mc-pool"   # Directory for worker git worktrees
+warm_clones = 4             # Pre-cloned worktrees for fast startup
+
+[scheduler.budget]
+max_per_session_usd = 8.0   # Max cost per single worker session
+max_per_run_usd = 100.0     # Max total cost for the entire mission
+
+[rounds]
+max_rounds = 20             # Max planning rounds before stopping
+stall_threshold = 7         # Rounds with no progress -> stop
+cooldown_between_rounds = 30
+
+[planner]
+max_depth = 1               # Recursive decomposition depth (1 = flat)
+max_children_per_node = 4   # Max work units per planning round
+budget_per_call_usd = 5.0   # Budget for each planner LLM call
+
+[planner.deliberation]
+max_rounds = 1              # Critic review rounds per plan
+critic_model = "haiku"      # Cheaper model for plan critique
+
+[continuous]
+max_wall_time_seconds = 14400   # Total wall time limit (4 hours)
+min_ambition_score = 2          # Reject trivially scoped plans (1-10)
+max_replan_attempts = 3         # Retries on ambition rejection
+verify_before_merge = true      # Pre-merge verification gate
+enforce_acceptance_criteria = true  # Run acceptance criteria per unit
+reconcile_interval = 5          # Full verification every N merges
+layer_drain_timeout_base = 5400
+layer_drain_timeout_per_unit = 600
+
+[green_branch]
+working_branch = "mc/working"
+green_branch = "mc/green"
+fixup_max_attempts = 5      # Merge conflict retry attempts
+auto_push = true            # Push mc/green to main after merges
+push_branch = "main"
+
+[discovery]
+enabled = false             # Auto-discover next objective after completion
+
+[heartbeat]
+interval = 300              # Progress check interval (seconds)
+idle_threshold = 5           # Idle heartbeats before alert
+
+[deliberation]
+max_rounds = 1
+critic_model = "haiku"
+
+[backend]
+type = "local"              # "local" or "ssh"
