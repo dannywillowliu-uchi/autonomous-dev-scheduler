@@ -1,8 +1,8 @@
 # autonomous-development
 
-Autonomous dev daemon that continuously improves a codebase toward a "north star" objective. Spawns parallel Claude Code workers, manages state in SQLite, and learns from its own outcomes via an RL-style feedback loop.
+Autonomous dev daemon that continuously improves a codebase toward a defined objective. Spawns parallel Claude Code workers, manages state in SQLite, and learns from its own outcomes across missions.
 
-Point it at a repo with an objective and a verification command. It plans, executes, merges, verifies, and pushes -- in a loop -- until the objective is met or it stalls. Then it auto-discovers the next objective and chains into a new mission.
+Point it at a repo with an objective and a verification command. It plans, executes, merges, verifies, and pushes -- in a loop -- until the objective is met or it stalls.
 
 ## How it works
 
@@ -62,34 +62,20 @@ Point it at a repo with an objective and a verification command. It plans, execu
              +-----> back to Orchestration Loop
 ```
 
-Each mission:
-1. **Research** -- Three parallel agents (codebase analyst, domain researcher, prior art reviewer) investigate the problem space with MCP tool access. A synthesis agent combines findings into `MISSION_STRATEGY.md`
-2. **Plan** -- Recursive planner reads `MISSION_STATE.md` and `MISSION_STRATEGY.md` from disk, decomposes the objective into work units with acceptance criteria, dependency ordering, and specialist assignments
-3. **Ambition gate** -- Reject trivially scoped plans (configurable min score) and force replanning
-4. **Layered execution** -- Work units execute in topological layers (parallel within layers, sequential across layers). Workers run as Claude Code subprocesses with MCP access
-5. **Green branch merge** -- Completed units merge directly to `mc/green`. Optional pre-merge verification (pytest/ruff/mypy) gates the merge; failures trigger ZFC fixup agents
-6. **Handoff ingestion** -- Workers emit structured `MC_RESULT` handoffs with files changed, concerns, discoveries. These feed the knowledge base and state tracking
-7. **Batch analysis** -- Heuristic pattern detection: file hotspots (files touched by 3+ units), failure clusters, stalled areas (2+ failed attempts), effort distribution, knowledge gaps
-8. **Strategic reflection** -- LLM synthesis of batch signals into patterns, tensions, and open questions. Can trigger strategy revision mid-mission
-9. **State update** -- Fixed-size `MISSION_STATE.md` (progress counts, active issues, strategy summary, patterns, files modified) replaces the old growing log
-10. **Evaluator agent** -- At mission end, a Claude subprocess with shell/file access runs the software, checks endpoints, and inspects output
-11. **Strategize** -- Strategist proposes follow-up objectives; `--chain` auto-starts the next mission
+Each epoch:
+1. **Plan** -- Recursive planner reads `MISSION_STATE.md` from disk, decomposes the objective into work units with acceptance criteria and dependency ordering
+2. **Ambition gate** -- Reject trivially scoped plans (configurable threshold) and force replanning
+3. **Layered execution** -- Work units dispatch in topological layers (parallel within layers, sequential across). Workers run as Claude Code subprocesses
+4. **Green branch merge** -- Completed units merge to `mc/green`. Pre-merge verification gates the merge; failures trigger fixup agents
+5. **Handoff ingestion** -- Workers emit structured `MC_RESULT` handoffs with files changed, concerns, discoveries
+6. **Batch analysis** -- Pattern detection: file hotspots, failure clusters, stalled areas, effort distribution
+7. **State update** -- Fixed-size `MISSION_STATE.md` with progress counts, active issues, patterns, and files modified
+8. **Core test feedback** (optional) -- Run a project-defined test suite and feed pass/fail/regression data back to the planner
+9. **Loop** -- Back to planning with updated state. Stops on wall time limit, stall detection, or empty plan
 
 ## Installation
 
-```bash
-pip install autonomous-dev
-```
-
-With optional extras:
-
-```bash
-pip install autonomous-dev[mcp]                  # MCP server for Claude Code
-pip install autonomous-dev[dashboard]             # Live web + TUI dashboards
-pip install autonomous-dev[mcp,dashboard,tracing] # Everything
-```
-
-Or install from source:
+Install from source:
 
 ```bash
 git clone git@github.com:dannywillowliu-uchi/autonomous-development.git
@@ -97,193 +83,210 @@ cd autonomous-development
 uv sync --extra dev
 ```
 
+Or via pip:
+
+```bash
+pip install autonomous-dev
+pip install autonomous-dev[mcp,dashboard,tracing]  # with extras
+```
+
 ## Quickstart
 
 ```bash
-# Copy and edit the example config to point at your project
+# Copy and edit the example config
 cp mission-control.toml.example mission-control.toml
 # Edit: target.path, target.objective, target.verification.command
 
-# Launch a mission
-mc mission --config mission-control.toml
+# Launch
+uv run mc mission --config mission-control.toml
 ```
 
-If running from source, use `uv run mc` instead of `mc`.
-
-That's it. mission-control will plan, dispatch parallel workers, merge results, and loop until the objective is met or it stalls.
+That's it. It will plan, dispatch parallel workers, merge results, and loop until the objective is met or it stalls.
 
 ### Prerequisites
 
 - Python 3.11+
-- [uv](https://docs.astral.sh/uv/) (Python package manager)
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude` command available in PATH)
-- Claude Max subscription or API key with sufficient budget
+- [uv](https://docs.astral.sh/uv/)
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude` in PATH)
+- Claude Max subscription or API key
 - Git
+
+## Configuration
+
+The three fields you must set:
+
+```toml
+[target]
+name = "my-project"
+path = "/absolute/path/to/your/repo"
+objective = """What you want built or improved.
+Be specific about the end state and success criteria."""
+
+[target.verification]
+command = "pytest -q && ruff check src/"   # must exit 0 when healthy
+```
+
+See [`mission-control.toml.example`](mission-control.toml.example) for the full annotated config. Key sections:
+
+| Section | What it controls |
+|---------|-----------------|
+| `[target]` | Repo path, branch, objective, verification command |
+| `[scheduler]` | Model choice, worker count, budget limits, session timeout |
+| `[planner]` | Decomposition depth, max units per round, deliberation with critic |
+| `[continuous]` | Wall time limit, ambition gate, pre-merge verification, reconcile interval |
+| `[green_branch]` | Working/green branch names, auto-push target, fixup retries |
+| `[rounds]` | Max planning rounds, stall detection threshold |
+| `[heartbeat]` | Progress monitoring interval, idle alerts |
+| `[discovery]` | Auto-discover next objective after completion |
+| `[backend]` | Execution backend (local or SSH) |
+| `[core_tests]` | Per-epoch correctness test suite (opt-in, project-defined runner) |
+
+## CLI
+
+> If installed via pip, use `mc` directly. If running from source, use `uv run mc`.
+
+```bash
+# Run a mission
+mc mission --config mission-control.toml [--workers N] [--chain] [--approve-all]
+
+# Status and history
+mc status --config mission-control.toml
+mc summary --config mission-control.toml
+mc history --config mission-control.toml
+
+# Dashboards
+mc live --config mission-control.toml [--port 8080]    # Web (FastAPI + HTMX)
+mc dashboard --config mission-control.toml              # TUI
+
+# Setup and diagnostics
+mc init --config mission-control.toml
+mc validate-config --config mission-control.toml
+mc diagnose --config mission-control.toml
+
+# Multi-project registry
+mc register --config mission-control.toml
+mc unregister --config mission-control.toml
+mc projects
+
+# External interfaces
+mc mcp --config mission-control.toml     # MCP server (stdio)
+mc a2a --config mission-control.toml     # Agent-to-Agent protocol
+
+# Intelligence
+mc intel                                  # Scan external AI/agent ecosystem sources
+mc trace --file trace.jsonl               # Read trace file as human-readable timeline
+```
 
 ### Make targets
 
 | Target | Description |
 |--------|-------------|
-| `make setup` | Create venv and install all deps (`uv sync --extra dev --extra tracing`) |
+| `make setup` | Create venv, install all deps |
 | `make test` | Run pytest and ruff |
 | `make traces` | Start Jaeger (OTLP on :4317/:4318, UI on :16686) |
 | `make dashboard` | Start live web dashboard on :8080 |
 | `make run` | Run a mission with default config |
 | `make clean` | Stop Docker containers |
 
-### CLI commands
-
-```bash
-# Run a mission
-uv run mc mission --config mission-control.toml
-
-# Run with more workers
-uv run mc mission --config mission-control.toml --workers 4
-
-# Run with auto-chaining (continues after objective is met)
-uv run mc mission --config mission-control.toml --chain
-
-# Live web dashboard
-uv run mc live --config mission-control.toml --port 8080
-
-# Show current status
-uv run mc status --config mission-control.toml
-
-# TUI dashboard
-uv run mc dashboard --config mission-control.toml
-```
-
-## Configuration
-
-Copy the example config and edit it for your project:
-
-```bash
-cp mission-control.toml.example mission-control.toml
-```
-
-The three fields you must change:
-
-```toml
-[target]
-name = "my-project"
-path = "/absolute/path/to/your/repo"     # Must be absolute
-objective = """What you want built or improved.
-Be specific about the end state and success criteria."""
-
-[target.verification]
-command = "pytest -q && ruff check src/"   # Must exit 0 when healthy
-```
-
-See [`mission-control.toml.example`](mission-control.toml.example) for the full annotated config with all options. Key sections:
-
-| Section | What it controls |
-|---------|-----------------|
-| `[target]` | Repo path, branch, objective, verification command |
-| `[scheduler]` | Model choice, worker count, budget limits, session timeout |
-| `[planner]` | Decomposition depth, max units per round, deliberation |
-| `[continuous]` | Wall time limit, ambition gate, pre-merge verification |
-| `[green_branch]` | Working/green branch names, auto-push, fixup retries |
-| `[rounds]` | Max planning rounds, stall detection threshold |
-| `[research]` | Pre-planning research phase (3 parallel agents) |
-| `[evaluator]` | End-of-mission evaluator agent (opt-in) |
-| `[mcp]` | MCP tool access for all subprocesses |
-| `[hitl]` | Human-in-the-loop approval gates |
-| `[core_tests]` | Per-epoch correctness test suite (opt-in, project-defined runner) |
-| `[discovery]` | Auto-discover next objective after completion |
-
 ## Architecture
 
 ```
 src/mission_control/
-+-- cli.py                   # CLI entry point
-+-- config.py                # TOML config loader, build_claude_cmd(), MCPConfig
-+-- models.py                # Dataclasses (Mission, WorkUnit, Epoch, ...)
-+-- db.py                    # SQLite with WAL mode + migrations
++-- cli.py                    # CLI entry point (argparse subcommands)
++-- config.py                 # TOML config loader + dataclasses
++-- models.py                 # Domain models (Mission, WorkUnit, Epoch, Experience, ...)
++-- db.py                     # SQLite with WAL mode + schema migrations
 +-- # Core loop
-+-- continuous_controller.py # Main loop: research -> plan -> execute -> reflect
-+-- continuous_planner.py    # Adaptive planner wrapper around RecursivePlanner
-+-- recursive_planner.py     # LLM-based tree decomposition with PLAN_RESULT marker
-+-- research_phase.py        # Pre-planning parallel research + synthesis -> MISSION_STRATEGY.md
-+-- batch_analyzer.py        # Heuristic pattern detection (hotspots, failures, stalled areas)
-+-- strategic_reflection.py  # LLM synthesis of batch signals -> patterns, tensions, revision
-+-- planner_context.py       # Minimal planner context + fixed-size MISSION_STATE.md writer
-+-- core_tests.py            # Per-epoch core test runner integration + experience storage
++-- continuous_controller.py  # Main orchestration loop: plan -> execute -> merge -> reflect
++-- continuous_planner.py     # Adaptive planner wrapper around RecursivePlanner
++-- recursive_planner.py      # LLM-based tree decomposition with PLAN_RESULT marker
++-- deliberative_planner.py   # Planner + critic deliberation rounds
++-- critic_agent.py           # LLM critic for plan review
++-- planner_context.py        # Planner context builder + MISSION_STATE.md writer
++-- context_gathering.py      # Pre-planning codebase + backlog context
++-- batch_analyzer.py         # Heuristic pattern detection (hotspots, failures, stalls)
++-- core_tests.py             # Per-epoch core test runner integration + experience storage
 +-- # Workers
-+-- worker.py                # Worker prompt rendering + handoff parsing
-+-- specialist.py            # Specialist worker template routing
-+-- feedback.py              # Worker context from past experiences
-+-- overlap.py               # File overlap detection + dependency injection
++-- worker.py                 # Worker prompt rendering + MC_RESULT handoff parsing
++-- feedback.py               # Worker context from past experiences
++-- overlap.py                # File overlap detection + dependency injection
++-- workspace.py              # Worker workspace management
 +-- # Merge pipeline
-+-- green_branch.py          # mc/green branch lifecycle, merge, ZFC fixup
-+-- # Quality + review
-+-- diff_reviewer.py         # Fire-and-forget LLM diff review (scoring, no gating)
-+-- evaluator.py             # Round scoring (test/lint delta, completion, regression)
-+-- grading.py               # Deterministic decomposition grading
-+-- # Strategy + discovery
-+-- strategist.py            # Mission objective proposal, ambition scoring
-+-- auto_discovery.py        # Gap analysis -> research -> backlog pipeline
-+-- priority.py              # Backlog priority scoring + recalculation
-+-- backlog_manager.py       # Persistent backlog across missions
++-- green_branch.py           # mc/green branch lifecycle, merge, fixup agents
++-- # Quality
++-- diff_reviewer.py          # Fire-and-forget LLM diff review
++-- grading.py                # Deterministic decomposition grading
++-- criteria_validator.py     # Acceptance criteria validation
 +-- # Infrastructure
-+-- session.py               # Claude subprocess spawning + output parsing
-+-- heartbeat.py             # Time-based progress monitor + Telegram alerts
-+-- notifier.py              # Telegram notifications (mission events, conflicts)
-+-- hitl.py                  # Human-in-the-loop approval gates (file + Telegram)
-+-- degradation.py           # Graceful degradation with circuit breakers
-+-- circuit_breaker.py       # Circuit breaker state machine
-+-- ema.py                   # Exponential moving average budget tracking
-+-- memory.py                # Typed context store for workers
++-- session.py                # Claude subprocess spawning + output parsing
++-- launcher.py               # Mission launch orchestration
++-- heartbeat.py              # Time-based progress monitor + alerts
++-- notifier.py               # Telegram notifications
++-- hitl.py                   # Human-in-the-loop approval gates
++-- degradation.py            # Graceful degradation strategies
++-- circuit_breaker.py        # Circuit breaker state machine
++-- adaptive_concurrency.py   # Dynamic worker count adjustment
++-- ema.py                    # Exponential moving average budget tracking
++-- memory.py                 # Typed context store for workers
++-- state.py                  # Mission state management
++-- snapshot.py               # State snapshots for recovery
++-- checkpoint.py             # Checkpoint/restore support
++-- causal.py                 # Causal analysis of failures
++-- prompt_evolution.py       # Worker prompt adaptation over time
++-- tool_synthesis.py         # Dynamic tool creation for workers
++-- token_parser.py           # Structured output parsing
++-- path_security.py          # File path validation + sanitization
++-- json_utils.py             # Safe JSON parsing utilities
 +-- # External interfaces
-+-- mcp_server.py            # MCP server for external control
-+-- a2a.py                   # Agent-to-Agent protocol server
++-- mcp_server.py             # MCP server for Claude Code integration
++-- a2a.py                    # Agent-to-Agent protocol server
++-- registry.py               # Multi-project registry
++-- mcp_registry.py           # MCP tool registry
++-- event_stream.py           # Server-Sent Events for dashboard
++-- trace_log.py              # Structured trace logging
++-- tracing.py                # OpenTelemetry integration
++-- diagnose.py               # Operational health checks
++-- mission_report.py         # Post-mission report generation
++-- intelligence/
+|   +-- evaluator.py          # Intelligence evaluation
+|   +-- scanner.py            # External source scanning
+|   +-- sources.py            # HN, GitHub, arXiv feeds
 +-- dashboard/
-|   +-- live.py              # FastAPI + HTMX web dashboard
-|   +-- tui.py               # Terminal UI
+|   +-- live.py               # FastAPI + HTMX web dashboard
+|   +-- tui.py                # Terminal UI
+|   +-- provider.py           # Dashboard data provider
 +-- backends/
-|   +-- local.py             # Local subprocess backend with workspace pool
-|   +-- ssh.py               # Remote SSH backend
+|   +-- local.py              # Local subprocess backend with workspace pool
+|   +-- ssh.py                # Remote SSH backend
+|   +-- container.py          # Container backend
 ```
 
 ## Key concepts
 
-**Research phase**: Before the first planning iteration, three parallel agents (codebase analyst, domain researcher, prior art reviewer) investigate the problem with MCP tool access (web search, library docs). A synthesis agent combines findings into `MISSION_STRATEGY.md`, which the planner reads from disk. Knowledge items are stored in the DB for cross-mission learning.
+**Recursive planner**: Decomposes objectives into a tree of work units with acceptance criteria and dependencies. File overlap detection automatically adds dependency edges between units that touch the same files. A critic agent reviews plans before execution.
 
-**Batch analysis**: After each batch of work units completes, heuristic pattern detection runs on the DB: file hotspots (files touched by 3+ units), failure clusters (recurring error patterns), stalled areas (2+ failed attempts with no success), effort distribution, retry depth, and knowledge gaps (areas where implementation outpaces research coverage).
+**Green branch pattern**: Workers commit to isolated unit branches. Completed units merge to `mc/green`. Pre-merge verification (pytest/ruff/etc.) gates the merge; failures trigger fixup agents that attempt automated repairs. Once green, auto-push to main.
 
-**Strategic reflection**: An LLM synthesizes batch signals into actionable patterns, tensions between strategy and reality, and open questions. When tensions are severe enough, it can trigger a mid-mission strategy revision that rewrites `MISSION_STRATEGY.md`.
+**Fixed-size MISSION_STATE.md**: Progress summary that stays constant size regardless of mission length. Contains progress counts, active issues, strategy summary, and files modified. The planner reads this from disk each epoch rather than receiving growing context.
 
-**Fixed-size MISSION_STATE.md**: Progress summary that stays constant size regardless of mission length. Contains progress counts, active issues (last 3 failures), strategy summary, patterns from reflection, and files modified grouped by directory. Replaces the old growing log that bloated planner context.
+**Core test feedback loop**: Optional per-epoch correctness signal. When `[core_tests]` is enabled, the controller runs a project-defined test command after each epoch and feeds pass/fail/regression diagnostics back to the planner. Results include full failure details and skip analysis (what missing features block the most tests), so the planner can trace failures to root causes and prioritize high-leverage fixes. Results persist as experiences for cross-mission learning. Any project can plug in its own runner -- the framework is agnostic to what the tests do.
 
-**MCP access**: All Claude subprocesses (workers, planner, reviewer, strategist, research agents) receive `--mcp-config` when configured, giving them access to external tools (web search, library docs via context7, etc.). Controlled by `[mcp]` in TOML config.
+**Ambition gate**: Plans are scored on ambition (1-10). Below the threshold, the planner is forced to replan, preventing trivially scoped busywork.
 
-**Green branch pattern**: Workers merge directly to `mc/green`. Optional pre-merge verification (pytest/ruff/mypy) gates the merge; failures trigger ZFC fixup agents that run in parallel and select the best candidate.
+**Batch analysis**: After each epoch, heuristic pattern detection runs on the DB: file hotspots (files touched by 3+ units), failure clusters, stalled areas, effort distribution. This feeds back into the next planning round.
 
-**Ambition gate**: The controller scores planned work units on ambition (1-10). Plans below the threshold are rejected and the planner is forced to replan, preventing trivially scoped busywork.
+**Graceful degradation**: Circuit breakers track failure rates per component. When tripped, the system falls back to simpler strategies instead of failing outright. Adaptive concurrency adjusts worker count based on success rates.
 
-**Evaluator agent**: At mission end, a Claude subprocess with full tool access (shell, file reads) actually runs the software: executes tests, checks HTTP endpoints, inspects files. Disabled by default.
-
-**Graceful degradation**: Circuit breakers track failure rates per component. When tripped, the system falls back to simpler strategies instead of failing outright.
-
-**Human-in-the-loop (HITL)**: Configurable approval gates before push/merge operations. Supports file-based polling and Telegram-based approval prompts.
-
-**Adaptive planning**: The recursive planner decomposes objectives into a tree of work units with acceptance criteria and dependencies. File overlap detection automatically adds dependency edges. The planner reads `MISSION_STATE.md` and `MISSION_STRATEGY.md` from disk rather than receiving bloated context strings.
-
-**Core test feedback loop**: An optional per-epoch correctness signal. When `[core_tests]` is enabled, the controller runs a project-defined test command after each epoch and feeds pass/fail/regression data back to the planner via `MISSION_STATE.md` and the feedback context. Results persist across missions as experiences, so the planner learns which kinds of work improve (or regress) correctness. The runner must produce a standardized `results.json` (see `core_tests.py` for the schema). Any project can plug in its own runner -- the framework is agnostic to what the tests actually do.
-
-**Mission chaining**: With `--chain`, after a mission completes, the strategist proposes the next objective and a new mission starts automatically.
-
-**Live dashboard**: Real-time web dashboard (FastAPI + HTMX) showing mission state, worker status, merge activity, and cost tracking via Server-Sent Events.
+**Mission chaining**: With `--chain`, after a mission completes, a new objective is proposed and a new mission starts automatically.
 
 ## Setting up a new project
 
-To point mission-control at any repo:
-
-1. **Create a config file** in the target repo (or anywhere):
+1. **Create a config file**:
    ```bash
-   cp /path/to/autonomous-development/mission-control.toml.example my-project/mission-control.toml
+   cp mission-control.toml.example my-project/mission-control.toml
    ```
 
-2. **Edit the three required fields**:
+2. **Edit the required fields**:
    ```toml
    [target]
    name = "my-project"
@@ -292,91 +295,41 @@ To point mission-control at any repo:
 
    [target.verification]
    command = "pytest -q && ruff check src/"
-   setup_command = "uv sync --extra dev"       # runs once before first worker
+   setup_command = "uv sync --extra dev"
    ```
 
 3. **Optionally add a core test suite** for per-epoch correctness feedback:
    ```toml
    [core_tests]
    enabled = true
-   runner_command = "python tests/core/runner.py"   # any shell command
-   baseline_path = "tests/core/baseline.json"       # for delta tracking
+   runner_command = "python tests/core/runner.py"
+   baseline_path = "tests/core/baseline.json"
    ```
-   The runner must produce a `results.json` with `summary` (total/passed/failed/skipped), `tests` (per-test status), and `deltas` (newly passing/failing). See `core_tests.py` for the full schema.
+   The runner must produce a `results.json` with this schema:
+   ```json
+   {
+     "summary": {"total": 100, "passed": 70, "failed": 10, "skipped": 20},
+     "tests": {"test_name": {"status": "PASS|FAIL|SKIP", "category": "...", "error_msg": "...", "diagnostic": "..."}},
+     "deltas": {"newly_passing": [], "newly_failing": [], "newly_compiling": []},
+     "skip_analysis": {"error pattern": {"count": 10, "examples": ["test1", "test2"]}}
+   }
+   ```
 
 4. **Launch**:
    ```bash
-   cd /path/to/autonomous-development
-   uv run mc mission --config /path/to/my-project/mission-control.toml
+   uv run mc mission --config my-project/mission-control.toml
    ```
 
-### Tips for writing good objectives
+### Tips for writing objectives
 
-- Be specific about the end state, not the steps to get there
+- Be specific about the end state, not the steps
 - Include language/framework constraints: "in Python using FastAPI"
-- Include success criteria: "all tests pass, ruff clean, 80%+ coverage"
-- The planner decomposes objectives into parallel units — broad objectives work well
+- Include success criteria: "all tests pass, ruff clean"
+- Broad objectives work well -- the planner handles decomposition
 
-### For AI agents setting up missions
+## MCP Server
 
-If you're an AI agent configuring mission-control for a user:
-
-1. Copy `mission-control.toml.example` to the target project
-2. Set `target.path` to the absolute path of the target repo
-3. Set `target.branch` to the repo's default branch
-4. Write the `target.objective` based on user intent — be specific and include constraints
-5. Set `target.verification.command` to the project's test/lint command (must exit 0 when healthy)
-6. Set `target.verification.setup_command` to install dependencies (e.g., `uv sync --extra dev`, `npm install`)
-7. Adjust `scheduler.parallel.num_workers` based on task complexity (2-4 workers typical)
-8. Launch: `cd <autonomous-development-dir> && uv run mc mission --config <path-to-config>`
-
-The config file can live anywhere — pass its path with `--config`.
-
-## All CLI commands
-
-> **Note:** If installed via pip, use `mc` directly. If running from source, use `uv run mc`.
-
-```bash
-# Core
-mc mission --config mission-control.toml [--workers N] [--chain]
-mc status --config mission-control.toml
-mc summary --config mission-control.toml
-mc history --config mission-control.toml
-
-# Dashboards
-mc live --config mission-control.toml --port 8080
-mc dashboard --config mission-control.toml
-
-# Discovery and planning
-mc discover --config mission-control.toml
-mc init --config mission-control.toml
-mc validate-config --config mission-control.toml
-
-# Backlog management
-mc priority list --config mission-control.toml
-mc priority set <item-id> <score>
-mc priority import --file BACKLOG.md
-mc priority recalc
-
-# Multi-project
-mc register --config mission-control.toml
-mc unregister --config mission-control.toml
-mc projects
-
-# External interfaces
-mc mcp --config mission-control.toml     # MCP server (stdio)
-mc a2a --config mission-control.toml     # Agent-to-Agent protocol
-```
-
-## MCP Server Setup
-
-The MCP server lets Claude Code (or any MCP client) control missions directly from chat.
-
-Install with the MCP extra:
-
-```bash
-pip install autonomous-dev[mcp]
-```
+The MCP server lets Claude Code (or any MCP client) control missions from chat.
 
 Add to your Claude Code MCP config (`~/.claude.json` or project `.mcp.json`):
 
@@ -384,44 +337,23 @@ Add to your Claude Code MCP config (`~/.claude.json` or project `.mcp.json`):
 {
   "mcpServers": {
     "mission-control": {
-      "command": "mc",
-      "args": ["mcp", "--config", "/absolute/path/to/mission-control.toml"]
+      "command": "uv",
+      "args": ["run", "mc", "mcp", "--config", "/absolute/path/to/mission-control.toml"]
     }
   }
 }
 ```
 
-If running from source, use `uv run mc` as the command.
-
-### Available MCP Tools
-
-| Tool | Description |
-|------|-------------|
-| `list_projects` | List all registered projects and their status |
-| `get_project_status` | Get detailed status for a project (progress, workers, cost) |
-| `launch_mission` | Start a mission with objective and config |
-| `stop_mission` | Gracefully stop a running mission |
-| `retry_unit` | Retry a failed work unit |
-| `adjust_mission` | Adjust worker count or budget mid-mission |
-| `register_project` | Register a new project with config path |
-| `get_round_details` | Get details for a specific planning round |
-| `web_research` | Search the web (DuckDuckGo, PyPI, GitHub, URL fetch) |
-
-### Example prompts in Claude Code
-
-- "Register my project and start a mission to add authentication"
-- "How's the mission going? Show me the status"
-- "Retry the failed unit for the login endpoint"
-- "Stop the current mission"
+Available tools: `list_projects`, `get_project_status`, `launch_mission`, `stop_mission`, `retry_unit`, `adjust_mission`, `register_project`, `get_round_details`, `web_research`.
 
 ## Tests
 
 ```bash
-uv run pytest -q                           # 2,100+ tests
-uv run ruff check src/ tests/              # Lint
+uv run pytest -q                                          # 2,200+ tests
+uv run ruff check src/ tests/                             # Lint
 uv run mypy src/mission_control --ignore-missing-imports  # Types
 ```
 
-## Example: C compiler built from scratch
+## Example: C compiler (ongoing)
 
-We used mission-control to build a [C compiler](https://github.com/dannywillowliu-uchi/C_compiler_orchestrated) from an empty repo — 8,100 lines of compiler code, 1,788 tests passing, zero human-written code. 4 parallel workers, ~5 hours wall time, ~$55 API cost.
+We're using mission-control to build a [C compiler](https://github.com/dannywillowliu-uchi/C_compiler_orchestrated) from scratch -- zero human-written code. With the core test feedback loop running against 225 real GCC torture tests, the planner autonomously identifies the highest-leverage compiler bugs each epoch and plans targeted fixes. Current status: 70/225 GCC torture tests passing, 2,800+ unit tests, growing each mission run.
