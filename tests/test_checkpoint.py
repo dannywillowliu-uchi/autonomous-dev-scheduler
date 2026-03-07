@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from mission_control.checkpoint import (
+from autodev.checkpoint import (
 	MissionCheckpoint,
 	clear_checkpoint,
 	load_checkpoint,

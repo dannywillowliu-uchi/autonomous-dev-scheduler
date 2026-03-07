@@ -6,16 +6,16 @@ from pathlib import Path
 
 import pytest
 
-from mission_control.config import MissionConfig, TargetConfig, ToolSynthesisConfig, VerificationConfig
-from mission_control.models import WorkUnit
-from mission_control.tool_synthesis import (
+from autodev.config import MissionConfig, TargetConfig, ToolSynthesisConfig, VerificationConfig
+from autodev.models import WorkUnit
+from autodev.tool_synthesis import (
 	TOOL_REFLECTION_PROMPT,
 	ToolEntry,
 	ToolRegistry,
 	render_available_tools_section,
 	render_tool_reflection_section,
 )
-from mission_control.worker import render_mission_worker_prompt
+from autodev.worker import render_mission_worker_prompt
 
 
 @pytest.fixture()

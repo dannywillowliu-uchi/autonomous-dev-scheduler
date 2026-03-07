@@ -1,0 +1,732 @@
+"""Data models for autodev state."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Literal
+from uuid import uuid4
+
+from pydantic import BaseModel, Field
+
+
+class MCResultSchema(BaseModel, extra="ignore"):
+	"""Pydantic schema for validating AD_RESULT JSON from worker output."""
+
+	status: Literal["completed", "failed", "blocked"]
+	commits: list[str]
+	summary: str
+	files_changed: list[str]
+	discoveries: list[str] = []
+	concerns: list[str] = []
+
+
+def _now_iso() -> str:
+	return datetime.now(timezone.utc).isoformat()
+
+
+def _new_id() -> str:
+	return uuid4().hex[:12]
+
+
+@dataclass
+class Session:
+	"""A single Claude Code session run."""
+
+	id: str = field(default_factory=_new_id)
+	target_name: str = ""
+	task_description: str = ""
+	status: str = "pending"  # pending/running/completed/failed/reverted
+	branch_name: str = ""
+	started_at: str = field(default_factory=_now_iso)
+	finished_at: str | None = None
+	exit_code: int | None = None
+	commit_hash: str | None = None
+	cost_usd: float | None = None
+	output_summary: str = ""
+
+
+@dataclass
+class Snapshot:
+	"""Project health snapshot at a point in time."""
+
+	id: str = field(default_factory=_new_id)
+	session_id: str | None = None
+	taken_at: str = field(default_factory=_now_iso)
+	test_total: int = 0
+	test_passed: int = 0
+	test_failed: int = 0
+	lint_errors: int = 0
+	type_errors: int = 0
+	security_findings: int = 0
+	raw_output: str = ""
+
+
+
+@dataclass
+class Decision:
+	"""A decision logged during a session."""
+
+	id: str = field(default_factory=_new_id)
+	session_id: str = ""
+	decision: str = ""
+	rationale: str = ""
+	timestamp: str = field(default_factory=_now_iso)
+
+
+@dataclass
+class SnapshotDelta:
+	"""Difference between two snapshots."""
+
+	tests_added: int = 0
+	tests_fixed: int = 0
+	tests_broken: int = 0
+	lint_delta: int = 0
+	type_delta: int = 0
+	security_delta: int = 0
+
+	@property
+	def improved(self) -> bool:
+		return (
+			(self.tests_fixed > 0 or self.lint_delta < 0 or self.type_delta < 0 or self.security_delta < 0)
+			and self.tests_broken == 0
+			and self.security_delta <= 0
+		)
+
+	@property
+	def regressed(self) -> bool:
+		return self.tests_broken > 0 or self.security_delta > 0
+
+
+# -- Verification node models --
+
+
+class VerificationNodeKind(str, Enum):
+	"""Kind of verification tool."""
+
+	PYTEST = "pytest"
+	RUFF = "ruff"
+	MYPY = "mypy"
+	BANDIT = "bandit"
+	CUSTOM = "custom"
+
+
+@dataclass
+class VerificationResult:
+	"""Result of a single verification node execution."""
+
+	kind: VerificationNodeKind = VerificationNodeKind.CUSTOM
+	passed: bool = False
+	skipped: bool = False
+	exit_code: int = 0
+	output: str = ""
+	metrics: dict[str, int] = field(default_factory=dict)
+	duration_seconds: float = 0.0
+	required: bool = True
+	weight: float = 1.0
+
+
+@dataclass
+class VerificationReport:
+	"""Aggregate report from all verification nodes."""
+
+	results: list[VerificationResult] = field(default_factory=list)
+	raw_output: str = ""
+
+	@property
+	def overall_passed(self) -> bool:
+		required_ran = [r for r in self.results if r.required and not r.skipped]
+		if not required_ran:
+			return False
+		return all(r.passed for r in required_ran)
+
+	@property
+	def weighted_score(self) -> float:
+		ran = [r for r in self.results if not r.skipped]
+		if not ran:
+			return 0.0
+		return sum(r.weight * (1.0 if r.passed else 0.0) for r in ran)
+
+	def failed_kinds(self) -> list[VerificationNodeKind]:
+		return [r.kind for r in self.results if not r.passed and not r.skipped]
+
+
+@dataclass
+class IncrementalVerificationResult:
+	"""Result of a change-aware incremental verification run."""
+
+	report: VerificationReport = field(default_factory=VerificationReport)
+	tests_selected: int = 0
+	tests_skipped: int = 0
+	selection_method: str = "full"  # "heuristic" | "full"
+
+
+# -- Parallel mode models --
+
+
+@dataclass
+class Plan:
+	"""A decomposed objective for parallel execution."""
+
+	id: str = field(default_factory=_new_id)
+	objective: str = ""
+	status: str = "pending"  # pending/active/completed/failed
+	created_at: str = field(default_factory=_now_iso)
+	finished_at: str | None = None
+	raw_planner_output: str = ""
+	total_units: int = 0
+	completed_units: int = 0
+	failed_units: int = 0
+	round_id: str | None = None  # link to Round for mission mode
+
+
+@dataclass
+class WorkUnit:
+	"""A single work item within a Plan, claimable by a worker."""
+
+	id: str = field(default_factory=_new_id)
+	plan_id: str = ""
+	title: str = ""
+	description: str = ""
+	files_hint: str = ""  # comma-separated paths this unit likely touches
+	verification_hint: str = ""  # specific verification focus
+	priority: int = 1  # 1=highest
+	status: str = "pending"  # pending/claimed/running/completed/failed/blocked
+	worker_id: str | None = None
+	round_id: str | None = None  # link to Round for mission mode
+	handoff_id: str | None = None  # structured handoff from worker
+	depends_on: str = ""  # comma-separated WorkUnit IDs
+	branch_name: str = ""
+	claimed_at: str | None = None
+	heartbeat_at: str | None = None
+	started_at: str | None = None
+	finished_at: str | None = None
+	exit_code: int | None = None
+	commit_hash: str | None = None
+	output_summary: str = ""
+	attempt: int = 0
+	max_attempts: int = 3
+	unit_type: str = "implementation"  # implementation/research/audit/design/experiment
+	experiment_mode: bool = False
+	timeout: int | None = None  # per-unit timeout override (seconds)
+	verification_command: str | None = None  # per-unit verification override
+	epoch_id: str | None = None  # continuous mode epoch
+	acceptance_criteria: str = ""  # what must be true for this unit to be "done"
+	specialist: str = ""  # e.g. "test-writer", "refactorer", "debugger", or empty for general
+	session_id: str = ""  # Claude Code session ID for --resume
+	input_tokens: int = 0
+	output_tokens: int = 0
+	cost_usd: float = 0.0
+	speculation_score: float = 0.0
+	speculation_parent_id: str = ""
+	parent_unit_id: str = ""  # retry lineage: ID of the unit this retry originated from
+	write_scope: list[str] = field(default_factory=list)  # files/dirs this unit intends to modify
+
+
+@dataclass
+class Worker:
+	"""A parallel worker agent and its workspace."""
+
+	id: str = field(default_factory=_new_id)
+	workspace_path: str = ""
+	status: str = "idle"  # idle/working/dead
+	current_unit_id: str | None = None
+	pid: int | None = None
+	started_at: str = field(default_factory=_now_iso)
+	last_heartbeat: str = field(default_factory=_now_iso)
+	units_completed: int = 0
+	units_failed: int = 0
+	total_cost_usd: float = 0.0
+	backend_type: str = "local"  # local/ssh/container
+	backend_metadata: str = ""  # JSON blob for backend-specific data
+
+
+@dataclass
+class MergeRequest:
+	"""A request to merge a completed work unit into the base branch."""
+
+	id: str = field(default_factory=_new_id)
+	work_unit_id: str = ""
+	worker_id: str = ""
+	branch_name: str = ""
+	commit_hash: str = ""
+	status: str = "pending"  # pending/verifying/merged/rejected/conflict
+	position: int = 0
+	created_at: str = field(default_factory=_now_iso)
+	verified_at: str | None = None
+	merged_at: str | None = None
+	rejection_reason: str = ""
+	rebase_attempts: int = 0
+
+
+# -- Mission mode models --
+
+
+@dataclass
+class Mission:
+	"""A continuous development mission toward a single objective."""
+
+	id: str = field(default_factory=_new_id)
+	objective: str = ""
+	status: str = "pending"  # pending/running/completed/failed/stalled/stopped
+	started_at: str = field(default_factory=_now_iso)
+	finished_at: str | None = None
+	total_rounds: int = 0
+	total_cost_usd: float = 0.0
+	final_score: float = 0.0
+	stopped_reason: str = ""
+	chain_id: str = ""
+
+
+@dataclass
+class Round:
+	"""A single plan-execute-evaluate cycle within a mission."""
+
+	id: str = field(default_factory=_new_id)
+	mission_id: str = ""
+	number: int = 0
+	status: str = "pending"  # pending/planning/executing/evaluating/completed/failed
+	started_at: str = field(default_factory=_now_iso)
+	finished_at: str | None = None
+	snapshot_hash: str = ""  # git commit hash of autodev/green at round start
+	plan_id: str | None = None
+	objective_score: float = 0.0
+	objective_met: bool = False
+	total_units: int = 0
+	completed_units: int = 0
+	failed_units: int = 0
+	cost_usd: float = 0.0
+	discoveries: str = ""  # JSON array of discovery strings from workers
+
+
+class Handoff(BaseModel):
+	"""Structured output from a worker after executing a work unit."""
+
+	id: str = Field(default_factory=_new_id)
+	work_unit_id: str = ""
+	round_id: str = ""
+	status: str = ""  # completed/failed/blocked
+	commits: list[str] = Field(default_factory=list)
+	summary: str = ""
+	discoveries: list[str] = Field(default_factory=list)
+	concerns: list[str] = Field(default_factory=list)
+	files_changed: list[str] = Field(default_factory=list)
+	epoch_id: str | None = None  # continuous mode epoch
+
+
+# -- Feedback models --
+
+
+@dataclass
+class Reflection:
+	"""Post-round structured reflection grounded in objective metrics."""
+
+	id: str = field(default_factory=_new_id)
+	mission_id: str = ""
+	round_id: str = ""
+	round_number: int = 0
+	timestamp: str = field(default_factory=_now_iso)
+	# Objective metrics (from Snapshot/SnapshotDelta)
+	tests_before: int = 0
+	tests_after: int = 0
+	tests_delta: int = 0
+	lint_delta: int = 0
+	type_delta: int = 0
+	# Round performance
+	objective_score: float = 0.0
+	score_delta: float = 0.0  # vs previous round
+	units_planned: int = 0
+	units_completed: int = 0
+	units_failed: int = 0
+	completion_rate: float = 0.0
+	# Planning metrics
+	plan_depth: int = 0
+	plan_strategy: str = ""  # "subdivide" or "leaves" at root
+	# Merge/fixup metrics
+	fixup_promoted: bool = False
+	fixup_attempts: int = 0
+	merge_conflicts: int = 0
+	# Discoveries
+	discoveries_count: int = 0
+	# Continuous mode
+	epoch_id: str | None = None
+
+
+@dataclass
+class Reward:
+	"""Composite reward score grounded in objective signals."""
+
+	id: str = field(default_factory=_new_id)
+	round_id: str = ""
+	mission_id: str = ""
+	timestamp: str = field(default_factory=_now_iso)
+	reward: float = 0.0
+	# Components (all derived from objective data)
+	verification_improvement: float = 0.0  # SnapshotDelta: did quality improve?
+	completion_rate: float = 0.0  # units_completed / units_planned
+	score_progress: float = 0.0  # objective score delta
+	fixup_efficiency: float = 0.0  # promoted on first attempt?
+	no_regression: float = 0.0  # no tests broken, no security added
+	# Continuous mode
+	epoch_id: str | None = None
+
+
+@dataclass
+class Signal:
+	"""Cross-process signal for controlling a running mission."""
+
+	id: str = field(default_factory=_new_id)
+	mission_id: str = ""
+	signal_type: str = ""  # stop/retry_unit/adjust
+	payload: str = ""  # JSON: unit_id for retry, params for adjust
+	status: str = "pending"  # pending/acknowledged/expired
+	created_at: str = field(default_factory=_now_iso)
+	acknowledged_at: str | None = None
+
+
+@dataclass
+class Experience:
+	"""Successful approach indexed by task keywords for retrieval."""
+
+	id: str = field(default_factory=_new_id)
+	round_id: str = ""
+	work_unit_id: str = ""
+	timestamp: str = field(default_factory=_now_iso)
+	# Task description
+	title: str = ""
+	scope: str = ""
+	files_hint: str = ""
+	# Outcome
+	status: str = ""  # completed/failed
+	summary: str = ""
+	files_changed: str = ""  # JSON array
+	# Approach data
+	discoveries: str = ""  # JSON array
+	concerns: str = ""  # JSON array
+	# Reward
+	reward: float = 0.0
+	# Continuous mode
+	epoch_id: str | None = None
+
+
+# -- Continuous mode models --
+
+
+@dataclass
+class Epoch:
+	"""A grouping of consecutive units between planner invocations."""
+
+	id: str = field(default_factory=_new_id)
+	mission_id: str = ""
+	number: int = 0
+	started_at: str = field(default_factory=_now_iso)
+	finished_at: str | None = None
+	units_planned: int = 0
+	units_completed: int = 0
+	units_failed: int = 0
+	score_at_start: float = 0.0
+	score_at_end: float = 0.0
+	planner_cost_usd: float = 0.0
+
+
+@dataclass
+class UnitEvent:
+	"""A timeline event for a single unit in continuous mode."""
+
+	id: str = field(default_factory=_new_id)
+	mission_id: str = ""
+	epoch_id: str = ""
+	work_unit_id: str = ""
+	event_type: str = ""  # dispatched/completed/failed/merged/rejected
+	timestamp: str = field(default_factory=_now_iso)
+	score_after: float = 0.0
+	details: str = ""  # JSON blob for extra info
+	input_tokens: int = 0
+	output_tokens: int = 0
+
+
+@dataclass
+class KnowledgeItem:
+	"""Accumulated knowledge from research/audit/design units."""
+
+	id: str = field(default_factory=_new_id)
+	mission_id: str = ""
+	source_unit_id: str = ""
+	source_unit_type: str = ""  # research/audit/design
+	title: str = ""
+	content: str = ""
+	rationale: str = ""
+	scope: str = ""
+	confidence: float = 1.0
+	created_at: str = field(default_factory=_now_iso)
+
+
+@dataclass
+class ResearchResult:
+	"""Result of the pre-planning research phase."""
+
+	strategy: str = ""
+	findings: list[dict] = field(default_factory=list)
+	cost_usd: float = 0.0
+
+
+@dataclass
+class CriticFinding:
+	"""Output of a critic agent pass (research, plan review, or chaining)."""
+
+	findings: list[str] = field(default_factory=list)
+	risks: list[str] = field(default_factory=list)
+	gaps: list[str] = field(default_factory=list)
+	open_questions: list[str] = field(default_factory=list)
+	verdict: str = "needs_refinement"  # "sufficient" | "needs_refinement"
+	confidence: float = 0.0
+	strategy_text: str = ""
+	proposed_objective: str = ""  # only used in chaining mode
+
+
+@dataclass
+class DeliberationResult:
+	"""Summary of a deliberation loop (critic/planner rounds)."""
+
+	rounds_taken: int = 0
+	final_verdict: str = ""
+	strategy: str = ""
+	cost_usd: float = 0.0
+
+
+# -- Strategic context models --
+
+
+@dataclass
+class StrategicContext:
+	"""Rolling strategic context that persists across missions."""
+
+	id: str = field(default_factory=_new_id)
+	mission_id: str = ""
+	timestamp: str = field(default_factory=_now_iso)
+	what_attempted: str = ""
+	what_worked: str = ""
+	what_failed: str = ""
+	recommended_next: str = ""
+
+
+# -- Experiment models --
+
+
+@dataclass
+class ExperimentResult:
+	"""Result of an experiment-mode work unit comparing multiple approaches."""
+
+	id: str = field(default_factory=_new_id)
+	work_unit_id: str = ""
+	epoch_id: str | None = None
+	mission_id: str = ""
+	timestamp: str = field(default_factory=_now_iso)
+	approach_count: int = 2
+	comparison_report: str = ""  # JSON blob
+	recommended_approach: str = ""
+	created_at: str = field(default_factory=_now_iso)
+
+
+@dataclass
+class SpeculationResult:
+	"""Result of a speculation branching execution with winner selection."""
+
+	id: str = field(default_factory=_new_id)
+	parent_unit_id: str = ""
+	winner_branch_id: str = ""
+	mission_id: str = ""
+	epoch_id: str = ""
+	branch_count: int = 0
+	branch_ids: str = ""  # comma-separated
+	branch_scores: str = ""  # JSON: {branch_id: score}
+	total_speculation_cost_usd: float = 0.0
+	selection_metric: str = "review_score"
+	timestamp: str = field(default_factory=_now_iso)
+
+
+@dataclass
+class UnitReview:
+	"""LLM review of a merged work unit's code changes."""
+
+	id: str = field(default_factory=_new_id)
+	work_unit_id: str = ""
+	mission_id: str = ""
+	epoch_id: str = ""
+	timestamp: str = field(default_factory=_now_iso)
+	alignment_score: int = 0  # 1-10: how well the diff aligns with the objective
+	approach_score: int = 0  # 1-10: quality of the implementation approach
+	test_score: int = 0  # 1-10: meaningfulness of the tests
+	criteria_met_score: int = 0  # 1-10: how well acceptance criteria were met
+	avg_score: float = 0.0
+	rationale: str = ""
+	model: str = ""
+	cost_usd: float = 0.0
+
+
+@dataclass
+class TrajectoryRating:
+	"""Human rating of a mission's overall trajectory."""
+
+	id: str = field(default_factory=_new_id)
+	mission_id: str = ""
+	rating: int = 0  # 1-10
+	feedback: str = ""
+	timestamp: str = field(default_factory=_now_iso)
+
+
+@dataclass
+class DecompositionGrade:
+	"""Algorithmic grading of a planner's decomposition quality."""
+
+	id: str = field(default_factory=_new_id)
+	plan_id: str = ""
+	epoch_id: str = ""
+	mission_id: str = ""
+	timestamp: str = field(default_factory=_now_iso)
+	avg_review_score: float = 0.0
+	retry_rate: float = 0.0
+	overlap_rate: float = 0.0
+	completion_rate: float = 0.0
+	composite_score: float = 0.0
+	unit_count: int = 0
+
+
+class ContextScope:
+	"""Constants for context item scoping levels."""
+
+	MISSION = "mission"
+	ROUND = "round"
+	UNIT = "unit"
+
+
+@dataclass
+class ContextItem:
+	"""A typed context item produced by workers as discoveries.
+
+	Used to selectively inject relevant context into subsequent worker prompts
+	based on scope overlap with the work unit being dispatched.
+	"""
+
+	id: str = field(default_factory=_new_id)
+	item_type: str = ""  # architectural, convention, gotcha, dependency, api, pattern
+	scope: str = ""  # comma-separated file paths or module names this applies to
+	content: str = ""
+	source_unit_id: str = ""  # work unit that produced this context
+	round_id: str = ""
+	mission_id: str = ""  # mission this context belongs to
+	confidence: float = 1.0  # 0.0-1.0, how confident the worker was
+	scope_level: str = ""  # mission/round/unit -- filtering granularity
+	created_at: str = field(default_factory=_now_iso)
+
+
+@dataclass
+class DiscoveryItem:
+	"""A single improvement discovered during codebase analysis."""
+
+	id: str = field(default_factory=_new_id)
+	discovery_id: str = ""  # link to parent DiscoveryResult
+	track: str = ""  # feature, quality, or security
+	title: str = ""
+	description: str = ""
+	rationale: str = ""
+	files_hint: str = ""
+	impact: int = 5
+	effort: int = 5
+	priority_score: float = 0.0  # impact * (11 - effort) / 10
+	status: str = "proposed"  # proposed/approved/rejected/completed
+
+
+@dataclass
+class DiscoveryResult:
+	"""Result of a discovery run analyzing a target codebase."""
+
+	id: str = field(default_factory=_new_id)
+	target_path: str = ""
+	timestamp: str = field(default_factory=_now_iso)
+	raw_output: str = ""
+	model: str = ""
+	item_count: int = 0
+	error_type: str = ""  # timeout/budget_exceeded/permission_denied/workspace_corruption/unknown
+	error_detail: str = ""
+
+
+@dataclass
+class PromptVariant:
+	"""A prompt variant for A/B testing via UCB1 multi-armed bandit."""
+
+	id: str = field(default_factory=_new_id)
+	component: str = ""  # "worker" / "planner" / "reviewer"
+	variant_id: str = ""  # human-readable slug
+	content: str = ""
+	win_rate: float = 0.0
+	sample_count: int = 0
+	created_at: str = field(default_factory=_now_iso)
+	parent_variant_id: str = ""
+
+
+@dataclass
+class PromptOutcome:
+	"""Recorded outcome for a prompt variant trial."""
+
+	id: str = field(default_factory=_new_id)
+	variant_id: str = ""
+	outcome: str = ""  # "pass" / "fail"
+	context: str = ""  # JSON str
+	recorded_at: str = field(default_factory=_now_iso)
+
+
+@dataclass
+class EpisodicMemory:
+	"""A single episodic memory from a mission event."""
+
+	id: str = field(default_factory=_new_id)
+	event_type: str = ""  # merge_success / merge_conflict / test_failure / fixup_success
+	content: str = ""
+	outcome: str = ""
+	scope_tokens: str = ""  # comma-separated
+	confidence: float = 1.0
+	access_count: int = 0
+	last_accessed: str = field(default_factory=_now_iso)
+	created_at: str = field(default_factory=_now_iso)
+	ttl_days: int = 30
+
+
+@dataclass
+class SemanticMemory:
+	"""A generalized rule distilled from multiple episodes."""
+
+	id: str = field(default_factory=_new_id)
+	content: str = ""
+	source_episode_ids: str = ""  # comma-separated
+	confidence: float = 1.0
+	application_count: int = 0
+	created_at: str = field(default_factory=_now_iso)
+
+
+# -- Campaign models --
+
+
+@dataclass
+class CampaignObjective:
+	"""A single objective within a campaign, with dependency tracking."""
+
+	objective: str = ""
+	depends_on_indices: list[int] = field(default_factory=list)
+	status: str = "pending"  # pending/running/completed/failed/skipped
+	mission_id: str | None = None
+	config_overrides: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class Campaign:
+	"""A structured multi-objective workflow executed as chained missions."""
+
+	id: str = field(default_factory=_new_id)
+	name: str = ""
+	objectives: list[CampaignObjective] = field(default_factory=list)
+	status: str = "pending"  # pending/running/completed/failed
+	started_at: str | None = None
+	finished_at: str | None = None
+

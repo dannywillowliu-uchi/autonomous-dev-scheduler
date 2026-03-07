@@ -7,9 +7,9 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from mission_control.db import Database
-from mission_control.models import Epoch, Handoff, Mission, Plan, WorkUnit
-from mission_control.worker import _build_handoff
+from autodev.db import Database
+from autodev.models import Epoch, Handoff, Mission, Plan, WorkUnit
+from autodev.worker import _build_handoff
 
 # -- Handoff model tests --
 

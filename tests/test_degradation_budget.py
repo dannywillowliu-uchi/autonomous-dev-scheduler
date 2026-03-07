@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from mission_control.config import DegradationConfig
-from mission_control.degradation import (
+from autodev.config import DegradationConfig
+from autodev.degradation import (
 	DegradationLevel,
 	DegradationManager,
 )

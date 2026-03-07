@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from mission_control.json_utils import _find_balanced, extract_json_from_text
+from autodev.json_utils import _find_balanced, extract_json_from_text
 
 
 class TestExtractJsonFromText:

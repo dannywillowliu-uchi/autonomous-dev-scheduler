@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from mission_control.config import MissionConfig
-from mission_control.hitl import ApprovalGate, ApprovalRequest, ApprovalResult
+from autodev.config import MissionConfig
+from autodev.hitl import ApprovalGate, ApprovalRequest, ApprovalResult
 
 
 def _make_config(tmp_path: Path) -> MissionConfig:

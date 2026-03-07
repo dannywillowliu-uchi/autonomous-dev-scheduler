@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from mission_control.diff_reviewer import (
+from autodev.diff_reviewer import (
 	_build_review_prompt,
 	_clamp_score,
 	_parse_review_output,
 	compute_review_trend,
 	is_quality_declining,
 )
-from mission_control.models import UnitReview, WorkUnit
+from autodev.models import UnitReview, WorkUnit
 
 
 class TestBuildReviewPrompt:

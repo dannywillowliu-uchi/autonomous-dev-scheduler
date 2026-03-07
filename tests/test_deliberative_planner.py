@@ -7,17 +7,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mission_control.config import (
+from autodev.config import (
 	DeliberationConfig,
 	MissionConfig,
 	PlannerConfig,
 	ResearchConfig,
 	TargetConfig,
 )
-from mission_control.context_gathering import get_intel_context
-from mission_control.db import Database
-from mission_control.deliberative_planner import DeliberativePlanner
-from mission_control.models import CriticFinding, Epoch, Mission, Plan, WorkUnit
+from autodev.context_gathering import get_intel_context
+from autodev.db import Database
+from autodev.deliberative_planner import DeliberativePlanner
+from autodev.models import CriticFinding, Epoch, Mission, Plan, WorkUnit
 
 
 def _config(tmp_path: Path) -> MissionConfig:
@@ -445,8 +445,8 @@ class TestIntelContext:
 		import json
 		from datetime import datetime, timezone
 
-		from mission_control.intelligence.models import AdaptationProposal
-		from mission_control.intelligence.scanner import IntelReport
+		from autodev.intelligence.models import AdaptationProposal
+		from autodev.intelligence.scanner import IntelReport
 
 		# Build a cached report with 2 proposals
 		proposals = [
@@ -489,33 +489,33 @@ class TestIntelContext:
 
 		with (
 			patch(
-				"mission_control.context_gathering.get_git_log",
+				"autodev.context_gathering.get_git_log",
 				new_callable=AsyncMock,
 				return_value="",
 			),
 			patch(
-				"mission_control.deliberative_planner.get_git_log",
+				"autodev.deliberative_planner.get_git_log",
 				new_callable=AsyncMock,
 				return_value="",
 			),
 			patch(
-				"mission_control.deliberative_planner.read_backlog",
+				"autodev.deliberative_planner.read_backlog",
 				return_value="",
 			),
 			patch(
-				"mission_control.deliberative_planner.get_past_missions",
+				"autodev.deliberative_planner.get_past_missions",
 				return_value="",
 			),
 			patch(
-				"mission_control.deliberative_planner.get_strategic_context",
+				"autodev.deliberative_planner.get_strategic_context",
 				return_value="",
 			),
 			patch(
-				"mission_control.deliberative_planner.get_episodic_context",
+				"autodev.deliberative_planner.get_episodic_context",
 				return_value="",
 			),
 			patch(
-				"mission_control.deliberative_planner.get_human_preferences",
+				"autodev.deliberative_planner.get_human_preferences",
 				return_value="",
 			),
 		):

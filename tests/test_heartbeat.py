@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mission_control.heartbeat import Heartbeat
+from autodev.heartbeat import Heartbeat
 
 
 @pytest.fixture
@@ -228,7 +228,7 @@ class TestCostMonitoring:
 		# Simulate entries spread over 60 seconds: $0.50 + $0.50 = $1.00 over 1 min
 		hb._cost_entries.append((base - 60, 0.50))
 		hb._cost_entries.append((base - 30, 0.50))
-		with patch("mission_control.heartbeat.time.monotonic", return_value=base):
+		with patch("autodev.heartbeat.time.monotonic", return_value=base):
 			rate = hb.get_cost_rate()
 		# $1.00 total over 60s span = $1.00/min
 		assert abs(rate - 1.0) < 0.01
@@ -242,7 +242,7 @@ class TestCostMonitoring:
 		# Entries inside the window
 		hb._cost_entries.append((base - 30, 0.30))
 		hb._cost_entries.append((base - 10, 0.20))
-		with patch("mission_control.heartbeat.time.monotonic", return_value=base):
+		with patch("autodev.heartbeat.time.monotonic", return_value=base):
 			rate = hb.get_cost_rate()
 		# After pruning: $0.30 + $0.20 = $0.50 over 30s span = $1.00/min
 		assert abs(rate - 1.0) < 0.05
@@ -257,7 +257,7 @@ class TestCostMonitoring:
 		# $2.00 over 120s = $1.00/min
 		hb._cost_entries.append((base - 120, 1.00))
 		hb._cost_entries.append((base - 60, 1.00))
-		with patch("mission_control.heartbeat.time.monotonic", return_value=base):
+		with patch("autodev.heartbeat.time.monotonic", return_value=base):
 			minutes = hb.project_budget_exhaustion(5.0)
 		assert minutes is not None
 		assert abs(minutes - 5.0) < 0.1
@@ -272,7 +272,7 @@ class TestCostMonitoring:
 		# $2.00 over 60s = $2.00/min, well above 0.50 threshold
 		hb._cost_entries.append((base - 60, 1.00))
 		hb._cost_entries.append((base - 30, 1.00))
-		with patch("mission_control.heartbeat.time.monotonic", return_value=base):
+		with patch("autodev.heartbeat.time.monotonic", return_value=base):
 			await hb.check_cost_health(remaining_budget=100.0)
 		notifier.send.assert_called_once()
 		msg = notifier.send.call_args[0][0]
@@ -290,7 +290,7 @@ class TestCostMonitoring:
 		# $2.00 over 60s = $2.00/min; remaining $5 => ~2.5 min left (< 10 min warning)
 		hb._cost_entries.append((base - 60, 1.00))
 		hb._cost_entries.append((base - 30, 1.00))
-		with patch("mission_control.heartbeat.time.monotonic", return_value=base):
+		with patch("autodev.heartbeat.time.monotonic", return_value=base):
 			await hb.check_cost_health(remaining_budget=5.0)
 		notifier.send.assert_called_once()
 		msg = notifier.send.call_args[0][0]
@@ -307,7 +307,7 @@ class TestCostMonitoring:
 		# $0.10 over 60s = $0.10/min, well below threshold; budget lasts 1000 min
 		hb._cost_entries.append((base - 60, 0.05))
 		hb._cost_entries.append((base - 30, 0.05))
-		with patch("mission_control.heartbeat.time.monotonic", return_value=base):
+		with patch("autodev.heartbeat.time.monotonic", return_value=base):
 			await hb.check_cost_health(remaining_budget=100.0)
 		notifier.send.assert_not_called()
 
@@ -321,7 +321,7 @@ class TestCostMonitoring:
 		base = time.monotonic()
 		hb._cost_entries.append((base - 60, 1.00))
 		hb._cost_entries.append((base - 30, 1.00))
-		with patch("mission_control.heartbeat.time.monotonic", return_value=base):
+		with patch("autodev.heartbeat.time.monotonic", return_value=base):
 			await hb.check(total_merged=0, total_failed=0, remaining_budget=50.0)
 		# Should have sent a cost alert (first call) since rate exceeds 0.01
 		cost_alert_sent = any(

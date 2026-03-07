@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mission_control.config import MissionConfig, TargetConfig
-from mission_control.continuous_controller import ContinuousMissionResult
-from mission_control.db import Database
-from mission_control.mission_report import generate_mission_report
-from mission_control.models import Epoch, Handoff, Mission, Plan, UnitEvent, WorkUnit
+from autodev.config import MissionConfig, TargetConfig
+from autodev.continuous_controller import ContinuousMissionResult
+from autodev.db import Database
+from autodev.mission_report import generate_mission_report
+from autodev.models import Epoch, Handoff, Mission, Plan, UnitEvent, WorkUnit
 
 
 def _make_config(tmp_path: Path) -> MissionConfig:

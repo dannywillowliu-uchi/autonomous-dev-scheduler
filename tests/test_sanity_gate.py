@@ -6,15 +6,15 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from mission_control.config import GreenBranchConfig, MissionConfig, TargetConfig, VerificationConfig
-from mission_control.db import Database
-from mission_control.green_branch import (
+from autodev.config import GreenBranchConfig, MissionConfig, TargetConfig, VerificationConfig
+from autodev.db import Database
+from autodev.green_branch import (
 	MAX_DIFF_LINES,
 	GreenBranchManager,
 	_is_test_file,
 	_sanity_check_diff,
 )
-from mission_control.models import WorkUnit
+from autodev.models import WorkUnit
 
 # -- Helpers --
 
@@ -60,8 +60,8 @@ class TestSanityCheckDiffNonEmpty:
 		assert result.rejection_reason == ""
 
 	def test_valid_diff_with_unit_passes(self) -> None:
-		diff = _make_diff("src/mission_control/green_branch.py")
-		unit = _unit(files_hint="src/mission_control/green_branch.py")
+		diff = _make_diff("src/autodev/green_branch.py")
+		unit = _unit(files_hint="src/autodev/green_branch.py")
 		result = _sanity_check_diff(diff, unit)
 		assert result.passed
 		assert not result.warnings
@@ -70,15 +70,15 @@ class TestSanityCheckDiffNonEmpty:
 class TestSanityCheckDiffFilesHintOverlap:
 	def test_no_overlap_warns(self) -> None:
 		diff = _make_diff("src/other_module.py")
-		unit = _unit(files_hint="src/mission_control/green_branch.py")
+		unit = _unit(files_hint="src/autodev/green_branch.py")
 		result = _sanity_check_diff(diff, unit)
 		assert result.passed  # warning, not rejection
 		assert len(result.warnings) == 1
 		assert "overlap" in result.warnings[0].lower()
 
 	def test_directory_prefix_overlap_ok(self) -> None:
-		diff = _make_diff("src/mission_control/green_branch.py")
-		unit = _unit(files_hint="src/mission_control/")
+		diff = _make_diff("src/autodev/green_branch.py")
+		unit = _unit(files_hint="src/autodev/")
 		result = _sanity_check_diff(diff, unit)
 		assert result.passed
 		assert not result.warnings
@@ -157,7 +157,7 @@ class TestIsTestFile:
 
 	@pytest.mark.parametrize("path", [
 		"src/foo.py",
-		"src/mission_control/worker.py",
+		"src/autodev/worker.py",
 		"lib/utils.py",
 	])
 	def test_not_detected_as_test(self, path: str) -> None:
@@ -183,8 +183,8 @@ def _config() -> MissionConfig:
 		verification=VerificationConfig(command="pytest -q"),
 	)
 	mc.green_branch = GreenBranchConfig(
-		working_branch="mc/working",
-		green_branch="mc/green",
+		working_branch="autodev/working",
+		green_branch="autodev/green",
 	)
 	mc.continuous.verify_before_merge = False
 	return mc

@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from mission_control.constants import (
+from autodev.constants import (
 	EVENT_TO_STATUS,
 	UNIT_EVENT_CLAIMED,
 	UNIT_EVENT_COMPLETED,
@@ -19,9 +19,9 @@ from mission_control.constants import (
 	UNIT_EVENT_RUNNING,
 	UNIT_EVENT_TYPES,
 )
-from mission_control.db import Database, derive_unit_status
-from mission_control.event_stream import EventStream
-from mission_control.models import Epoch, Mission, Plan, Signal, UnitEvent, WorkUnit, _now_iso
+from autodev.db import Database, derive_unit_status
+from autodev.event_stream import EventStream
+from autodev.models import Epoch, Mission, Plan, Signal, UnitEvent, WorkUnit, _now_iso
 
 
 @pytest.fixture

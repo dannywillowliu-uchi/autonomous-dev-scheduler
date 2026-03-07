@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from textwrap import dedent
 
-from mission_control.snapshot import (
+from autodev.snapshot import (
 	_snapshot_cache,
 	_snapshot_entries_cache,
 	build_incremental_snapshot,
@@ -158,8 +158,8 @@ class TestWorkerPromptIntegration:
 				return "ok"
 		""")
 
-		from mission_control.models import WorkUnit
-		from mission_control.worker import render_mission_worker_prompt
+		from autodev.models import WorkUnit
+		from autodev.worker import render_mission_worker_prompt
 
 		unit = WorkUnit(
 			title="Fix API handler",
@@ -182,15 +182,15 @@ class TestWorkerPromptIntegration:
 			unit=unit,
 			config=_Cfg(),  # type: ignore[arg-type]
 			workspace_path=str(tmp_path),
-			branch_name="mc/test",
+			branch_name="autodev/test",
 			project_root=tmp_path,
 		)
 		assert "Project Snapshot" in prompt
 		assert "def handle_request" in prompt
 
 	def test_render_no_snapshot_without_project_root(self) -> None:
-		from mission_control.models import WorkUnit
-		from mission_control.worker import render_mission_worker_prompt
+		from autodev.models import WorkUnit
+		from autodev.worker import render_mission_worker_prompt
 
 		unit = WorkUnit(
 			title="Some task",
@@ -211,6 +211,6 @@ class TestWorkerPromptIntegration:
 			unit=unit,
 			config=_Cfg(),  # type: ignore[arg-type]
 			workspace_path="/tmp/ws",
-			branch_name="mc/test",
+			branch_name="autodev/test",
 		)
 		assert "Project Snapshot" not in prompt

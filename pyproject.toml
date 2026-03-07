@@ -57,7 +57,7 @@ tracing = [
 ]
 
 [project.scripts]
-mc = "mission_control.cli:main"
+autodev = "autodev.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

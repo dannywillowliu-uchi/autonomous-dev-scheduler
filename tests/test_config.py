@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from mission_control.config import (
+from autodev.config import (
 	_ENV_DENYLIST,
 	ContainerConfig,
 	ContinuousConfig,
@@ -24,12 +24,12 @@ from mission_control.config import (
 	load_config,
 	validate_config,
 )
-from mission_control.constants import DEFAULT_LIMITS, EVALUATOR_WEIGHTS, GRADING_WEIGHTS
+from autodev.constants import DEFAULT_LIMITS, EVALUATOR_WEIGHTS, GRADING_WEIGHTS
 
 
 @pytest.fixture()
 def full_config(tmp_path: Path) -> Path:
-	toml = tmp_path / "mission-control.toml"
+	toml = tmp_path / "autodev.toml"
 	toml.write_text("""\
 [target]
 name = "my-project"
@@ -60,7 +60,7 @@ max_per_run_usd = 50.0
 
 @pytest.fixture()
 def minimal_config(tmp_path: Path) -> Path:
-	toml = tmp_path / "mission-control.toml"
+	toml = tmp_path / "autodev.toml"
 	toml.write_text("""\
 [target]
 name = "tiny"
@@ -250,7 +250,7 @@ def test_models_defaults(minimal_config: Path) -> None:
 
 def test_models_parsed(tmp_path: Path) -> None:
 	"""[models] section values are parsed correctly."""
-	toml = tmp_path / "mission-control.toml"
+	toml = tmp_path / "autodev.toml"
 	toml.write_text("""\
 [target]
 name = "test"
@@ -271,7 +271,7 @@ architect_editor_mode = true
 
 def test_models_partial(tmp_path: Path) -> None:
 	"""Partial [models] section fills only specified fields, rest default."""
-	toml = tmp_path / "mission-control.toml"
+	toml = tmp_path / "autodev.toml"
 	toml.write_text("""\
 [target]
 name = "test"
@@ -306,7 +306,7 @@ class TestContinuousConfig:
 		assert cc.cooldown_between_units == 0
 
 	def test_toml_parsing(self, tmp_path: Path) -> None:
-		toml = tmp_path / "mission-control.toml"
+		toml = tmp_path / "autodev.toml"
 		toml.write_text("""\
 [target]
 name = "test"
@@ -343,7 +343,7 @@ def test_continuous_failure_fields_defaults() -> None:
 
 def test_continuous_failure_fields_parsed(tmp_path: Path) -> None:
 	"""[continuous] failure fields are parsed from TOML."""
-	toml = tmp_path / "mission-control.toml"
+	toml = tmp_path / "autodev.toml"
 	toml.write_text("""\
 [target]
 name = "test"
@@ -376,7 +376,7 @@ def test_security_defaults() -> None:
 
 def test_security_parsed(tmp_path: Path) -> None:
 	"""[security] extra_env_keys are parsed from TOML."""
-	toml = tmp_path / "mission-control.toml"
+	toml = tmp_path / "autodev.toml"
 	toml.write_text("""\
 [target]
 name = "test"
@@ -500,7 +500,7 @@ def test_env_denylist_coverage() -> None:
 def test_container_defaults() -> None:
 	"""ContainerConfig defaults are sensible."""
 	cc = ContainerConfig()
-	assert cc.image == "mission-control-worker:latest"
+	assert cc.image == "autodev-worker:latest"
 	assert cc.docker_executable == "docker"
 	assert cc.workspace_mount == "/workspace"
 	assert cc.claude_config_dir == ""
@@ -514,7 +514,7 @@ def test_container_defaults() -> None:
 
 def test_container_parsed(tmp_path: Path) -> None:
 	"""[backend.container] values are parsed correctly from TOML."""
-	toml = tmp_path / "mission-control.toml"
+	toml = tmp_path / "autodev.toml"
 	toml.write_text("""\
 [target]
 name = "test"
@@ -552,7 +552,7 @@ startup_timeout = 120
 
 def test_container_partial(tmp_path: Path) -> None:
 	"""Partial [backend.container] fills only specified fields."""
-	toml = tmp_path / "mission-control.toml"
+	toml = tmp_path / "autodev.toml"
 	toml.write_text("""\
 [target]
 name = "test"
@@ -625,7 +625,7 @@ class TestHITLConfig:
 
 	def test_hitl_parsed_from_toml(self, tmp_path: Path) -> None:
 		"""[hitl] section values are parsed correctly from TOML."""
-		toml = tmp_path / "mission-control.toml"
+		toml = tmp_path / "autodev.toml"
 		toml.write_text("""\
 [target]
 name = "test"
@@ -683,7 +683,7 @@ class TestZFCConfig:
 
 	def test_zfc_parsed_from_toml(self, tmp_path: Path) -> None:
 		"""[zfc] section values are parsed correctly from TOML."""
-		toml = tmp_path / "mission-control.toml"
+		toml = tmp_path / "autodev.toml"
 		toml.write_text("""\
 [target]
 name = "test"
@@ -703,7 +703,7 @@ model = "sonnet"
 
 	def test_zfc_partial(self, tmp_path: Path) -> None:
 		"""Partial [zfc] section fills only specified fields."""
-		toml = tmp_path / "mission-control.toml"
+		toml = tmp_path / "autodev.toml"
 		toml.write_text("""\
 [target]
 name = "test"
@@ -729,7 +729,7 @@ zfc_fixup_prompts = true
 class TestEvaluatorConfig:
 	def test_evaluator_defaults(self) -> None:
 		"""EvaluatorConfig has correct defaults."""
-		from mission_control.config import EvaluatorConfig
+		from autodev.config import EvaluatorConfig
 		ec = EvaluatorConfig()
 		assert ec.enabled is False
 		assert ec.model == "sonnet"
@@ -745,7 +745,7 @@ class TestEvaluatorConfig:
 
 	def test_evaluator_parsed_from_toml(self, tmp_path: Path) -> None:
 		"""[evaluator] section values are parsed correctly from TOML."""
-		toml = tmp_path / "mission-control.toml"
+		toml = tmp_path / "autodev.toml"
 		toml.write_text("""\
 [target]
 name = "test"
@@ -779,7 +779,7 @@ max_turns = 20
 class TestReviewConfigUpdated:
 	def test_review_defaults_updated(self) -> None:
 		"""ReviewConfig defaults changed to haiku and lower budget."""
-		from mission_control.config import ReviewConfig
+		from autodev.config import ReviewConfig
 		rc = ReviewConfig()
 		assert rc.model == "haiku"
 		assert rc.budget_per_review_usd == 0.05
@@ -787,7 +787,7 @@ class TestReviewConfigUpdated:
 
 	def test_review_skip_when_criteria_parsed(self, tmp_path: Path) -> None:
 		"""[review] skip_when_criteria_passed is parsed from TOML."""
-		toml = tmp_path / "mission-control.toml"
+		toml = tmp_path / "autodev.toml"
 		toml.write_text("""\
 [target]
 name = "test"
@@ -927,7 +927,7 @@ class TestBuildClaudeCmd:
 
 class TestMCPConfigParsing:
 	def test_mcp_from_toml(self, tmp_path: Path) -> None:
-		toml = tmp_path / "mission-control.toml"
+		toml = tmp_path / "autodev.toml"
 		toml.write_text("""\
 [target]
 name = "test"
@@ -943,7 +943,7 @@ enabled = true
 		assert cfg.mcp.enabled is True
 
 	def test_mcp_disabled_from_toml(self, tmp_path: Path) -> None:
-		toml = tmp_path / "mission-control.toml"
+		toml = tmp_path / "autodev.toml"
 		toml.write_text("""\
 [target]
 name = "test"
@@ -958,7 +958,7 @@ enabled = false
 		assert cfg.mcp.enabled is False
 
 	def test_mcp_defaults_when_omitted(self, tmp_path: Path) -> None:
-		toml = tmp_path / "mission-control.toml"
+		toml = tmp_path / "autodev.toml"
 		toml.write_text("""\
 [target]
 name = "test"
@@ -972,7 +972,7 @@ objective = "build"
 
 class TestResearchConfigParsing:
 	def test_research_from_toml(self, tmp_path: Path) -> None:
-		toml = tmp_path / "mission-control.toml"
+		toml = tmp_path / "autodev.toml"
 		toml.write_text("""\
 [target]
 name = "test"
@@ -992,7 +992,7 @@ model = "opus"
 		assert cfg.research.model == "opus"
 
 	def test_research_disabled(self, tmp_path: Path) -> None:
-		toml = tmp_path / "mission-control.toml"
+		toml = tmp_path / "autodev.toml"
 		toml.write_text("""\
 [target]
 name = "test"
@@ -1006,7 +1006,7 @@ enabled = false
 		assert cfg.research.enabled is False
 
 	def test_research_defaults_when_omitted(self, tmp_path: Path) -> None:
-		toml = tmp_path / "mission-control.toml"
+		toml = tmp_path / "autodev.toml"
 		toml.write_text("""\
 [target]
 name = "test"
@@ -1023,7 +1023,7 @@ objective = "build"
 class TestEnvAllowlist:
 	def test_agent_teams_env_passes_through(self, tmp_path: Path) -> None:
 		"""CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS passes through env."""
-		from mission_control.config import _ENV_ALLOWLIST
+		from autodev.config import _ENV_ALLOWLIST
 
 		assert "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS" in _ENV_ALLOWLIST
 

@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from mission_control.causal import (
+from autodev.causal import (
 	CausalAttributor,
 	CausalSignal,
 	format_dispatch_context,
 	get_mission_success_summary,
 )
-from mission_control.db import Database
-from mission_control.models import WorkUnit
+from autodev.db import Database
+from autodev.models import WorkUnit
 
 
 @pytest.fixture
@@ -42,7 +42,7 @@ class TestCausalSignalDefaults:
 class TestCausalSignalDB:
 	def test_insert_and_retrieve(self, db: Database) -> None:
 		# Insert prerequisite records for FK constraints
-		from mission_control.models import Mission, Plan
+		from autodev.models import Mission, Plan
 		mission = Mission(id="m-1", objective="test")
 		db.insert_mission(mission)
 		plan = Plan(id="p-1", objective="test")
@@ -83,7 +83,7 @@ class TestCausalSignalDB:
 		assert r.concurrent_units == 4
 
 	def test_get_signals_filters_by_mission(self, db: Database) -> None:
-		from mission_control.models import Mission, Plan
+		from autodev.models import Mission, Plan
 		for mid in ["m-1", "m-2"]:
 			db.insert_mission(Mission(id=mid, objective="test"))
 		plan = Plan(id="p-1", objective="test")
@@ -102,7 +102,7 @@ class TestCausalSignalDB:
 
 class TestCountCausalOutcomes:
 	def _seed_signals(self, db: Database, outcomes: list[tuple[str, str]]) -> None:
-		from mission_control.models import Mission, Plan
+		from autodev.models import Mission, Plan
 		db.insert_mission(Mission(id="m-1", objective="test"))
 		db.insert_plan(Plan(id="p-1", objective="test"))
 		for i, (specialist, outcome) in enumerate(outcomes):
@@ -129,7 +129,7 @@ class TestCountCausalOutcomes:
 		assert counts == {}
 
 	def test_bucketed_file_count(self, db: Database) -> None:
-		from mission_control.models import Mission, Plan
+		from autodev.models import Mission, Plan
 		db.insert_mission(Mission(id="m-1", objective="test"))
 		db.insert_plan(Plan(id="p-1", objective="test"))
 		# Insert signals with various file counts
@@ -155,7 +155,7 @@ class TestCountCausalOutcomes:
 
 class TestPFailure:
 	def _seed(self, db: Database, specialist: str, merged: int, failed: int) -> None:
-		from mission_control.models import Mission, Plan
+		from autodev.models import Mission, Plan
 		try:
 			db.insert_mission(Mission(id="m-1", objective="test"))
 		except Exception:
@@ -220,7 +220,7 @@ class TestPFailure:
 
 class TestTopRiskFactors:
 	def _seed_many(self, db: Database) -> None:
-		from mission_control.models import Mission, Plan
+		from autodev.models import Mission, Plan
 		db.insert_mission(Mission(id="m-1", objective="test"))
 		db.insert_plan(Plan(id="p-1", objective="test"))
 		idx = 0
@@ -353,7 +353,7 @@ class TestSignalFromWorkUnit:
 
 class TestCausalAttributorRecord:
 	def test_record_persists_signal(self, db: Database) -> None:
-		from mission_control.models import Mission, Plan
+		from autodev.models import Mission, Plan
 		db.insert_mission(Mission(id="m-1", objective="test"))
 		db.insert_plan(Plan(id="p-1", objective="test"))
 		db.insert_work_unit(WorkUnit(id="wu-1", plan_id="p-1", title="t"))
@@ -390,7 +390,7 @@ class TestFormatDispatchContext:
 		self, db: Database, specialist: str, merged: int, failed: int,
 		unit_type: str = "implementation", file_counts: list[int] | None = None,
 	) -> None:
-		from mission_control.models import Mission, Plan
+		from autodev.models import Mission, Plan
 		try:
 			db.insert_mission(Mission(id="m-dc", objective="test"))
 		except Exception:
@@ -436,7 +436,7 @@ class TestFormatDispatchContext:
 		assert "60%" in result
 
 	def test_high_risk_file_count_mitigation(self, db: Database) -> None:
-		from mission_control.models import Mission, Plan
+		from autodev.models import Mission, Plan
 		try:
 			db.insert_mission(Mission(id="m-fc", objective="test"))
 		except Exception:
@@ -460,7 +460,7 @@ class TestFormatDispatchContext:
 
 	def test_passes_model_and_epoch_size(self, db: Database) -> None:
 		# Ensure model parameter is forwarded to top_risk_factors
-		from mission_control.models import Mission, Plan
+		from autodev.models import Mission, Plan
 		try:
 			db.insert_mission(Mission(id="m-me", objective="test"))
 		except Exception:
@@ -487,7 +487,7 @@ class TestGetMissionSuccessSummary:
 	"""Tests for get_mission_success_summary()."""
 
 	def _setup_mission(self, db: Database, mission_id: str) -> None:
-		from mission_control.models import Mission, Plan
+		from autodev.models import Mission, Plan
 		try:
 			db.insert_mission(Mission(id=mission_id, objective="test"))
 		except Exception:

@@ -8,10 +8,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mission_control.db import Database
-from mission_control.launcher import MissionLauncher, _pid_alive
-from mission_control.models import Mission
-from mission_control.registry import ProjectRegistry
+from autodev.db import Database
+from autodev.launcher import MissionLauncher, _pid_alive
+from autodev.models import Mission
+from autodev.registry import ProjectRegistry
 
 
 @pytest.fixture
@@ -24,7 +24,7 @@ def registry(tmp_path):
 
 @pytest.fixture
 def sample_config(tmp_path):
-	config = tmp_path / "mission-control.toml"
+	config = tmp_path / "autodev.toml"
 	config.write_text(
 		'[target]\nname = "test"\npath = "."\nbranch = "main"\nobjective = "test"\n'
 		'[target.verification]\ncommand = "echo ok"\ntimeout = 60\n'
@@ -34,7 +34,7 @@ def sample_config(tmp_path):
 		"[scheduler.parallel]\nnum_workers = 2\n"
 		"[rounds]\nmax_rounds = 5\nstall_threshold = 3\n"
 		"[planner]\n"
-		"[green_branch]\nworking_branch = \"mc/working\"\ngreen_branch = \"mc/green\"\n"
+		"[green_branch]\nworking_branch = \"autodev/working\"\ngreen_branch = \"autodev/green\"\n"
 		'[backend]\ntype = "local"\n'
 	)
 	return config
@@ -58,7 +58,7 @@ class TestMissionLauncher:
 		with pytest.raises(FileNotFoundError):
 			launcher.launch("test")
 
-	@patch("mission_control.launcher.subprocess.Popen")
+	@patch("autodev.launcher.subprocess.Popen")
 	def test_launch_spawns_subprocess(self, mock_popen, launcher, registry, sample_config):
 		mock_proc = MagicMock()
 		mock_proc.pid = 99999
@@ -73,8 +73,8 @@ class TestMissionLauncher:
 		project = registry.get_project("test")
 		assert project.active_pid == 99999
 
-	@patch("mission_control.launcher.subprocess.Popen")
-	@patch("mission_control.launcher._pid_alive", return_value=True)
+	@patch("autodev.launcher.subprocess.Popen")
+	@patch("autodev.launcher._pid_alive", return_value=True)
 	def test_launch_fails_if_already_running(self, mock_alive, mock_popen, launcher, registry, sample_config):
 		mock_proc = MagicMock()
 		mock_proc.pid = 99999
@@ -90,7 +90,7 @@ class TestMissionLauncher:
 		registry.register(name="test", config_path=str(sample_config))
 		assert launcher.is_running("test") is False
 
-	@patch("mission_control.launcher._pid_alive", return_value=False)
+	@patch("autodev.launcher._pid_alive", return_value=False)
 	def test_is_running_stale_pid(self, mock_alive, launcher, registry, sample_config):
 		registry.register(name="test", config_path=str(sample_config))
 		registry.update_pid("test", 99999)
@@ -100,7 +100,7 @@ class TestMissionLauncher:
 		assert project.active_pid is None
 
 	def test_stop_inserts_signal(self, launcher, registry, sample_config, tmp_path):
-		db_path = tmp_path / "mission-control.db"
+		db_path = tmp_path / "autodev.db"
 		registry.register(name="test", config_path=str(sample_config), db_path=str(db_path))
 
 		# Create DB with running mission
@@ -117,7 +117,7 @@ class TestMissionLauncher:
 		db.close()
 
 	def test_stop_no_running_mission(self, launcher, registry, sample_config, tmp_path):
-		db_path = tmp_path / "mission-control.db"
+		db_path = tmp_path / "autodev.db"
 		registry.register(name="test", config_path=str(sample_config), db_path=str(db_path))
 
 		db = Database(db_path)
@@ -129,7 +129,7 @@ class TestMissionLauncher:
 		assert result is False
 
 	def test_retry_unit_inserts_signal(self, launcher, registry, sample_config, tmp_path):
-		db_path = tmp_path / "mission-control.db"
+		db_path = tmp_path / "autodev.db"
 		registry.register(name="test", config_path=str(sample_config), db_path=str(db_path))
 
 		db = Database(db_path)
@@ -148,7 +148,7 @@ class TestMissionLauncher:
 	def test_adjust_inserts_signal(self, launcher, registry, sample_config, tmp_path):
 		import json
 
-		db_path = tmp_path / "mission-control.db"
+		db_path = tmp_path / "autodev.db"
 		registry.register(name="test", config_path=str(sample_config), db_path=str(db_path))
 
 		db = Database(db_path)

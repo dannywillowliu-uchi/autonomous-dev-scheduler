@@ -45,7 +45,7 @@ Point it at a repo with an objective and a verification command. It plans, execu
     |  Green Branch     |
     |  Merge            |
     |                   |
-    |  merge to mc/green
+    |  merge to autodev/green
     |  verify (pytest)  |
     |  fail? -> fixup   |
     +--------+----------+
@@ -66,8 +66,8 @@ Each epoch:
 1. **Plan** -- Recursive planner reads `MISSION_STATE.md` from disk, decomposes the objective into work units with acceptance criteria and dependency ordering
 2. **Ambition gate** -- Reject trivially scoped plans (configurable threshold) and force replanning
 3. **Layered execution** -- Work units dispatch in topological layers (parallel within layers, sequential across). Workers run as Claude Code subprocesses
-4. **Green branch merge** -- Completed units merge to `mc/green`. Pre-merge verification gates the merge; failures trigger fixup agents
-5. **Handoff ingestion** -- Workers emit structured `MC_RESULT` handoffs with files changed, concerns, discoveries
+4. **Green branch merge** -- Completed units merge to `autodev/green`. Pre-merge verification gates the merge; failures trigger fixup agents
+5. **Handoff ingestion** -- Workers emit structured `AD_RESULT` handoffs with files changed, concerns, discoveries
 6. **Batch analysis** -- Pattern detection: file hotspots, failure clusters, stalled areas, effort distribution
 7. **State update** -- Fixed-size `MISSION_STATE.md` with progress counts, active issues, patterns, and files modified
 8. **Core test feedback** (optional) -- Run a project-defined test suite and feed pass/fail/regression data back to the planner
@@ -94,11 +94,11 @@ pip install autonomous-dev[mcp,dashboard,tracing]  # with extras
 
 ```bash
 # Copy and edit the example config
-cp mission-control.toml.example mission-control.toml
+cp autodev.toml.example autodev.toml
 # Edit: target.path, target.objective, target.verification.command
 
 # Launch
-uv run mc mission --config mission-control.toml
+uv run autodev mission --config autodev.toml
 ```
 
 That's it. It will plan, dispatch parallel workers, merge results, and loop until the objective is met or it stalls.
@@ -126,7 +126,7 @@ Be specific about the end state and success criteria."""
 command = "pytest -q && ruff check src/"   # must exit 0 when healthy
 ```
 
-See [`mission-control.toml.example`](mission-control.toml.example) for the full annotated config. Key sections:
+See [`autodev.toml.example`](autodev.toml.example) for the full annotated config. Key sections:
 
 | Section | What it controls |
 |---------|-----------------|
@@ -147,30 +147,30 @@ See [`mission-control.toml.example`](mission-control.toml.example) for the full 
 
 ```bash
 # Run a mission
-mc mission --config mission-control.toml [--workers N] [--chain] [--approve-all]
+mc mission --config autodev.toml [--workers N] [--chain] [--approve-all]
 
 # Status and history
-mc status --config mission-control.toml
-mc summary --config mission-control.toml
-mc history --config mission-control.toml
+mc status --config autodev.toml
+mc summary --config autodev.toml
+mc history --config autodev.toml
 
 # Dashboards
-mc live --config mission-control.toml [--port 8080]    # Web (FastAPI + HTMX)
-mc dashboard --config mission-control.toml              # TUI
+mc live --config autodev.toml [--port 8080]    # Web (FastAPI + HTMX)
+mc dashboard --config autodev.toml              # TUI
 
 # Setup and diagnostics
-mc init --config mission-control.toml
-mc validate-config --config mission-control.toml
-mc diagnose --config mission-control.toml
+mc init --config autodev.toml
+mc validate-config --config autodev.toml
+mc diagnose --config autodev.toml
 
 # Multi-project registry
-mc register --config mission-control.toml
-mc unregister --config mission-control.toml
+mc register --config autodev.toml
+mc unregister --config autodev.toml
 mc projects
 
 # External interfaces
-mc mcp --config mission-control.toml     # MCP server (stdio)
-mc a2a --config mission-control.toml     # Agent-to-Agent protocol
+mc mcp --config autodev.toml     # MCP server (stdio)
+mc a2a --config autodev.toml     # Agent-to-Agent protocol
 
 # Intelligence
 mc intel                                  # Scan external AI/agent ecosystem sources
@@ -191,7 +191,7 @@ mc trace --file trace.jsonl               # Read trace file as human-readable ti
 ## Architecture
 
 ```
-src/mission_control/
+src/autodev/
 +-- cli.py                    # CLI entry point (argparse subcommands)
 +-- config.py                 # TOML config loader + dataclasses
 +-- models.py                 # Domain models (Mission, WorkUnit, Epoch, Experience, ...)
@@ -207,12 +207,12 @@ src/mission_control/
 +-- batch_analyzer.py         # Heuristic pattern detection (hotspots, failures, stalls)
 +-- core_tests.py             # Per-epoch core test runner integration + experience storage
 +-- # Workers
-+-- worker.py                 # Worker prompt rendering + MC_RESULT handoff parsing
++-- worker.py                 # Worker prompt rendering + AD_RESULT handoff parsing
 +-- feedback.py               # Worker context from past experiences
 +-- overlap.py                # File overlap detection + dependency injection
 +-- workspace.py              # Worker workspace management
 +-- # Merge pipeline
-+-- green_branch.py           # mc/green branch lifecycle, merge, fixup agents
++-- green_branch.py           # autodev/green branch lifecycle, merge, fixup agents
 +-- # Quality
 +-- diff_reviewer.py          # Fire-and-forget LLM diff review
 +-- grading.py                # Deterministic decomposition grading
@@ -265,7 +265,7 @@ src/mission_control/
 
 **Recursive planner**: Decomposes objectives into a tree of work units with acceptance criteria and dependencies. File overlap detection automatically adds dependency edges between units that touch the same files. A critic agent reviews plans before execution.
 
-**Green branch pattern**: Workers commit to isolated unit branches. Completed units merge to `mc/green`. Pre-merge verification (pytest/ruff/etc.) gates the merge; failures trigger fixup agents that attempt automated repairs. Once green, auto-push to main.
+**Green branch pattern**: Workers commit to isolated unit branches. Completed units merge to `autodev/green`. Pre-merge verification (pytest/ruff/etc.) gates the merge; failures trigger fixup agents that attempt automated repairs. Once green, auto-push to main.
 
 **Fixed-size MISSION_STATE.md**: Progress summary that stays constant size regardless of mission length. Contains progress counts, active issues, strategy summary, and files modified. The planner reads this from disk each epoch rather than receiving growing context.
 
@@ -283,7 +283,7 @@ src/mission_control/
 
 1. **Create a config file**:
    ```bash
-   cp mission-control.toml.example my-project/mission-control.toml
+   cp autodev.toml.example my-project/autodev.toml
    ```
 
 2. **Edit the required fields**:
@@ -317,7 +317,7 @@ src/mission_control/
 
 4. **Launch**:
    ```bash
-   uv run mc mission --config my-project/mission-control.toml
+   uv run autodev mission --config my-project/autodev.toml
    ```
 
 ### Tips for writing objectives
@@ -336,9 +336,9 @@ Add to your Claude Code MCP config (`~/.claude.json` or project `.mcp.json`):
 ```json
 {
   "mcpServers": {
-    "mission-control": {
+    "autodev": {
       "command": "uv",
-      "args": ["run", "mc", "mcp", "--config", "/absolute/path/to/mission-control.toml"]
+      "args": ["run", "mc", "mcp", "--config", "/absolute/path/to/autodev.toml"]
     }
   }
 }
@@ -351,9 +351,9 @@ Available tools: `list_projects`, `get_project_status`, `launch_mission`, `stop_
 ```bash
 uv run pytest -q                                          # 2,200+ tests
 uv run ruff check src/ tests/                             # Lint
-uv run mypy src/mission_control --ignore-missing-imports  # Types
+uv run mypy src/autodev --ignore-missing-imports  # Types
 ```
 
 ## Example: C compiler (ongoing)
 
-We're using mission-control to build a [C compiler](https://github.com/dannywillowliu-uchi/C_compiler_orchestrated) from scratch -- zero human-written code. With the core test feedback loop running against 225 real GCC torture tests, the planner autonomously identifies the highest-leverage compiler bugs each epoch and plans targeted fixes. Current status: 70/225 GCC torture tests passing, 2,800+ unit tests, growing each mission run.
+We're using autodev to build a [C compiler](https://github.com/dannywillowliu-uchi/C_compiler_orchestrated) from scratch -- zero human-written code. With the core test feedback loop running against 225 real GCC torture tests, the planner autonomously identifies the highest-leverage compiler bugs each epoch and plans targeted fixes. Current status: 70/225 GCC torture tests passing, 2,800+ unit tests, growing each mission run.

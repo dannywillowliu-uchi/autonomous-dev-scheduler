@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from mission_control.adaptive_concurrency import (
+from autodev.adaptive_concurrency import (
 	AdaptiveConcurrencyController,
 	MergeOutcome,
 )

@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mission_control.config import TracingConfig
-from mission_control.tracing import (
+from autodev.config import TracingConfig
+from autodev.tracing import (
 	MissionSpan,
 	MissionTracer,
 	NoOpSpan,
@@ -56,14 +56,14 @@ class TestMissionSpanSetErrorStatus:
 		mock_span = MagicMock()
 		mock_status_code = MagicMock()
 		ms = MissionSpan(mock_span)
-		with patch("mission_control.tracing._StatusCode", mock_status_code):
+		with patch("autodev.tracing._StatusCode", mock_status_code):
 			ms.set_error_status("bad things happened")
 			mock_span.set_status.assert_called_once_with(mock_status_code.ERROR, "bad things happened")
 
 	def test_noop_when_otel_unavailable(self) -> None:
 		mock_span = MagicMock()
 		ms = MissionSpan(mock_span)
-		with patch("mission_control.tracing._StatusCode", None):
+		with patch("autodev.tracing._StatusCode", None):
 			ms.set_error_status("should not call set_status")
 			mock_span.set_status.assert_not_called()
 
@@ -143,7 +143,7 @@ class TestTracedOperationFailure:
 		tracer = MissionTracer(config)
 		tracer._tracer = mock_tracer_obj
 
-		with patch("mission_control.tracing._StatusCode", mock_status_code):
+		with patch("autodev.tracing._StatusCode", mock_status_code):
 			with pytest.raises(TypeError):
 				with traced_operation(tracer, "err_op"):
 					raise TypeError("type issue")

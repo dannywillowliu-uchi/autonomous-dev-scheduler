@@ -7,10 +7,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mission_control.db import Database
-from mission_control.launcher import MissionLauncher
-from mission_control.models import Campaign, CampaignObjective, Mission
-from mission_control.registry import ProjectRegistry
+from autodev.db import Database
+from autodev.launcher import MissionLauncher
+from autodev.models import Campaign, CampaignObjective, Mission
+from autodev.registry import ProjectRegistry
 
 
 @pytest.fixture
@@ -23,7 +23,7 @@ def registry(tmp_path):
 
 @pytest.fixture
 def sample_config(tmp_path):
-	config = tmp_path / "mission-control.toml"
+	config = tmp_path / "autodev.toml"
 	config.write_text(
 		'[target]\nname = "test"\npath = "."\nbranch = "main"\nobjective = "test"\n'
 		'[target.verification]\ncommand = "echo ok"\ntimeout = 60\n'
@@ -33,7 +33,7 @@ def sample_config(tmp_path):
 		"[scheduler.parallel]\nnum_workers = 2\n"
 		"[rounds]\nmax_rounds = 5\nstall_threshold = 3\n"
 		"[planner]\n"
-		"[green_branch]\nworking_branch = \"mc/working\"\ngreen_branch = \"mc/green\"\n"
+		"[green_branch]\nworking_branch = \"autodev/working\"\ngreen_branch = \"autodev/green\"\n"
 		'[backend]\ntype = "local"\n'
 	)
 	return config
@@ -41,7 +41,7 @@ def sample_config(tmp_path):
 
 @pytest.fixture
 def project_db(tmp_path):
-	db_path = tmp_path / "mission-control.db"
+	db_path = tmp_path / "autodev.db"
 	db = Database(db_path)
 	yield db
 	db.close()
@@ -54,7 +54,7 @@ def launcher(registry):
 
 def _register_project(registry, sample_config, tmp_path):
 	"""Helper to register a test project with a DB path."""
-	db_path = tmp_path / "mission-control.db"
+	db_path = tmp_path / "autodev.db"
 	registry.register(name="test", config_path=str(sample_config), db_path=str(db_path))
 	return db_path
 
@@ -62,8 +62,8 @@ def _register_project(registry, sample_config, tmp_path):
 class TestLinearChainExecution:
 	"""Test objectives that form a linear dependency chain: 0 -> 1 -> 2."""
 
-	@patch("mission_control.launcher.subprocess.Popen")
-	@patch("mission_control.launcher._pid_alive", return_value=False)
+	@patch("autodev.launcher.subprocess.Popen")
+	@patch("autodev.launcher._pid_alive", return_value=False)
 	def test_linear_chain_all_succeed(
 		self, mock_alive, mock_popen, launcher, registry, sample_config, tmp_path
 	):
@@ -104,8 +104,8 @@ class TestLinearChainExecution:
 		assert result.started_at is not None
 		assert result.finished_at is not None
 
-	@patch("mission_control.launcher.subprocess.Popen")
-	@patch("mission_control.launcher._pid_alive", return_value=False)
+	@patch("autodev.launcher.subprocess.Popen")
+	@patch("autodev.launcher._pid_alive", return_value=False)
 	def test_linear_chain_middle_fails(
 		self, mock_alive, mock_popen, launcher, registry, sample_config, tmp_path
 	):
@@ -150,8 +150,8 @@ class TestLinearChainExecution:
 class TestParallelIndependentObjectives:
 	"""Test objectives with no dependencies that can all be runnable."""
 
-	@patch("mission_control.launcher.subprocess.Popen")
-	@patch("mission_control.launcher._pid_alive", return_value=False)
+	@patch("autodev.launcher.subprocess.Popen")
+	@patch("autodev.launcher._pid_alive", return_value=False)
 	def test_independent_objectives_all_succeed(
 		self, mock_alive, mock_popen, launcher, registry, sample_config, tmp_path
 	):
@@ -188,8 +188,8 @@ class TestParallelIndependentObjectives:
 		assert all(obj.status == "completed" for obj in result.objectives)
 		assert launch_count == 3
 
-	@patch("mission_control.launcher.subprocess.Popen")
-	@patch("mission_control.launcher._pid_alive", return_value=False)
+	@patch("autodev.launcher.subprocess.Popen")
+	@patch("autodev.launcher._pid_alive", return_value=False)
 	def test_diamond_dependency(
 		self, mock_alive, mock_popen, launcher, registry, sample_config, tmp_path
 	):
@@ -232,8 +232,8 @@ class TestParallelIndependentObjectives:
 class TestFailurePropagation:
 	"""Test that failure correctly skips dependent objectives."""
 
-	@patch("mission_control.launcher.subprocess.Popen")
-	@patch("mission_control.launcher._pid_alive", return_value=False)
+	@patch("autodev.launcher.subprocess.Popen")
+	@patch("autodev.launcher._pid_alive", return_value=False)
 	def test_failure_skips_all_dependents(
 		self, mock_alive, mock_popen, launcher, registry, sample_config, tmp_path
 	):
@@ -276,8 +276,8 @@ class TestFailurePropagation:
 		assert result.objectives[3].status == "skipped"
 		assert launch_count == 1
 
-	@patch("mission_control.launcher.subprocess.Popen")
-	@patch("mission_control.launcher._pid_alive", return_value=False)
+	@patch("autodev.launcher.subprocess.Popen")
+	@patch("autodev.launcher._pid_alive", return_value=False)
 	def test_partial_failure_independent_branch_continues(
 		self, mock_alive, mock_popen, launcher, registry, sample_config, tmp_path
 	):
@@ -326,8 +326,8 @@ class TestFailurePropagation:
 		with pytest.raises(ValueError, match="not registered"):
 			launcher.run_campaign("nonexistent", campaign)
 
-	@patch("mission_control.launcher.subprocess.Popen")
-	@patch("mission_control.launcher._pid_alive", return_value=False)
+	@patch("autodev.launcher.subprocess.Popen")
+	@patch("autodev.launcher._pid_alive", return_value=False)
 	def test_empty_campaign(
 		self, mock_alive, mock_popen, launcher, registry, sample_config, tmp_path
 	):
@@ -337,8 +337,8 @@ class TestFailurePropagation:
 		assert result.status == "completed"
 		assert result.finished_at is not None
 
-	@patch("mission_control.launcher.subprocess.Popen")
-	@patch("mission_control.launcher._pid_alive", return_value=False)
+	@patch("autodev.launcher.subprocess.Popen")
+	@patch("autodev.launcher._pid_alive", return_value=False)
 	def test_strategic_context_shared(
 		self, mock_alive, mock_popen, launcher, registry, sample_config, tmp_path
 	):

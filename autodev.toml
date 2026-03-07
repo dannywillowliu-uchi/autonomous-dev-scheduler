@@ -1,0 +1,72 @@
+[target]
+name = "autonomous-development"
+path = "/Users/dannyliu/personal_projects/autonomous-development"
+branch = "main"
+objective = """Improve autonomous-development. Be ambitious and focus on high value changes or improvements.
+
+Use .venv/bin/python for all Python commands.
+"""
+
+[target.verification]
+command = ".venv/bin/python -m pytest -q && .venv/bin/ruff check src/ tests/"
+timeout = 300
+setup_command = "uv sync --extra dev"
+setup_timeout = 120
+
+[scheduler]
+session_timeout = 3600
+model = "opus"
+
+[scheduler.parallel]
+num_workers = 4
+pool_dir = "/Users/dannyliu/personal_projects/.mc-pool-ads"
+warm_clones = 4
+
+[scheduler.budget]
+max_per_session_usd = 8.0
+max_per_run_usd = 100.0
+
+[rounds]
+max_rounds = 10
+stall_threshold = 7
+cooldown_between_rounds = 30
+
+[planner]
+max_depth = 1
+max_children_per_node = 3
+budget_per_call_usd = 5.0
+
+[planner.deliberation]
+max_rounds = 1
+critic_model = "haiku"
+
+[continuous]
+max_wall_time_seconds = 86400
+min_ambition_score = 2
+max_replan_attempts = 3
+verify_before_merge = false
+enforce_acceptance_criteria = false
+reconcile_interval = 5
+layer_drain_timeout_base = 5400
+layer_drain_timeout_per_unit = 600
+
+[green_branch]
+working_branch = "autodev/working"
+green_branch = "autodev/green"
+fixup_max_attempts = 5
+auto_push = true
+push_branch = "main"
+
+[discovery]
+enabled = false
+
+[heartbeat]
+interval = 300
+idle_threshold = 5
+
+[deliberation]
+max_rounds = 1
+critic_model = "haiku"
+
+[backend]
+type = "local"

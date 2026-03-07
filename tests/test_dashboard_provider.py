@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from mission_control.dashboard.provider import MissionMetricsProvider
+from autodev.dashboard.provider import MissionMetricsProvider
 
 
 def _write_events(path: Path, events: list[dict]) -> None:

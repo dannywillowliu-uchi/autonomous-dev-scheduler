@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mission_control.backends.ssh import _SSH_CONNECTION_FAILURE_RC, SSHBackend
-from mission_control.config import SSHHostConfig
+from autodev.backends.ssh import _SSH_CONNECTION_FAILURE_RC, SSHBackend
+from autodev.config import SSHHostConfig
 
 
 def _make_backend(**kwargs) -> SSHBackend:

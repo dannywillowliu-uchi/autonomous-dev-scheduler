@@ -8,14 +8,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mission_control.config import ContinuousConfig, MissionConfig
-from mission_control.continuous_controller import (
+from autodev.config import ContinuousConfig, MissionConfig
+from autodev.continuous_controller import (
 	ContinuousController,
 	ContinuousMissionResult,
 	WorkerCompletion,
 )
-from mission_control.db import Database
-from mission_control.models import Epoch, Handoff, Mission, Plan, WorkUnit
+from autodev.db import Database
+from autodev.models import Epoch, Handoff, Mission, Plan, WorkUnit
 
 
 def _make_controller(config: MissionConfig, db: Database) -> ContinuousController:

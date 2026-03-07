@@ -6,9 +6,9 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from mission_control.config import TracingConfig
-from mission_control.event_stream import EventStream
-from mission_control.tracing import OTEL_AVAILABLE, MissionTracer, NoOpSpan, get_current_trace_context
+from autodev.config import TracingConfig
+from autodev.event_stream import EventStream
+from autodev.tracing import OTEL_AVAILABLE, MissionTracer, NoOpSpan, get_current_trace_context
 
 
 class TestNoOpSpan:
@@ -42,7 +42,7 @@ class TestNoOpSpan:
 class TestNoOpFallback:
 	def test_tracer_works_when_otel_not_installed(self) -> None:
 		"""MissionTracer returns NoOpSpan when OTEL is unavailable."""
-		with patch("mission_control.tracing.OTEL_AVAILABLE", False):
+		with patch("autodev.tracing.OTEL_AVAILABLE", False):
 			config = TracingConfig(enabled=True)
 			tracer = MissionTracer(config)
 			assert not tracer.active
@@ -94,7 +94,7 @@ class TestSpanHierarchy:
 
 class TestGetCurrentTraceContext:
 	def test_returns_empty_when_otel_unavailable(self) -> None:
-		with patch("mission_control.tracing.OTEL_AVAILABLE", False):
+		with patch("autodev.tracing.OTEL_AVAILABLE", False):
 			trace_id, span_id = get_current_trace_context()
 			assert trace_id == ""
 			assert span_id == ""
@@ -128,7 +128,7 @@ class TestEventStreamTraceContext:
 		"""When no trace_id provided, emit() calls get_current_trace_context."""
 		stream = EventStream(tmp_path / "events.jsonl")
 		stream.open()
-		with patch("mission_control.event_stream.get_current_trace_context", return_value=("auto-trace", "auto-span")):
+		with patch("autodev.event_stream.get_current_trace_context", return_value=("auto-trace", "auto-span")):
 			stream.emit("test_event", mission_id="m1")
 		stream.close()
 
@@ -141,7 +141,7 @@ class TestEventStreamTraceContext:
 		"""Without OTEL, trace_id and span_id are empty strings."""
 		stream = EventStream(tmp_path / "events.jsonl")
 		stream.open()
-		with patch("mission_control.event_stream.get_current_trace_context", return_value=("", "")):
+		with patch("autodev.event_stream.get_current_trace_context", return_value=("", "")):
 			stream.emit("test_event", mission_id="m1")
 		stream.close()
 

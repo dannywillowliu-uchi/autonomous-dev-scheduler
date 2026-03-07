@@ -7,11 +7,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from mission_control.backends.base import WorkerBackend, WorkerHandle
-from mission_control.config import MissionConfig, ModelsConfig
-from mission_control.db import Database
-from mission_control.models import Mission, Plan, Round, Worker, WorkUnit
-from mission_control.worker import (
+from autodev.backends.base import WorkerBackend, WorkerHandle
+from autodev.config import MissionConfig, ModelsConfig
+from autodev.db import Database
+from autodev.models import Mission, Plan, Round, Worker, WorkUnit
+from autodev.worker import (
 	WorkerAgent,
 	_sanitize_braces,
 	load_specialist_template,
@@ -272,9 +272,9 @@ class TestWorkerAgent:
 	) -> None:
 		w, _ = worker_and_unit
 
-		# Configure mock backend to return MC_RESULT output
+		# Configure mock backend to return AD_RESULT output
 		mc_output = (
-			'MC_RESULT:{"status":"completed","commits":["abc123"],'
+			'AD_RESULT:{"status":"completed","commits":["abc123"],'
 			'"summary":"Fixed it","files_changed":["foo.py"]}'
 		)
 		mock_backend.get_output = AsyncMock(return_value=mc_output)  # type: ignore[method-assign]
@@ -287,7 +287,7 @@ class TestWorkerAgent:
 		mock_git_proc.communicate = AsyncMock(return_value=(b"", b""))
 		mock_git_proc.returncode = 0
 
-		with patch("mission_control.worker.asyncio.create_subprocess_exec", return_value=mock_git_proc):
+		with patch("autodev.worker.asyncio.create_subprocess_exec", return_value=mock_git_proc):
 			unit = db.claim_work_unit(w.id)
 			assert unit is not None
 			await agent._execute_unit(unit)  # noqa: SLF001
@@ -314,10 +314,10 @@ class TestWorkerAgent:
 		# Clear workspace_path so _execute_unit calls provision_workspace
 		w.workspace_path = ""
 
-		config.green_branch.green_branch = "mc/green"
+		config.green_branch.green_branch = "autodev/green"
 
 		mc_output = (
-			'MC_RESULT:{"status":"completed","commits":["abc"],'
+			'AD_RESULT:{"status":"completed","commits":["abc"],'
 			'"summary":"ok","files_changed":["a.py"]}'
 		)
 		mock_backend.get_output = AsyncMock(return_value=mc_output)  # type: ignore[method-assign]
@@ -330,15 +330,15 @@ class TestWorkerAgent:
 		mock_git_proc.communicate = AsyncMock(return_value=(b"", b""))
 		mock_git_proc.returncode = 0
 
-		with patch("mission_control.worker.asyncio.create_subprocess_exec", return_value=mock_git_proc):
+		with patch("autodev.worker.asyncio.create_subprocess_exec", return_value=mock_git_proc):
 			unit = db.claim_work_unit(w.id)
 			assert unit is not None
 			await agent._execute_unit(unit)  # noqa: SLF001
 
-		# Verify provision_workspace was called with mc/green as base_branch
+		# Verify provision_workspace was called with autodev/green as base_branch
 		mock_backend.provision_workspace.assert_awaited_once()
 		call_kwargs = mock_backend.provision_workspace.call_args
-		assert call_kwargs.kwargs.get("base_branch") == "mc/green"
+		assert call_kwargs.kwargs.get("base_branch") == "autodev/green"
 
 	async def test_failed_unit_marks_correctly(
 		self, db: Database, config: MissionConfig, worker_and_unit: tuple[Worker, WorkUnit],
@@ -360,7 +360,7 @@ class TestWorkerAgent:
 		mock_git_proc.communicate = AsyncMock(return_value=(b"", b""))
 		mock_git_proc.returncode = 0
 
-		with patch("mission_control.worker.asyncio.create_subprocess_exec", return_value=mock_git_proc):
+		with patch("autodev.worker.asyncio.create_subprocess_exec", return_value=mock_git_proc):
 			agent = WorkerAgent(w, db, config, mock_backend, heartbeat_interval=9999)
 			unit = db.claim_work_unit(w.id)
 			assert unit is not None
@@ -395,7 +395,7 @@ class TestWorkerAgent:
 		mock_git_proc.communicate = AsyncMock(return_value=(b"", b""))
 		mock_git_proc.returncode = 0
 
-		with patch("mission_control.worker.asyncio.create_subprocess_exec", return_value=mock_git_proc):
+		with patch("autodev.worker.asyncio.create_subprocess_exec", return_value=mock_git_proc):
 			agent = WorkerAgent(w, db, config, mock_backend, heartbeat_interval=9999)
 			unit = db.claim_work_unit(w.id)
 			assert unit is not None
@@ -414,7 +414,7 @@ class TestWorkerAgent:
 		w, _ = worker_and_unit
 
 		mc_output = (
-			'MC_RESULT:{"status":"completed","commits":["abc123"],'
+			'AD_RESULT:{"status":"completed","commits":["abc123"],'
 			'"summary":"Fixed it","files_changed":["foo.py"]}'
 		)
 		mock_backend.get_output = AsyncMock(return_value=mc_output)  # type: ignore[method-assign]
@@ -456,7 +456,7 @@ class TestWorkerAgent:
 		mock_git_proc.communicate = AsyncMock(return_value=(b"error: branch exists", b""))
 		mock_git_proc.returncode = 1
 
-		with patch("mission_control.worker.asyncio.create_subprocess_exec", return_value=mock_git_proc):
+		with patch("autodev.worker.asyncio.create_subprocess_exec", return_value=mock_git_proc):
 			agent = WorkerAgent(w, db, config, mock_backend, heartbeat_interval=9999)
 			unit = db.claim_work_unit(w.id)
 			assert unit is not None
@@ -478,7 +478,7 @@ class TestWorkerAgent:
 		# Simulate a process that produces >64KB of output
 		large_output = "x" * 100_000  # 100KB of output
 		mc_line = (
-			'MC_RESULT:{"status":"completed","commits":["abc123"],'
+			'AD_RESULT:{"status":"completed","commits":["abc123"],'
 			'"summary":"Fixed it","files_changed":["foo.py"]}'
 		)
 		full_output = large_output + "\n" + mc_line
@@ -509,7 +509,7 @@ class TestWorkerAgent:
 		mock_git_proc.communicate = AsyncMock(return_value=(b"", b""))
 		mock_git_proc.returncode = 0
 
-		with patch("mission_control.worker.asyncio.create_subprocess_exec", return_value=mock_git_proc):
+		with patch("autodev.worker.asyncio.create_subprocess_exec", return_value=mock_git_proc):
 			unit = db.claim_work_unit(w.id)
 			assert unit is not None
 			await agent._execute_unit(unit)  # noqa: SLF001
@@ -533,7 +533,7 @@ class TestWorkerAgent:
 		w, _ = worker_and_unit
 
 		# Insert a processed (merged) MR for this worker
-		from mission_control.models import MergeRequest
+		from autodev.models import MergeRequest
 		mr = MergeRequest(
 			id="mr-old",
 			work_unit_id="wu1",
@@ -568,7 +568,7 @@ class TestWorkerAgent:
 		w, _ = worker_and_unit
 
 		# Insert a processed (merged) MR for this worker
-		from mission_control.models import MergeRequest
+		from autodev.models import MergeRequest
 		mr = MergeRequest(
 			id="mr-old",
 			work_unit_id="wu1",
@@ -580,7 +580,7 @@ class TestWorkerAgent:
 		db.insert_merge_request(mr)
 
 		mc_output = (
-			'MC_RESULT:{"status":"completed","commits":["abc123"],'
+			'AD_RESULT:{"status":"completed","commits":["abc123"],'
 			'"summary":"Fixed it","files_changed":["foo.py"]}'
 		)
 		mock_backend.get_output = AsyncMock(return_value=mc_output)  # type: ignore[method-assign]
@@ -625,8 +625,8 @@ class TestWorkerAgent:
 
 		agent = WorkerAgent(w, db, config, mock_backend, heartbeat_interval=9999)
 
-		with patch("mission_control.worker.asyncio.create_subprocess_exec", return_value=mock_git_proc):
-			with caplog.at_level(logging.WARNING, logger="mission_control.worker"):
+		with patch("autodev.worker.asyncio.create_subprocess_exec", return_value=mock_git_proc):
+			with caplog.at_level(logging.WARNING, logger="autodev.worker"):
 				result = await agent._run_git("checkout", "main", cwd="/tmp/clone1")  # noqa: SLF001
 
 		assert result is False
@@ -702,7 +702,7 @@ class TestWorkerAgent:
 
 		# Backend returns completed with no commits
 		mc_output = (
-			'MC_RESULT:{"status":"completed","commits":[],'
+			'AD_RESULT:{"status":"completed","commits":[],'
 			'"summary":"Task already done, no changes needed","files_changed":[]}'
 		)
 		mock_backend.get_output = AsyncMock(return_value=mc_output)  # type: ignore[method-assign]
@@ -749,7 +749,7 @@ class TestWorkerAgent:
 
 		with (
 			patch.object(agent, "_execute_unit", side_effect=explode_then_stop),
-			caplog.at_level(logging.ERROR, logger="mission_control.worker"),
+			caplog.at_level(logging.ERROR, logger="autodev.worker"),
 		):
 			# Insert a second unit so the loop has work after the first failure
 			db.insert_plan(Plan(id="p2", objective="test2", round_id="r1"))
@@ -781,7 +781,7 @@ class TestModelSelection:
 		config.scheduler.model = "opus"
 
 		mc_output = (
-			'MC_RESULT:{"status":"completed","commits":["abc123"],'
+			'AD_RESULT:{"status":"completed","commits":["abc123"],'
 			'"summary":"Fixed it","files_changed":["foo.py"]}'
 		)
 		mock_backend.get_output = AsyncMock(return_value=mc_output)  # type: ignore[method-assign]
@@ -817,7 +817,7 @@ class TestModelSelection:
 		object.__setattr__(config, "models", None)
 
 		mc_output = (
-			'MC_RESULT:{"status":"completed","commits":["abc123"],'
+			'AD_RESULT:{"status":"completed","commits":["abc123"],'
 			'"summary":"Fixed it","files_changed":["foo.py"]}'
 		)
 		mock_backend.get_output = AsyncMock(return_value=mc_output)  # type: ignore[method-assign]
@@ -851,7 +851,7 @@ class TestModelSelection:
 		config.scheduler.model = "haiku"
 
 		mc_output = (
-			'MC_RESULT:{"status":"completed","commits":["abc123"],'
+			'AD_RESULT:{"status":"completed","commits":["abc123"],'
 			'"summary":"Fixed it","files_changed":["foo.py"]}'
 		)
 		mock_backend.get_output = AsyncMock(return_value=mc_output)  # type: ignore[method-assign]
@@ -934,7 +934,7 @@ class TestArchitectEditorMode:
 		config.models = ModelsConfig(architect_editor_mode=False)
 
 		mc_output = (
-			'MC_RESULT:{"status":"completed","commits":["abc123"],'
+			'AD_RESULT:{"status":"completed","commits":["abc123"],'
 			'"summary":"Fixed it","files_changed":["foo.py"]}'
 		)
 		mock_backend.get_output = AsyncMock(return_value=mc_output)  # type: ignore[method-assign]
@@ -969,11 +969,11 @@ class TestArchitectEditorMode:
 
 		architect_output = (
 			'Analysis: modify src/foo.py\n'
-			'MC_RESULT:{"status":"completed","commits":[],'
+			'AD_RESULT:{"status":"completed","commits":[],'
 			'"summary":"architectural analysis","discoveries":["found pattern"],"files_changed":[]}'
 		)
 		editor_output = (
-			'MC_RESULT:{"status":"completed","commits":["def456"],'
+			'AD_RESULT:{"status":"completed","commits":["def456"],'
 			'"summary":"Implemented changes","files_changed":["src/foo.py"]}'
 		)
 
@@ -1027,7 +1027,7 @@ class TestArchitectEditorMode:
 		config.models = ModelsConfig(architect_editor_mode=True)
 
 		fallback_output = (
-			'MC_RESULT:{"status":"completed","commits":["fallback1"],'
+			'AD_RESULT:{"status":"completed","commits":["fallback1"],'
 			'"summary":"Completed via fallback","files_changed":["src/foo.py"]}'
 		)
 
@@ -1085,11 +1085,11 @@ class TestArchitectEditorMode:
 		architect_analysis = "SPECIFIC_ANALYSIS: Change function foo() in src/bar.py to accept an extra param."
 		architect_output = (
 			f'{architect_analysis}\n'
-			'MC_RESULT:{"status":"completed","commits":[],'
+			'AD_RESULT:{"status":"completed","commits":[],'
 			'"summary":"analysis","discoveries":[],"files_changed":[]}'
 		)
 		editor_output = (
-			'MC_RESULT:{"status":"completed","commits":["abc"],'
+			'AD_RESULT:{"status":"completed","commits":["abc"],'
 			'"summary":"done","files_changed":["src/bar.py"]}'
 		)
 
@@ -1143,7 +1143,7 @@ class TestArchitectEditorMode:
 		db.update_work_unit(wu)
 
 		mc_output = (
-			'MC_RESULT:{"status":"completed","commits":[],'
+			'AD_RESULT:{"status":"completed","commits":[],'
 			'"summary":"Research findings","discoveries":["found X"],"files_changed":[]}'
 		)
 
@@ -1174,7 +1174,7 @@ class TestArchitectEditorMode:
 		# Should NOT contain architect instructions
 		assert "Do NOT write code" not in prompt_text
 		# Should use the worker prompt template (not architect)
-		assert "MC_RESULT" in prompt_text
+		assert "AD_RESULT" in prompt_text
 
 	async def test_experiment_units_skip_architect_mode(
 		self, db: Database, config: MissionConfig, worker_and_unit: tuple[Worker, WorkUnit],
@@ -1190,7 +1190,7 @@ class TestArchitectEditorMode:
 		db.update_work_unit(wu)
 
 		mc_output = (
-			'MC_RESULT:{"status":"completed","commits":[],'
+			'AD_RESULT:{"status":"completed","commits":[],'
 			'"summary":"Experiment done","discoveries":["found X"],"files_changed":[]}'
 		)
 		mock_backend.spawn = AsyncMock(  # type: ignore[method-assign]
@@ -1216,13 +1216,13 @@ class TestArchitectEditorMode:
 		mock_backend: MockBackend,
 	) -> None:
 		"""When architect pass times out, falls back to single-pass."""
-		from mission_control.worker import _SpawnError
+		from autodev.worker import _SpawnError
 
 		w, _ = worker_and_unit
 		config.models = ModelsConfig(architect_editor_mode=True)
 
 		fallback_output = (
-			'MC_RESULT:{"status":"completed","commits":["timeout_fb"],'
+			'AD_RESULT:{"status":"completed","commits":["timeout_fb"],'
 			'"summary":"Done after timeout fallback","files_changed":["a.py"]}'
 		)
 
@@ -1261,18 +1261,18 @@ class TestArchitectEditorMode:
 		self, db: Database, config: MissionConfig, worker_and_unit: tuple[Worker, WorkUnit],
 		mock_backend: MockBackend,
 	) -> None:
-		"""MC_RESULT is correctly parsed from the editor (second) pass output."""
+		"""AD_RESULT is correctly parsed from the editor (second) pass output."""
 		w, _ = worker_and_unit
 		config.models = ModelsConfig(architect_editor_mode=True)
 
 		architect_output = (
 			'File analysis complete.\n'
-			'MC_RESULT:{"status":"completed","commits":[],'
+			'AD_RESULT:{"status":"completed","commits":[],'
 			'"summary":"analysis done","discoveries":["pattern found"],"files_changed":[]}'
 		)
 		editor_output = (
 			'Implemented all changes.\n'
-			'MC_RESULT:{"status":"completed","commits":["ed1","ed2"],'
+			'AD_RESULT:{"status":"completed","commits":["ed1","ed2"],'
 			'"summary":"Added auth and tests","discoveries":["edge case in login"],'
 			'"concerns":["needs load testing"],"files_changed":["src/auth.py","tests/test_auth.py"]}'
 		)

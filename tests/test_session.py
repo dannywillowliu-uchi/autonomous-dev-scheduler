@@ -6,7 +6,7 @@ import logging
 
 import pytest
 
-from mission_control.session import (
+from autodev.session import (
 	build_branch_name,
 	extract_fallback_handoff,
 	parse_mc_result,
@@ -18,7 +18,7 @@ class TestParseMcResult:
 	def test_valid_result(self) -> None:
 		output = (
 			"Some output\n"
-			'MC_RESULT:{"status":"completed","commits":["abc123"],'
+			'AD_RESULT:{"status":"completed","commits":["abc123"],'
 			'"summary":"Fixed tests","files_changed":["src/foo.py"]}'
 		)
 		result = parse_mc_result(output)
@@ -33,10 +33,10 @@ class TestParseMcResult:
 		assert result is None
 
 	def test_multiline_json(self) -> None:
-		"""MC_RESULT with pretty-printed multiline JSON should parse correctly."""
+		"""AD_RESULT with pretty-printed multiline JSON should parse correctly."""
 		output = (
 			"Some output\n"
-			"MC_RESULT:{\n"
+			"AD_RESULT:{\n"
 			'  "status": "completed",\n'
 			'  "commits": ["abc123"],\n'
 			'  "summary": "Fixed the thing",\n'
@@ -50,11 +50,11 @@ class TestParseMcResult:
 		assert result["commits"] == ["abc123"]
 
 	def test_uses_last_mc_result(self) -> None:
-		"""When multiple MC_RESULT markers exist, use the last one."""
+		"""When multiple AD_RESULT markers exist, use the last one."""
 		output = (
-			'MC_RESULT:{"status":"failed","commits":[],"summary":"first attempt"}\n'
+			'AD_RESULT:{"status":"failed","commits":[],"summary":"first attempt"}\n'
 			"Retrying...\n"
-			'MC_RESULT:{"status":"completed","commits":["def456"],"summary":"second attempt"}'
+			'AD_RESULT:{"status":"completed","commits":["def456"],"summary":"second attempt"}'
 		)
 		result = parse_mc_result(output)
 		assert result is not None
@@ -71,7 +71,7 @@ class TestMCResultSchemaValidation:
 	"""Tests for MCResultSchema and validate_mc_result degraded parsing."""
 
 	def test_valid_input_passes(self) -> None:
-		"""Fully valid MC_RESULT dict passes validation unchanged."""
+		"""Fully valid AD_RESULT dict passes validation unchanged."""
 		raw = {
 			"status": "completed",
 			"commits": ["abc123"],
@@ -108,7 +108,7 @@ class TestMCResultSchemaValidation:
 			"summary": "Did it",
 			"files_changed": ["src/foo.py"],
 		}
-		with caplog.at_level(logging.WARNING, logger="mission_control.session"):
+		with caplog.at_level(logging.WARNING, logger="autodev.session"):
 			result = validate_mc_result(raw)
 		assert result["status"] == "failed"  # degraded default
 		assert result["commits"] == ["abc123"]  # valid field preserved
@@ -118,7 +118,7 @@ class TestMCResultSchemaValidation:
 	def test_completely_invalid_input_returns_degraded(self, caplog: pytest.LogCaptureFixture) -> None:
 		"""Completely invalid dict returns all defaults with warning."""
 		raw = {"garbage": True, "number": 42}
-		with caplog.at_level(logging.WARNING, logger="mission_control.session"):
+		with caplog.at_level(logging.WARNING, logger="autodev.session"):
 			result = validate_mc_result(raw)
 		assert result["status"] == "failed"
 		assert result["commits"] == []
@@ -129,9 +129,9 @@ class TestMCResultSchemaValidation:
 		assert "schema validation failed" in caplog.text.lower()
 
 	def test_parse_mc_result_integration(self) -> None:
-		"""parse_mc_result returns validated data for valid MC_RESULT output."""
+		"""parse_mc_result returns validated data for valid AD_RESULT output."""
 		output = (
-			'MC_RESULT:{"status":"completed","commits":["abc"],'
+			'AD_RESULT:{"status":"completed","commits":["abc"],'
 			'"summary":"done","files_changed":["f.py"]}'
 		)
 		result = parse_mc_result(output)
@@ -142,10 +142,10 @@ class TestMCResultSchemaValidation:
 	def test_parse_mc_result_degraded_integration(self, caplog: pytest.LogCaptureFixture) -> None:
 		"""parse_mc_result returns degraded result for invalid status."""
 		output = (
-			'MC_RESULT:{"status":"invalid","commits":["abc"],'
+			'AD_RESULT:{"status":"invalid","commits":["abc"],'
 			'"summary":"done","files_changed":["f.py"]}'
 		)
-		with caplog.at_level(logging.WARNING, logger="mission_control.session"):
+		with caplog.at_level(logging.WARNING, logger="autodev.session"):
 			result = parse_mc_result(output)
 		assert result is not None
 		assert result["status"] == "failed"  # degraded default
@@ -215,7 +215,7 @@ class TestMCResultSchemaValidation:
 			"summary": "done",
 			"files_changed": ["f.py"],
 		}
-		with caplog.at_level(logging.WARNING, logger="mission_control.session"):
+		with caplog.at_level(logging.WARNING, logger="autodev.session"):
 			result = validate_mc_result(raw)
 		assert result["status"] == "completed"
 		assert result["commits"] == []  # degraded default
@@ -229,7 +229,7 @@ class TestMCResultSchemaValidation:
 			"summary": "done",
 			"files_changed": 123,
 		}
-		with caplog.at_level(logging.WARNING, logger="mission_control.session"):
+		with caplog.at_level(logging.WARNING, logger="autodev.session"):
 			result = validate_mc_result(raw)
 		assert result["status"] == "completed"
 		assert result["commits"] == ["abc"]
@@ -243,7 +243,7 @@ class TestParseMcResultEdgeCases:
 		"""Multiline JSON with nested objects/arrays parses correctly."""
 		output = (
 			"log line 1\n"
-			'MC_RESULT:{\n'
+			'AD_RESULT:{\n'
 			'  "status": "completed",\n'
 			'  "commits": ["abc123", "def456"],\n'
 			'  "summary": "Refactored {braces} in code",\n'
@@ -261,13 +261,13 @@ class TestParseMcResultEdgeCases:
 		assert result["discoveries"] == ["found {nested} pattern"]
 
 	def test_multiple_markers_picks_last(self) -> None:
-		"""When output has multiple MC_RESULT markers, the last one wins."""
+		"""When output has multiple AD_RESULT markers, the last one wins."""
 		output = (
-			'MC_RESULT:{"status":"failed","commits":[],"summary":"attempt 1","files_changed":[]}\n'
+			'AD_RESULT:{"status":"failed","commits":[],"summary":"attempt 1","files_changed":[]}\n'
 			"Retrying after error...\n"
-			'MC_RESULT:{"status":"blocked","commits":[],"summary":"attempt 2","files_changed":[]}\n'
+			'AD_RESULT:{"status":"blocked","commits":[],"summary":"attempt 2","files_changed":[]}\n'
 			"One more try...\n"
-			'MC_RESULT:{"status":"completed","commits":["final"],"summary":"attempt 3","files_changed":["ok.py"]}'
+			'AD_RESULT:{"status":"completed","commits":["final"],"summary":"attempt 3","files_changed":["ok.py"]}'
 		)
 		result = parse_mc_result(output)
 		assert result is not None
@@ -276,21 +276,21 @@ class TestParseMcResultEdgeCases:
 		assert result["commits"] == ["final"]
 
 	def test_malformed_json_returns_none(self) -> None:
-		"""Malformed JSON after MC_RESULT marker returns None."""
-		output = 'MC_RESULT:{status: not valid json, missing quotes}'
+		"""Malformed JSON after AD_RESULT marker returns None."""
+		output = 'AD_RESULT:{status: not valid json, missing quotes}'
 		result = parse_mc_result(output)
 		assert result is None
 
 	def test_truncated_json_returns_none(self) -> None:
 		"""Truncated JSON (no closing brace) returns None."""
-		output = 'MC_RESULT:{"status":"completed","commits":["abc"],"summary":"tru'
+		output = 'AD_RESULT:{"status":"completed","commits":["abc"],"summary":"tru'
 		result = parse_mc_result(output)
 		assert result is None
 
 	def test_empty_json_object_returns_degraded(self, caplog: pytest.LogCaptureFixture) -> None:
-		"""Empty JSON object after MC_RESULT triggers degraded parsing."""
-		output = "MC_RESULT:{}"
-		with caplog.at_level(logging.WARNING, logger="mission_control.session"):
+		"""Empty JSON object after AD_RESULT triggers degraded parsing."""
+		output = "AD_RESULT:{}"
+		with caplog.at_level(logging.WARNING, logger="autodev.session"):
 			result = parse_mc_result(output)
 		assert result is not None
 		assert result["status"] == "failed"
@@ -300,7 +300,7 @@ class TestParseMcResultEdgeCases:
 	def test_status_alias_via_parse(self) -> None:
 		"""Status aliases are normalized through the full parse_mc_result path."""
 		output = (
-			'MC_RESULT:{"status":"success","commits":["abc"],'
+			'AD_RESULT:{"status":"success","commits":["abc"],'
 			'"summary":"done","files_changed":["f.py"]}'
 		)
 		result = parse_mc_result(output)
@@ -310,7 +310,7 @@ class TestParseMcResultEdgeCases:
 	def test_files_modified_alias_via_parse(self) -> None:
 		"""files_modified alias is normalized through the full parse_mc_result path."""
 		output = (
-			'MC_RESULT:{"status":"completed","commits":[],'
+			'AD_RESULT:{"status":"completed","commits":[],'
 			'"summary":"done","files_modified":["a.py","b.py"]}'
 		)
 		result = parse_mc_result(output)
@@ -318,11 +318,11 @@ class TestParseMcResultEdgeCases:
 		assert result["files_changed"] == ["a.py", "b.py"]
 
 	def test_mc_result_with_surrounding_noise(self) -> None:
-		"""MC_RESULT embedded in noisy output with ANSI codes and garbage."""
+		"""AD_RESULT embedded in noisy output with ANSI codes and garbage."""
 		output = (
 			"\x1b[32mDone!\x1b[0m\n"
 			"Some random log output here\n"
-			'MC_RESULT:{"status":"completed","commits":["xyz"],'
+			'AD_RESULT:{"status":"completed","commits":["xyz"],'
 			'"summary":"worked","files_changed":["main.py"]}\n'
 			"\x1b[0mEnd of session"
 		)
@@ -333,7 +333,7 @@ class TestParseMcResultEdgeCases:
 
 
 class TestExtractFallbackHandoff:
-	"""Tests for extract_fallback_handoff() -- recovers data when MC_RESULT missing."""
+	"""Tests for extract_fallback_handoff() -- recovers data when AD_RESULT missing."""
 
 	def test_no_mc_result_with_commits(self) -> None:
 		"""Extract commits and changed files from git output."""

@@ -10,8 +10,8 @@ from typing import Any
 
 import pytest
 
-from mission_control.db import Database
-from mission_control.models import (
+from autodev.db import Database
+from autodev.models import (
 	Decision,
 	DecompositionGrade,
 	Epoch,
@@ -927,7 +927,7 @@ class TestKnowledgeItems:
 
 # -- Lock hygiene regression tests --
 
-_SRC_DIR = Path(__file__).resolve().parent.parent / "src" / "mission_control"
+_SRC_DIR = Path(__file__).resolve().parent.parent / "src" / "autodev"
 
 # Files with known pre-existing violations that are tracked separately.
 # Remove entries as they get migrated to locked_call().

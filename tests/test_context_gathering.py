@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mission_control.config import MissionConfig, TargetConfig
-from mission_control.context_gathering import (
+from autodev.config import MissionConfig, TargetConfig
+from autodev.context_gathering import (
 	VerificationFailureSummary,
 	format_verification_failures,
 	get_episodic_context,
@@ -23,7 +23,7 @@ from mission_control.context_gathering import (
 	get_verification_failures,
 	read_backlog,
 )
-from mission_control.models import (
+from autodev.models import (
 	EpisodicMemory,
 	Mission,
 	SemanticMemory,
@@ -86,7 +86,7 @@ class TestGetGitLog:
 		mock_proc.returncode = 0
 		mock_proc.communicate = AsyncMock(return_value=(b"abc123 first\ndef456 second\n", b""))
 
-		with patch("mission_control.context_gathering.asyncio.create_subprocess_exec", return_value=mock_proc):
+		with patch("autodev.context_gathering.asyncio.create_subprocess_exec", return_value=mock_proc):
 			result = await get_git_log(cfg, limit=5)
 
 		assert "abc123 first" in result
@@ -103,8 +103,8 @@ class TestGetGitLog:
 		mock_proc = AsyncMock()
 		mock_proc.communicate = _hang
 
-		with patch("mission_control.context_gathering.asyncio.create_subprocess_exec", return_value=mock_proc):
-			with patch("mission_control.context_gathering.asyncio.wait_for", side_effect=asyncio.TimeoutError):
+		with patch("autodev.context_gathering.asyncio.create_subprocess_exec", return_value=mock_proc):
+			with patch("autodev.context_gathering.asyncio.wait_for", side_effect=asyncio.TimeoutError):
 				result = await get_git_log(cfg)
 
 		assert result == ""
@@ -116,7 +116,7 @@ class TestGetGitLog:
 		mock_proc.returncode = 128
 		mock_proc.communicate = AsyncMock(return_value=(b"fatal: not a repo", b""))
 
-		with patch("mission_control.context_gathering.asyncio.create_subprocess_exec", return_value=mock_proc):
+		with patch("autodev.context_gathering.asyncio.create_subprocess_exec", return_value=mock_proc):
 			result = await get_git_log(cfg)
 
 		assert result == ""
@@ -321,8 +321,8 @@ class TestGetIntelContext:
 		"""No cache file -> run_scan is called and cache is written."""
 		cfg = MissionConfig(target=TargetConfig(path=str(tmp_path), name="t"))
 
-		from mission_control.intelligence.models import AdaptationProposal
-		from mission_control.intelligence.scanner import IntelReport
+		from autodev.intelligence.models import AdaptationProposal
+		from autodev.intelligence.scanner import IntelReport
 
 		mock_report = IntelReport(
 			findings=[],
@@ -334,7 +334,7 @@ class TestGetIntelContext:
 			scan_duration_seconds=1.0,
 		)
 
-		with patch("mission_control.intelligence.run_scan", new_callable=AsyncMock, return_value=mock_report):
+		with patch("autodev.intelligence.run_scan", new_callable=AsyncMock, return_value=mock_report):
 			result = await get_intel_context(cfg)
 
 		assert "Use caching" in result
@@ -360,8 +360,8 @@ class TestGetIntelContext:
 		}
 		(cache_dir / "intel_report.json").write_text(json.dumps(cached))
 
-		from mission_control.intelligence.models import AdaptationProposal
-		from mission_control.intelligence.scanner import IntelReport
+		from autodev.intelligence.models import AdaptationProposal
+		from autodev.intelligence.scanner import IntelReport
 
 		fresh_report = IntelReport(
 			findings=[],
@@ -371,7 +371,7 @@ class TestGetIntelContext:
 			scan_duration_seconds=0.5,
 		)
 
-		with patch("mission_control.intelligence.run_scan", new_callable=AsyncMock, return_value=fresh_report):
+		with patch("autodev.intelligence.run_scan", new_callable=AsyncMock, return_value=fresh_report):
 			result = await get_intel_context(cfg, ttl_hours=6.0)
 
 		assert "Fresh insight" in result
@@ -382,7 +382,7 @@ class TestGetIntelContext:
 		cfg = MissionConfig(target=TargetConfig(path=str(tmp_path), name="t"))
 
 		with patch(
-			"mission_control.intelligence.run_scan",
+			"autodev.intelligence.run_scan",
 			new_callable=AsyncMock,
 			side_effect=RuntimeError("network down"),
 		):

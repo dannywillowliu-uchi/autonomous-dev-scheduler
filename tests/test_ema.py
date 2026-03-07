@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from mission_control.ema import ExponentialMovingAverage
+from autodev.ema import ExponentialMovingAverage
 
 
 class TestBasicEMA:
@@ -204,7 +204,7 @@ class TestBudgetCheck:
 class TestConfigIntegration:
 	def test_ema_from_config_defaults(self) -> None:
 		"""EMA can be constructed from BudgetConfig default values."""
-		from mission_control.config import BudgetConfig
+		from autodev.config import BudgetConfig
 
 		bc = BudgetConfig()
 		ema = ExponentialMovingAverage(
@@ -218,7 +218,7 @@ class TestConfigIntegration:
 
 	def test_ema_from_custom_config(self) -> None:
 		"""EMA respects custom BudgetConfig values."""
-		from mission_control.config import BudgetConfig
+		from autodev.config import BudgetConfig
 
 		bc = BudgetConfig(ema_alpha=0.5, outlier_multiplier=2.0, conservatism_base=1.0)
 		ema = ExponentialMovingAverage(

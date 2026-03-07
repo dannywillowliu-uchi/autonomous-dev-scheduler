@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from mission_control.config import (
+from autodev.config import (
 	DeployConfig,
 	GreenBranchConfig,
 	MissionConfig,
@@ -18,21 +18,21 @@ from mission_control.config import (
 	TraceLogConfig,
 	VerificationConfig,
 )
-from mission_control.continuous_controller import (
+from autodev.continuous_controller import (
 	ContinuousController,
 	ContinuousMissionResult,
 	WorkerCompletion,
 )
-from mission_control.continuous_planner import ContinuousPlanner
-from mission_control.db import Database
-from mission_control.green_branch import (
+from autodev.continuous_planner import ContinuousPlanner
+from autodev.db import Database
+from autodev.green_branch import (
 	FIXUP_PROMPTS,
 	FixupCandidate,
 	FixupResult,
 	GreenBranchManager,
 	UnitMergeResult,
 )
-from mission_control.models import (
+from autodev.models import (
 	Epoch,
 	Handoff,
 	Mission,
@@ -42,7 +42,7 @@ from mission_control.models import (
 	VerificationResult,
 	WorkUnit,
 )
-from mission_control.trace_log import TraceLogger
+from autodev.trace_log import TraceLogger
 
 
 def _config() -> MissionConfig:
@@ -54,8 +54,8 @@ def _config() -> MissionConfig:
 		verification=VerificationConfig(command="pytest -q"),
 	)
 	mc.green_branch = GreenBranchConfig(
-		working_branch="mc/working",
-		green_branch="mc/green",
+		working_branch="autodev/working",
+		green_branch="autodev/green",
 	)
 	# Disable pre-merge verification by default in tests to avoid
 	# needing to mock _run_verification in every merge test
@@ -80,8 +80,8 @@ def _fixup_config(fixup_candidates: int = 3) -> MissionConfig:
 		verification=VerificationConfig(command="pytest -q && ruff check src/"),
 	)
 	mc.green_branch = GreenBranchConfig(
-		working_branch="mc/working",
-		green_branch="mc/green",
+		working_branch="autodev/working",
+		green_branch="autodev/green",
 		fixup_candidates=fixup_candidates,
 	)
 	return mc
@@ -103,7 +103,7 @@ def _candidate(
 	diff: int = 0,
 ) -> FixupCandidate:
 	return FixupCandidate(
-		branch=f"mc/fixup-candidate-{index}",
+		branch=f"autodev/fixup-candidate-{index}",
 		verification_passed=passed,
 		tests_passed=tests,
 		lint_errors=lint,
@@ -120,8 +120,8 @@ def _conflict_config() -> MissionConfig:
 		verification=VerificationConfig(command="pytest -q"),
 	)
 	mc.green_branch = GreenBranchConfig(
-		working_branch="mc/working",
-		green_branch="mc/green",
+		working_branch="autodev/working",
+		green_branch="autodev/green",
 	)
 	return mc
 
@@ -178,7 +178,7 @@ class TestMergeUnit:
 		# Rebase-first flow: merge target is the rebased branch, not the remote
 		merge_calls = [c for c in git_calls if c[0] == "merge" and "--no-ff" in c]
 		assert len(merge_calls) == 1
-		assert "mc/rebase-feat/branch" in merge_calls[0][2]
+		assert "autodev/rebase-feat/branch" in merge_calls[0][2]
 
 	async def test_auto_push_batched(self) -> None:
 		"""Push only fires after push_batch_size merges, not every merge."""
@@ -433,7 +433,7 @@ class TestGetGreenHash:
 		result = await mgr.get_green_hash()
 
 		assert result == "abc123def456"
-		mgr._run_git.assert_called_once_with("rev-parse", "mc/green")
+		mgr._run_git.assert_called_once_with("rev-parse", "autodev/green")
 
 
 class TestRunCommandTimeout:
@@ -446,8 +446,8 @@ class TestRunCommandTimeout:
 		mock_proc.kill = MagicMock()
 		mock_proc.wait = AsyncMock()
 
-		with patch("mission_control.green_branch.asyncio.create_subprocess_shell", return_value=mock_proc):
-			with patch("mission_control.green_branch.asyncio.wait_for", side_effect=asyncio.TimeoutError):
+		with patch("autodev.green_branch.asyncio.create_subprocess_shell", return_value=mock_proc):
+			with patch("autodev.green_branch.asyncio.wait_for", side_effect=asyncio.TimeoutError):
 				ok, output = await mgr._run_command("pytest -q")
 
 		assert ok is False
@@ -473,7 +473,7 @@ class TestInitializeSetupCommand:
 
 		with patch.object(mgr, "_run_git_in", AsyncMock(return_value=(False, ""))), \
 			patch.object(mgr, "_run_git", AsyncMock(return_value=(True, ""))), \
-			patch("mission_control.green_branch.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_shell:
+			patch("autodev.green_branch.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_shell:
 			await mgr.initialize("/tmp/workspace")
 
 		mock_shell.assert_called_once()
@@ -492,7 +492,7 @@ class TestInitializeSetupCommand:
 
 		with patch.object(mgr, "_run_git_in", AsyncMock(return_value=(False, ""))), \
 			patch.object(mgr, "_run_git", AsyncMock(return_value=(True, ""))), \
-			patch("mission_control.green_branch.asyncio.create_subprocess_exec", return_value=mock_proc):
+			patch("autodev.green_branch.asyncio.create_subprocess_exec", return_value=mock_proc):
 			with pytest.raises(RuntimeError, match="Workspace setup failed"):
 				await mgr.initialize("/tmp/workspace")
 
@@ -529,8 +529,8 @@ class TestInitializeResetOnInit:
 		# Source repo: should call update-ref for both branches
 		src_update_refs = [c[1] for c in source_calls if c[1][0] == "update-ref"]
 		assert len(src_update_refs) == 2
-		assert src_update_refs[0] == ("update-ref", "refs/heads/mc/working", "main")
-		assert src_update_refs[1] == ("update-ref", "refs/heads/mc/green", "main")
+		assert src_update_refs[0] == ("update-ref", "refs/heads/autodev/working", "main")
+		assert src_update_refs[1] == ("update-ref", "refs/heads/autodev/green", "main")
 
 		# Workspace: should also call update-ref for both branches
 		ws_update_refs = [c for c in workspace_calls if c[0] == "update-ref"]
@@ -545,7 +545,7 @@ class TestSyncToSource:
 	"""Tests for _sync_to_source: pushing refs from workspace clone back to source repo."""
 
 	async def test_syncs_both_branches(self) -> None:
-		"""_sync_to_source fetches both mc/green and mc/working into source repo."""
+		"""_sync_to_source fetches both autodev/green and autodev/working into source repo."""
 		mgr = _manager()
 		calls: list[tuple[str, tuple[str, ...]]] = []
 
@@ -558,12 +558,12 @@ class TestSyncToSource:
 		await mgr._sync_to_source()
 
 		assert len(calls) == 2
-		# First call: fetch mc/green
+		# First call: fetch autodev/green
 		assert calls[0][0] == "/tmp/test"  # source repo path
-		assert calls[0][1] == ("fetch", "/tmp/test-workspace", "+mc/green:mc/green")
-		# Second call: fetch mc/working
+		assert calls[0][1] == ("fetch", "/tmp/test-workspace", "+autodev/green:autodev/green")
+		# Second call: fetch autodev/working
 		assert calls[1][0] == "/tmp/test"
-		assert calls[1][1] == ("fetch", "/tmp/test-workspace", "+mc/working:mc/working")
+		assert calls[1][1] == ("fetch", "/tmp/test-workspace", "+autodev/working:autodev/working")
 
 
 class TestParallelMergeConflicts:
@@ -626,7 +626,7 @@ class TestParallelMergeConflicts:
 		)
 
 		assert len(execution_order) == 3
-		# Rebase-first flow: merge target is mc/rebase-{branch}, not the branch itself
+		# Rebase-first flow: merge target is autodev/rebase-{branch}, not the branch itself
 		assert set(execution_order) == {"rebase-unit-a", "rebase-unit-b", "rebase-unit-c"}
 
 
@@ -666,7 +666,7 @@ class TestVerificationOutsideLock:
 
 		async def tracking_git(*args: str) -> tuple[bool, str]:
 			git_calls.append(args)
-			if args[0] == "rev-parse" and args[1] == "mc/green":
+			if args[0] == "rev-parse" and args[1] == "autodev/green":
 				return (True, "abc123def456\n")
 			return (True, "")
 
@@ -873,7 +873,7 @@ class TestRunDeploy:
 		mock_proc.communicate = AsyncMock(return_value=(b"Deployed!", None))
 
 		with patch(
-			"mission_control.green_branch.asyncio.create_subprocess_exec",
+			"autodev.green_branch.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		):
 			ok, output = await mgr.run_deploy()
@@ -891,7 +891,7 @@ class TestRunDeploy:
 		mock_proc.communicate = AsyncMock(return_value=(b"Error: auth failed", None))
 
 		with patch(
-			"mission_control.green_branch.asyncio.create_subprocess_exec",
+			"autodev.green_branch.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		):
 			ok, output = await mgr.run_deploy()
@@ -910,10 +910,10 @@ class TestRunDeploy:
 		mock_proc.wait = AsyncMock()
 
 		with patch(
-			"mission_control.green_branch.asyncio.create_subprocess_exec",
+			"autodev.green_branch.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		), patch(
-			"mission_control.green_branch.asyncio.wait_for",
+			"autodev.green_branch.asyncio.wait_for",
 			side_effect=asyncio.TimeoutError,
 		):
 			ok, output = await mgr.run_deploy()
@@ -955,7 +955,7 @@ class TestPollHealthCheck:
 		mock_client.__aenter__ = AsyncMock(return_value=mock_client)
 		mock_client.__aexit__ = AsyncMock(return_value=False)
 
-		with patch("mission_control.green_branch.httpx.AsyncClient", return_value=mock_client):
+		with patch("autodev.green_branch.httpx.AsyncClient", return_value=mock_client):
 			result = await mgr._poll_health_check("https://example.com/health", 30)
 
 		assert result is True
@@ -995,21 +995,21 @@ def _setup_source_repo(tmp_path: Path) -> tuple[Path, Path]:
 	_run(["git", "commit", "-m", "Add app.py"], setup_clone)
 	_run(["git", "push", "origin", "main"], setup_clone)
 
-	# Create mc/green branch in source repo pointing to main
+	# Create autodev/green branch in source repo pointing to main
 	main_hash = _run(["git", "rev-parse", "main"], setup_clone)
-	_run(["git", "branch", "mc/green", main_hash], setup_clone)
-	_run(["git", "push", "origin", "mc/green"], setup_clone)
-	_run(["git", "branch", "mc/working", main_hash], setup_clone)
-	_run(["git", "push", "origin", "mc/working"], setup_clone)
+	_run(["git", "branch", "autodev/green", main_hash], setup_clone)
+	_run(["git", "push", "origin", "autodev/green"], setup_clone)
+	_run(["git", "branch", "autodev/working", main_hash], setup_clone)
+	_run(["git", "push", "origin", "autodev/working"], setup_clone)
 
 	# Create the workspace clone (this is what GreenBranchManager operates on)
 	workspace = tmp_path / "workspace"
 	_run(["git", "clone", str(source), str(workspace)], tmp_path)
 	_run(["git", "config", "user.email", "test@test.com"], workspace)
 	_run(["git", "config", "user.name", "Test"], workspace)
-	# Track mc/green and mc/working locally
-	_run(["git", "branch", "mc/green", "origin/mc/green"], workspace)
-	_run(["git", "branch", "mc/working", "origin/mc/working"], workspace)
+	# Track autodev/green and autodev/working locally
+	_run(["git", "branch", "autodev/green", "origin/autodev/green"], workspace)
+	_run(["git", "branch", "autodev/working", "origin/autodev/working"], workspace)
 
 	return source, workspace
 
@@ -1033,8 +1033,8 @@ def _real_config(source: Path) -> MissionConfig:
 		verification=VerificationConfig(command="true"),
 	)
 	mc.green_branch = GreenBranchConfig(
-		working_branch="mc/working",
-		green_branch="mc/green",
+		working_branch="autodev/working",
+		green_branch="autodev/green",
 		reset_on_init=False,
 	)
 	return mc
@@ -1044,15 +1044,15 @@ class TestGreenBranchRealGit:
 	"""Integration tests using real git repos -- no mocks."""
 
 	async def test_merge_unit_creates_merge_commit_on_green(self, tmp_path: Path) -> None:
-		"""merge_unit produces a merge commit on mc/green with correct parents."""
+		"""merge_unit produces a merge commit on autodev/green with correct parents."""
 		source, workspace = _setup_source_repo(tmp_path)
 		config = _real_config(source)
 		db = Database(":memory:")
 		mgr = GreenBranchManager(config, db)
 		mgr.workspace = str(workspace)
 
-		# Get mc/green hash before merge
-		green_before = _run(["git", "rev-parse", "mc/green"], workspace)
+		# Get autodev/green hash before merge
+		green_before = _run(["git", "rev-parse", "autodev/green"], workspace)
 
 		# Create a worker clone and make a commit on a unit branch
 		worker = _make_worker_clone(tmp_path, source, "worker1")
@@ -1068,45 +1068,45 @@ class TestGreenBranchRealGit:
 		assert result.rebase_ok is True
 		assert result.failure_output == ""
 
-		# Verify mc/green advanced
-		green_after = _run(["git", "rev-parse", "mc/green"], workspace)
+		# Verify autodev/green advanced
+		green_after = _run(["git", "rev-parse", "autodev/green"], workspace)
 		assert green_after != green_before
 
 		# Verify it's a merge commit (2 parents)
-		parents = _run(["git", "log", "-1", "--format=%P", "mc/green"], workspace)
+		parents = _run(["git", "log", "-1", "--format=%P", "autodev/green"], workspace)
 		parent_list = parents.split()
 		assert len(parent_list) == 2
 		assert green_before in parent_list
 		# The other parent should be the unit commit
 		assert unit_hash in parent_list
 
-		# Verify the file exists on mc/green
-		_run(["git", "checkout", "mc/green"], workspace)
+		# Verify the file exists on autodev/green
+		_run(["git", "checkout", "autodev/green"], workspace)
 		assert (workspace / "feature_a.py").exists()
 
 	async def test_rebase_resolves_stale_branch(self, tmp_path: Path) -> None:
-		"""Two workers branch from same mc/green, edit different files -- both merge."""
+		"""Two workers branch from same autodev/green, edit different files -- both merge."""
 		source, workspace = _setup_source_repo(tmp_path)
 		config = _real_config(source)
 		db = Database(":memory:")
 		mgr = GreenBranchManager(config, db)
 		mgr.workspace = str(workspace)
 
-		# Worker 1: branch from mc/green, add feature_a.py
+		# Worker 1: branch from autodev/green, add feature_a.py
 		worker1 = _make_worker_clone(tmp_path, source, "worker-rebase-1")
 		_run(["git", "checkout", "-b", "unit/rebase-a"], worker1)
 		(worker1 / "feature_a.py").write_text("# Feature A\n")
 		_run(["git", "add", "feature_a.py"], worker1)
 		_run(["git", "commit", "-m", "Add feature A"], worker1)
 
-		# Worker 2: branch from mc/green (same base), add feature_b.py (different file)
+		# Worker 2: branch from autodev/green (same base), add feature_b.py (different file)
 		worker2 = _make_worker_clone(tmp_path, source, "worker-rebase-2")
 		_run(["git", "checkout", "-b", "unit/rebase-b"], worker2)
 		(worker2 / "feature_b.py").write_text("# Feature B\n")
 		_run(["git", "add", "feature_b.py"], worker2)
 		_run(["git", "commit", "-m", "Add feature B"], worker2)
 
-		# Merge worker 1 -- succeeds, mc/green advances
+		# Merge worker 1 -- succeeds, autodev/green advances
 		result1 = await mgr.merge_unit(str(worker1), "unit/rebase-a")
 		assert result1.merged is True
 
@@ -1115,8 +1115,8 @@ class TestGreenBranchRealGit:
 		assert result2.merged is True
 		assert result2.rebase_ok is True
 
-		# Verify mc/green has both files
-		_run(["git", "checkout", "mc/green"], workspace)
+		# Verify autodev/green has both files
+		_run(["git", "checkout", "autodev/green"], workspace)
 		assert (workspace / "feature_a.py").exists()
 		assert (workspace / "feature_b.py").exists()
 
@@ -1152,13 +1152,13 @@ class TestGreenBranchRealGit:
 		assert result2.failure_stage == "merge_conflict"
 		assert "conflict" in result2.failure_output.lower()
 
-		# Verify mc/green still has worker 1's content (not corrupted)
-		_run(["git", "checkout", "mc/green"], workspace)
+		# Verify autodev/green still has worker 1's content (not corrupted)
+		_run(["git", "checkout", "autodev/green"], workspace)
 		content = (workspace / "app.py").read_text()
 		assert "worker 1 was here" in content
 
 	async def test_sync_to_source_updates_source_repo(self, tmp_path: Path) -> None:
-		"""After merge_unit, source repo's mc/green matches workspace's mc/green."""
+		"""After merge_unit, source repo's autodev/green matches workspace's autodev/green."""
 		source, workspace = _setup_source_repo(tmp_path)
 		config = _real_config(source)
 		db = Database(":memory:")
@@ -1173,9 +1173,9 @@ class TestGreenBranchRealGit:
 
 		await mgr.merge_unit(str(worker), "unit/sync-test")
 
-		# Source repo's mc/green should match workspace's mc/green
-		ws_green = _run(["git", "rev-parse", "mc/green"], workspace)
-		src_green = _run(["git", "rev-parse", "mc/green"], source)
+		# Source repo's autodev/green should match workspace's autodev/green
+		ws_green = _run(["git", "rev-parse", "autodev/green"], workspace)
+		src_green = _run(["git", "rev-parse", "autodev/green"], source)
 		assert ws_green == src_green
 
 
@@ -1234,8 +1234,8 @@ def _state_config(target_path: str = "/tmp/test") -> MissionConfig:
 		verification=VerificationConfig(command="pytest -q"),
 	)
 	mc.green_branch = GreenBranchConfig(
-		working_branch="mc/working",
-		green_branch="mc/green",
+		working_branch="autodev/working",
+		green_branch="autodev/green",
 	)
 	return mc
 
@@ -1695,8 +1695,8 @@ class TestAcceptanceCriteria:
 		mock_proc.kill = MagicMock()
 		mock_proc.wait = AsyncMock()
 
-		with patch("mission_control.green_branch.asyncio.create_subprocess_shell", return_value=mock_proc):
-			with patch("mission_control.green_branch.asyncio.wait_for", side_effect=asyncio.TimeoutError):
+		with patch("autodev.green_branch.asyncio.create_subprocess_shell", return_value=mock_proc):
+			with patch("autodev.green_branch.asyncio.wait_for", side_effect=asyncio.TimeoutError):
 				passed, output = await mgr._run_acceptance_criteria("sleep 999", timeout=1)
 
 		assert passed is False
@@ -1719,13 +1719,13 @@ class TestFixupCandidateDataclass:
 
 	def test_fields_set(self) -> None:
 		c = FixupCandidate(
-			branch="mc/fixup-candidate-0",
+			branch="autodev/fixup-candidate-0",
 			verification_passed=True,
 			tests_passed=42,
 			lint_errors=2,
 			diff_lines=15,
 		)
-		assert c.branch == "mc/fixup-candidate-0"
+		assert c.branch == "autodev/fixup-candidate-0"
 		assert c.verification_passed is True
 		assert c.tests_passed == 42
 		assert c.lint_errors == 2
@@ -1741,7 +1741,7 @@ class TestFixupResultDataclass:
 
 	def test_with_winner(self) -> None:
 		winner = FixupCandidate(
-			branch="mc/fixup-candidate-1", verification_passed=True,
+			branch="autodev/fixup-candidate-1", verification_passed=True,
 		)
 		r = FixupResult(success=True, winner=winner, candidates=[winner])
 		assert r.success is True
@@ -1810,7 +1810,7 @@ class TestRunFixup:
 		assert result.success is True
 		assert result.winner is not None
 		assert result.winner.tests_passed == 10
-		assert result.winner.branch == "mc/fixup-candidate-1"
+		assert result.winner.branch == "autodev/fixup-candidate-1"
 
 	async def test_tiebreak_by_lint_errors(self) -> None:
 		"""When tests_passed tie, fewer lint errors wins."""
@@ -1833,7 +1833,7 @@ class TestRunFixup:
 		assert result.success is True
 		assert result.winner is not None
 		assert result.winner.lint_errors == 2
-		assert result.winner.branch == "mc/fixup-candidate-1"
+		assert result.winner.branch == "autodev/fixup-candidate-1"
 
 	async def test_tiebreak_by_diff_size(self) -> None:
 		"""When tests and lint tie, smallest diff wins."""
@@ -1856,7 +1856,7 @@ class TestRunFixup:
 		assert result.success is True
 		assert result.winner is not None
 		assert result.winner.diff_lines == 5
-		assert result.winner.branch == "mc/fixup-candidate-1"
+		assert result.winner.branch == "autodev/fixup-candidate-1"
 
 	async def test_all_candidates_fail(self) -> None:
 		"""When all candidates fail verification, result is failure."""
@@ -1899,10 +1899,10 @@ class TestRunFixup:
 
 		assert result.success is True
 		assert result.winner is not None
-		assert result.winner.branch == "mc/fixup-candidate-1"
+		assert result.winner.branch == "autodev/fixup-candidate-1"
 
 	async def test_winner_merged_into_green(self) -> None:
-		"""Winning candidate branch is merged into mc/green."""
+		"""Winning candidate branch is merged into autodev/green."""
 		mgr = _fixup_manager(fixup_candidates=2)
 
 		candidates = [
@@ -1930,7 +1930,7 @@ class TestRunFixup:
 			if c[0] == "merge" and "--ff-only" in c
 		]
 		assert len(ff_calls) == 1
-		assert "mc/fixup-candidate-0" in ff_calls[0]
+		assert "autodev/fixup-candidate-0" in ff_calls[0]
 
 	async def test_candidate_branches_cleaned_up(self) -> None:
 		"""All candidate branches are deleted after fixup."""
@@ -1960,9 +1960,9 @@ class TestRunFixup:
 			c for c in git_calls if c[0] == "branch" and c[1] == "-D"
 		]
 		deleted_branches = {c[2] for c in delete_calls}
-		assert "mc/fixup-candidate-0" in deleted_branches
-		assert "mc/fixup-candidate-1" in deleted_branches
-		assert "mc/fixup-candidate-2" in deleted_branches
+		assert "autodev/fixup-candidate-0" in deleted_branches
+		assert "autodev/fixup-candidate-1" in deleted_branches
+		assert "autodev/fixup-candidate-2" in deleted_branches
 
 	async def test_merge_failure_returns_no_winner(self) -> None:
 		"""If merging the winner branch fails, result has no winner."""
@@ -1999,7 +1999,7 @@ class TestRunFixup:
 			nonlocal call_count
 			call_count += 1
 			return FixupCandidate(
-				branch=f"mc/fixup-candidate-{index}",
+				branch=f"autodev/fixup-candidate-{index}",
 				verification_passed=(index == 0),
 				tests_passed=10 if index == 0 else 3,
 				lint_errors=0,
@@ -2023,7 +2023,7 @@ class TestRunFixup:
 		async def mock_run_candidate(index, prompt, failure_output, green_ref):
 			prompts_received.append(prompt)
 			return FixupCandidate(
-				branch=f"mc/fixup-candidate-{index}",
+				branch=f"autodev/fixup-candidate-{index}",
 				verification_passed=False,
 			)
 
@@ -2059,7 +2059,7 @@ class TestRunFixup:
 
 		assert result.success is True
 		assert result.winner is not None
-		assert result.winner.branch == "mc/fixup-candidate-1"
+		assert result.winner.branch == "autodev/fixup-candidate-1"
 		assert result.winner.tests_passed == 5
 
 	async def test_fallback_to_no_ff_merge(self) -> None:
@@ -2103,7 +2103,7 @@ class TestRunFixupCandidate:
 	"""Tests for the individual candidate execution."""
 
 	async def test_candidate_creates_branch_from_green(self) -> None:
-		"""Candidate creates branch from mc/green and runs verification."""
+		"""Candidate creates branch from autodev/green and runs verification."""
 		mgr = _fixup_manager()
 
 		git_calls: list[tuple[str, ...]] = []
@@ -2120,11 +2120,11 @@ class TestRunFixupCandidate:
 			return_value=(True, "10 passed\nAll checks passed"),
 		)
 
-		await mgr._run_fixup_candidate(0, "fix it", "failure", "mc/green")
+		await mgr._run_fixup_candidate(0, "fix it", "failure", "autodev/green")
 
 		checkout_calls = [c for c in git_calls if c[0] == "checkout"]
-		assert any("mc/green" in c for c in checkout_calls)
-		assert any("mc/fixup-candidate-0" in c for c in checkout_calls)
+		assert any("autodev/green" in c for c in checkout_calls)
+		assert any("autodev/fixup-candidate-0" in c for c in checkout_calls)
 
 	async def test_candidate_parses_verification_results(self) -> None:
 		"""Candidate parses pytest and ruff output from verification."""
@@ -2142,7 +2142,7 @@ class TestRunFixupCandidate:
 		mgr._run_command = AsyncMock(return_value=(True, verify_output))
 
 		candidate = await mgr._run_fixup_candidate(
-			0, "fix it", "failure", "mc/green",
+			0, "fix it", "failure", "autodev/green",
 		)
 
 		assert candidate.tests_passed == 42
@@ -2161,7 +2161,7 @@ class TestRunFixupCandidate:
 		mgr._run_git = AsyncMock(side_effect=failing_checkout)
 
 		candidate = await mgr._run_fixup_candidate(
-			0, "fix it", "failure", "mc/green",
+			0, "fix it", "failure", "autodev/green",
 		)
 
 		assert candidate.verification_passed is False
@@ -2188,7 +2188,7 @@ class TestRunFixupCandidate:
 		)
 
 		candidate = await mgr._run_fixup_candidate(
-			0, "fix it", "failure", "mc/green",
+			0, "fix it", "failure", "autodev/green",
 		)
 
 		assert candidate.diff_lines == 23
@@ -2293,7 +2293,7 @@ class TestZFCFixupPrompts:
 		mgr = self._zfc_manager(zfc_fixup=False)
 
 		mgr._run_fixup_candidate = AsyncMock(return_value=MagicMock(
-			verification_passed=False, branch="mc/fixup-0",
+			verification_passed=False, branch="autodev/fixup-0",
 		))
 		mgr._run_git = AsyncMock(return_value=(True, ""))
 
@@ -2306,7 +2306,7 @@ class TestZFCFixupPrompts:
 		mgr = self._zfc_manager(zfc_fixup=True)
 
 		mgr._run_fixup_candidate = AsyncMock(return_value=MagicMock(
-			verification_passed=False, branch="mc/fixup-0",
+			verification_passed=False, branch="autodev/fixup-0",
 		))
 		mgr._run_git = AsyncMock(return_value=(True, ""))
 
@@ -2322,7 +2322,7 @@ class TestZFCFixupPrompts:
 		mgr = self._zfc_manager(zfc_fixup=True)
 
 		mgr._run_fixup_candidate = AsyncMock(return_value=MagicMock(
-			verification_passed=False, branch="mc/fixup-0",
+			verification_passed=False, branch="autodev/fixup-0",
 		))
 		mgr._run_git = AsyncMock(return_value=(True, ""))
 
@@ -2538,7 +2538,7 @@ class TestLockedFilesInPlannerPrompt:
 	@pytest.mark.asyncio
 	async def test_locked_section_in_prompt(self) -> None:
 		"""RecursivePlanner injects ## Locked Files section into the LLM prompt."""
-		from mission_control.recursive_planner import PlannerResult, RecursivePlanner
+		from autodev.recursive_planner import PlannerResult, RecursivePlanner
 
 		config = _conflict_config()
 		db = Database(":memory:")
@@ -2568,7 +2568,7 @@ class TestLockedFilesInPlannerPrompt:
 	@pytest.mark.asyncio
 	async def test_no_locked_section_when_empty(self) -> None:
 		"""No ## Locked Files section when locked_files is empty."""
-		from mission_control.recursive_planner import PlannerResult, RecursivePlanner
+		from autodev.recursive_planner import PlannerResult, RecursivePlanner
 
 		config = _conflict_config()
 		db = Database(":memory:")
@@ -2609,8 +2609,8 @@ class TestChangedFilesRealGit:
 			verification=VerificationConfig(command="true"),
 		)
 		config.green_branch = GreenBranchConfig(
-			working_branch="mc/working",
-			green_branch="mc/green",
+			working_branch="autodev/working",
+			green_branch="autodev/green",
 			reset_on_init=False,
 		)
 
@@ -2654,8 +2654,8 @@ class TestReconciliationCheck:
 
 		assert ok is True
 		assert output == "all tests passed"
-		# Should checkout mc/green before running verification
-		mgr._run_git.assert_any_call("checkout", "mc/green")
+		# Should checkout autodev/green before running verification
+		mgr._run_git.assert_any_call("checkout", "autodev/green")
 
 	async def test_reconciliation_check_fails(self) -> None:
 		mgr = _conflict_manager()

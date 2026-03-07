@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from mission_control.path_security import validate_config_path
+from autodev.path_security import validate_config_path
 
 
 class TestValidateConfigPath:

@@ -1,7 +1,7 @@
 """End-to-end integration tests for the dispatch-merge-complete cycle.
 
 Tests the critical path: controller dispatches unit -> worker executes ->
-MC_RESULT parsed -> green branch merge -> handoff ingested -> planner re-plans.
+AD_RESULT parsed -> green branch merge -> handoff ingested -> planner re-plans.
 
 Uses real git repos (no mocks for git operations) following the pattern from
 test_green_branch.py (TestGreenBranchRealGit).
@@ -13,15 +13,15 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from mission_control.backends.base import WorkerBackend, WorkerHandle
-from mission_control.cli import (
+from autodev.backends.base import WorkerBackend, WorkerHandle
+from autodev.cli import (
 	_build_cleanup_objective,
 	_is_cleanup_due,
 	_is_cleanup_mission,
 	build_parser,
 	cmd_mission,
 )
-from mission_control.config import (
+from autodev.config import (
 	ContinuousConfig,
 	GreenBranchConfig,
 	MissionConfig,
@@ -30,11 +30,11 @@ from mission_control.config import (
 	_build_continuous,
 	load_config,
 )
-from mission_control.continuous_controller import ContinuousMissionResult
-from mission_control.db import Database
-from mission_control.green_branch import GreenBranchManager
-from mission_control.models import Epoch, Handoff, Mission, Plan, UnitEvent, WorkUnit
-from mission_control.worker import VALID_SPECIALISTS, load_specialist_template
+from autodev.continuous_controller import ContinuousMissionResult
+from autodev.db import Database
+from autodev.green_branch import GreenBranchManager
+from autodev.models import Epoch, Handoff, Mission, Plan, UnitEvent, WorkUnit
+from autodev.worker import VALID_SPECIALISTS, load_specialist_template
 
 # ---------------------------------------------------------------------------
 # Git helpers (same pattern as test_green_branch.py)
@@ -73,20 +73,20 @@ def _setup_source_repo(tmp_path: Path) -> tuple[Path, Path]:
 	_run(["git", "commit", "-m", "Add app.py"], setup_clone)
 	_run(["git", "push", "origin", "main"], setup_clone)
 
-	# Create mc/green and mc/working branches
+	# Create autodev/green and autodev/working branches
 	main_hash = _run(["git", "rev-parse", "main"], setup_clone)
-	_run(["git", "branch", "mc/green", main_hash], setup_clone)
-	_run(["git", "push", "origin", "mc/green"], setup_clone)
-	_run(["git", "branch", "mc/working", main_hash], setup_clone)
-	_run(["git", "push", "origin", "mc/working"], setup_clone)
+	_run(["git", "branch", "autodev/green", main_hash], setup_clone)
+	_run(["git", "push", "origin", "autodev/green"], setup_clone)
+	_run(["git", "branch", "autodev/working", main_hash], setup_clone)
+	_run(["git", "push", "origin", "autodev/working"], setup_clone)
 
 	# Workspace clone for GreenBranchManager
 	workspace = tmp_path / "workspace"
 	_run(["git", "clone", str(source), str(workspace)], tmp_path)
 	_run(["git", "config", "user.email", "test@test.com"], workspace)
 	_run(["git", "config", "user.name", "Test"], workspace)
-	_run(["git", "branch", "mc/green", "origin/mc/green"], workspace)
-	_run(["git", "branch", "mc/working", "origin/mc/working"], workspace)
+	_run(["git", "branch", "autodev/green", "origin/autodev/green"], workspace)
+	_run(["git", "branch", "autodev/working", "origin/autodev/working"], workspace)
 
 	return source, workspace
 
@@ -110,8 +110,8 @@ def _real_config(source: Path) -> MissionConfig:
 		verification=VerificationConfig(command="true"),
 	)
 	mc.green_branch = GreenBranchConfig(
-		working_branch="mc/working",
-		green_branch="mc/green",
+		working_branch="autodev/working",
+		green_branch="autodev/green",
 		reset_on_init=False,
 	)
 	return mc
@@ -128,7 +128,7 @@ class MockWorkerBackend(WorkerBackend):
 	Instead of spawning Claude sessions, it:
 	1. Creates a real git clone from the source repo
 	2. Creates a branch, commits a file change
-	3. Returns realistic MC_RESULT output with handoff data
+	3. Returns realistic AD_RESULT output with handoff data
 	"""
 
 	def __init__(self, source: Path, tmp_path: Path) -> None:
@@ -144,7 +144,7 @@ class MockWorkerBackend(WorkerBackend):
 		clone = _make_worker_clone(
 			self.tmp_path, self.source, f"mock-worker-{self._counter}",
 		)
-		# Fetch and checkout the base branch so workers start from mc/green
+		# Fetch and checkout the base branch so workers start from autodev/green
 		_run(["git", "fetch", "origin", f"{base_branch}:{base_branch}"], clone)
 		_run(["git", "checkout", base_branch], clone)
 		self._workspaces[worker_id] = clone
@@ -153,7 +153,7 @@ class MockWorkerBackend(WorkerBackend):
 	def simulate_worker(
 		self, worker_id: str, branch_name: str, filename: str, content: str,
 	) -> tuple[str, dict[str, object]]:
-		"""Simulate a worker: create branch, commit file, return MC_RESULT dict.
+		"""Simulate a worker: create branch, commit file, return AD_RESULT dict.
 
 		Returns (commit_hash, mc_result_dict).
 		"""
@@ -207,7 +207,7 @@ class TestDispatchMergeCompleteCycle:
 	WorkerBackend that creates real git branches with real commits. Tests the
 	critical path that the ContinuousController orchestrates:
 
-	  dispatch -> worker executes -> MC_RESULT parsed -> green branch merge
+	  dispatch -> worker executes -> AD_RESULT parsed -> green branch merge
 	  -> handoff ingested -> planner re-plans
 	"""
 
@@ -215,7 +215,7 @@ class TestDispatchMergeCompleteCycle:
 		"""Two work units go through full dispatch-merge-complete cycle.
 
 		Verifies:
-		- Git state: mc/green has all committed files
+		- Git state: autodev/green has all committed files
 		- DB state: units are completed, handoffs stored, events recorded
 		- Handoff ingestion: planner accumulates discoveries
 		- Mission state: get_recent_handoffs returns all handoffs
@@ -273,7 +273,7 @@ class TestDispatchMergeCompleteCycle:
 				unit.id, branch_name, filename, content,
 			)
 
-			# Step 3: Parse MC_RESULT -- create Handoff
+			# Step 3: Parse AD_RESULT -- create Handoff
 			unit.branch_name = branch_name
 			unit.status = str(mc_result["status"])
 			unit.commit_hash = commit_hash
@@ -297,7 +297,7 @@ class TestDispatchMergeCompleteCycle:
 			unit.handoff_id = handoff.id
 			db.update_work_unit(unit)
 
-			# Step 4: Merge to mc/green
+			# Step 4: Merge to autodev/green
 			merge_result = await gbm.merge_unit(ws, branch_name)
 			assert merge_result.merged is True, (
 				f"Merge failed for '{unit.title}': {merge_result.failure_output}"
@@ -317,10 +317,10 @@ class TestDispatchMergeCompleteCycle:
 		# VERIFICATION
 		# ===================================================================
 
-		# --- Git state: mc/green has all committed files ---
-		_run(["git", "checkout", "mc/green"], workspace)
-		assert (workspace / "feature_alpha.py").exists(), "feature_alpha.py missing from mc/green"
-		assert (workspace / "feature_beta.py").exists(), "feature_beta.py missing from mc/green"
+		# --- Git state: autodev/green has all committed files ---
+		_run(["git", "checkout", "autodev/green"], workspace)
+		assert (workspace / "feature_alpha.py").exists(), "feature_alpha.py missing from autodev/green"
+		assert (workspace / "feature_beta.py").exists(), "feature_beta.py missing from autodev/green"
 		# Original files still present
 		assert (workspace / "README.md").exists()
 		assert (workspace / "app.py").exists()
@@ -357,16 +357,16 @@ class TestDispatchMergeCompleteCycle:
 		assert len(events) == 2
 		assert all(e.event_type == "merged" for e in events)
 
-		# --- Source repo sync: mc/green in source matches workspace ---
-		ws_green = _run(["git", "rev-parse", "mc/green"], workspace)
-		src_green = _run(["git", "rev-parse", "mc/green"], source)
-		assert ws_green == src_green, "Source repo mc/green out of sync with workspace"
+		# --- Source repo sync: autodev/green in source matches workspace ---
+		ws_green = _run(["git", "rev-parse", "autodev/green"], workspace)
+		src_green = _run(["git", "rev-parse", "autodev/green"], source)
+		assert ws_green == src_green, "Source repo autodev/green out of sync with workspace"
 
 	async def test_three_units_sequential_merge(self, tmp_path: Path) -> None:
 		"""Three units merge sequentially -- each rebases on top of the previous.
 
 		This tests the rebase-on-stale-branch scenario: workers branch from
-		the same mc/green state, but merges happen serially so later units
+		the same autodev/green state, but merges happen serially so later units
 		must rebase on top of earlier merged work.
 		"""
 		source, workspace = _setup_source_repo(tmp_path)
@@ -387,7 +387,7 @@ class TestDispatchMergeCompleteCycle:
 		epoch = Epoch(mission_id=mission.id, number=1, units_planned=3)
 		db.insert_epoch(epoch)
 
-		# All workers provision from the SAME mc/green base (simulating
+		# All workers provision from the SAME autodev/green base (simulating
 		# parallel dispatch where all workers start from the same snapshot)
 		unit_specs = [
 			("module_one.py", "# Module One\nclass One:\n\tpass\n", "Add module one"),
@@ -463,14 +463,14 @@ class TestDispatchMergeCompleteCycle:
 
 			# Track green branch advancing after each merge
 			green_hashes.append(
-				_run(["git", "rev-parse", "mc/green"], workspace),
+				_run(["git", "rev-parse", "autodev/green"], workspace),
 			)
 
-		# --- Verify mc/green advanced after each merge ---
-		assert len(set(green_hashes)) == 3, "mc/green should have a unique hash after each merge"
+		# --- Verify autodev/green advanced after each merge ---
+		assert len(set(green_hashes)) == 3, "autodev/green should have a unique hash after each merge"
 
-		# --- Verify all files exist on mc/green ---
-		_run(["git", "checkout", "mc/green"], workspace)
+		# --- Verify all files exist on autodev/green ---
+		_run(["git", "checkout", "autodev/green"], workspace)
 		assert (workspace / "module_one.py").exists()
 		assert (workspace / "module_two.py").exists()
 		assert (workspace / "module_three.py").exists()
@@ -491,7 +491,7 @@ class TestDispatchMergeCompleteCycle:
 
 		# --- Verify git log shows merge commits ---
 		log_output = _run(
-			["git", "log", "--oneline", "--merges", "mc/green"],
+			["git", "log", "--oneline", "--merges", "autodev/green"],
 			workspace,
 		)
 		# Each merge_unit creates a merge commit (--no-ff)
@@ -499,10 +499,10 @@ class TestDispatchMergeCompleteCycle:
 		assert len(merge_lines) >= 3, f"Expected 3 merge commits, got: {log_output}"
 
 	async def test_failed_unit_does_not_corrupt_green(self, tmp_path: Path) -> None:
-		"""A failed unit followed by a successful one leaves mc/green clean.
+		"""A failed unit followed by a successful one leaves autodev/green clean.
 
-		Simulates: unit 1 fails (MC_RESULT status=failed), unit 2 succeeds.
-		Only unit 2's changes should appear on mc/green.
+		Simulates: unit 1 fails (AD_RESULT status=failed), unit 2 succeeds.
+		Only unit 2's changes should appear on autodev/green.
 		"""
 		source, workspace = _setup_source_repo(tmp_path)
 		config = _real_config(source)
@@ -522,7 +522,7 @@ class TestDispatchMergeCompleteCycle:
 		epoch = Epoch(mission_id=mission.id, number=1, units_planned=2)
 		db.insert_epoch(epoch)
 
-		green_before = _run(["git", "rev-parse", "mc/green"], workspace)
+		green_before = _run(["git", "rev-parse", "autodev/green"], workspace)
 
 		# --- Unit 1: fails (no merge attempt) ---
 		failed_unit = WorkUnit(
@@ -565,9 +565,9 @@ class TestDispatchMergeCompleteCycle:
 		failed_unit.handoff_id = failed_handoff.id
 		db.update_work_unit(failed_unit)
 
-		# Controller skips merge for failed units -- mc/green unchanged
-		green_after_fail = _run(["git", "rev-parse", "mc/green"], workspace)
-		assert green_after_fail == green_before, "mc/green should not change for failed unit"
+		# Controller skips merge for failed units -- autodev/green unchanged
+		green_after_fail = _run(["git", "rev-parse", "autodev/green"], workspace)
+		assert green_after_fail == green_before, "autodev/green should not change for failed unit"
 
 		# --- Unit 2: succeeds ---
 		success_unit = WorkUnit(
@@ -611,10 +611,10 @@ class TestDispatchMergeCompleteCycle:
 		merge_result = await gbm.merge_unit(ws2, branch2)
 		assert merge_result.merged is True
 
-		# --- Verify: mc/green has good_feature.py but NOT broken.py ---
-		_run(["git", "checkout", "mc/green"], workspace)
+		# --- Verify: autodev/green has good_feature.py but NOT broken.py ---
+		_run(["git", "checkout", "autodev/green"], workspace)
 		assert (workspace / "good_feature.py").exists()
-		assert not (workspace / "broken.py").exists(), "Failed unit's file should not be on mc/green"
+		assert not (workspace / "broken.py").exists(), "Failed unit's file should not be on autodev/green"
 
 		# --- Verify DB state ---
 		stored_failed = db.get_work_unit(failed_unit.id)
@@ -647,7 +647,7 @@ class TestCleanupConfig:
 		assert cc.cleanup_interval == 3
 
 	def test_toml_parsing(self, tmp_path: Path) -> None:
-		toml = tmp_path / "mission-control.toml"
+		toml = tmp_path / "autodev.toml"
 		toml.write_text("""\
 [target]
 name = "test"
@@ -721,7 +721,7 @@ class TestBuildCleanupObjective:
 		cfg.target = TargetConfig(name="test", path=str(tmp_path))
 
 		with (
-			patch("mission_control.cli.subprocess.run") as mock_run,
+			patch("autodev.cli.subprocess.run") as mock_run,
 		):
 			# First call: find test files
 			find_result = type(
@@ -746,7 +746,7 @@ class TestBuildCleanupObjective:
 		cfg = MissionConfig()
 		cfg.target = TargetConfig(name="test", path=str(tmp_path))
 
-		with patch("mission_control.cli.subprocess.run", side_effect=OSError("not found")):
+		with patch("autodev.cli.subprocess.run", side_effect=OSError("not found")):
 			obj = _build_cleanup_objective(cfg)
 
 		assert obj.startswith("[CLEANUP]")
@@ -850,7 +850,7 @@ class TestChainLoopInCLI:
 	"""Test the chaining loop in cmd_mission with mocked controller."""
 
 	def _make_config(self, tmp_path: Path) -> tuple[Path, MissionConfig]:
-		config_path = tmp_path / "mission-control.toml"
+		config_path = tmp_path / "autodev.toml"
 		config_path.write_text(
 			f'[target]\nname = "test"\npath = "{tmp_path}"\nobjective = "Do something"\n'
 		)
@@ -860,10 +860,10 @@ class TestChainLoopInCLI:
 		config.target.objective = "Do something"
 		return config_path, config
 
-	@patch("mission_control.cli._start_dashboard_background", return_value=(None, None))
-	@patch("mission_control.continuous_controller.ContinuousController")
-	@patch("mission_control.cli.load_config")
-	@patch("mission_control.cli.Database")
+	@patch("autodev.cli._start_dashboard_background", return_value=(None, None))
+	@patch("autodev.continuous_controller.ContinuousController")
+	@patch("autodev.cli.load_config")
+	@patch("autodev.cli.Database")
 	def test_no_chain_runs_once(
 		self, mock_db_cls: MagicMock, mock_load: MagicMock, mock_ctrl_cls: MagicMock,
 		_mock_dash: MagicMock, tmp_path: Path,
@@ -879,17 +879,17 @@ class TestChainLoopInCLI:
 		mock_ctrl_cls.return_value = mock_ctrl
 
 		parser = build_parser()
-		args = parser.parse_args(["mission", "--config", str(tmp_path / "mission-control.toml")])
+		args = parser.parse_args(["mission", "--config", str(tmp_path / "autodev.toml")])
 
 		with patch("asyncio.run", side_effect=lambda coro: result):
 			ret = cmd_mission(args)
 
 		assert ret == 0
 
-	@patch("mission_control.cli._start_dashboard_background", return_value=(None, None))
-	@patch("mission_control.continuous_controller.ContinuousController")
-	@patch("mission_control.cli.load_config")
-	@patch("mission_control.cli.Database")
+	@patch("autodev.cli._start_dashboard_background", return_value=(None, None))
+	@patch("autodev.continuous_controller.ContinuousController")
+	@patch("autodev.cli.load_config")
+	@patch("autodev.cli.Database")
 	def test_chain_proposes_next_via_deliberative_planner(
 		self, mock_db_cls: MagicMock, mock_load: MagicMock, mock_ctrl_cls: MagicMock,
 		_mock_dash: MagicMock, tmp_path: Path,
@@ -916,12 +916,12 @@ class TestChainLoopInCLI:
 		parser = build_parser()
 		args = parser.parse_args([
 			"mission", "--chain",
-			"--config", str(tmp_path / "mission-control.toml"),
+			"--config", str(tmp_path / "autodev.toml"),
 		])
 
 		with (
 			patch("asyncio.run", side_effect=run_side_effect),
-			patch("mission_control.deliberative_planner.DeliberativePlanner"),
+			patch("autodev.deliberative_planner.DeliberativePlanner"),
 		):
 			cmd_mission(args)
 

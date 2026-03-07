@@ -1,4 +1,4 @@
-"""Shared pytest fixtures and factory functions for mission-control tests."""
+"""Shared pytest fixtures and factory functions for autodev tests."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from mission_control.config import MissionConfig, ResearchConfig, TargetConfig, VerificationConfig
-from mission_control.db import Database
+from autodev.config import MissionConfig, ResearchConfig, TargetConfig, VerificationConfig
+from autodev.db import Database
 
 
 @pytest.fixture()

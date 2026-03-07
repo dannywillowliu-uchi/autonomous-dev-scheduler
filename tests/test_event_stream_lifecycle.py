@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
-from mission_control.event_stream import EventStream
+from autodev.event_stream import EventStream
 
 
 class TestOpen:
@@ -183,7 +183,7 @@ class TestTraceContextInjection:
 		stream = EventStream(p)
 		stream.open()
 		with patch(
-			"mission_control.event_stream.get_current_trace_context",
+			"autodev.event_stream.get_current_trace_context",
 			return_value=("auto-trace-123", "auto-span-456"),
 		):
 			stream.emit("test")
@@ -197,7 +197,7 @@ class TestTraceContextInjection:
 		stream = EventStream(p)
 		stream.open()
 		with patch(
-			"mission_control.event_stream.get_current_trace_context",
+			"autodev.event_stream.get_current_trace_context",
 			return_value=("", ""),
 		):
 			stream.emit("test")

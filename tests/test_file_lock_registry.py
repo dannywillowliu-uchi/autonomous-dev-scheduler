@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from mission_control.file_lock_registry import FileLockRegistry, _paths_overlap
+from autodev.file_lock_registry import FileLockRegistry, _paths_overlap
 
 
 class TestPathsOverlap:
@@ -19,7 +19,7 @@ class TestPathsOverlap:
 		assert _paths_overlap("src/foo.py", "src/")
 
 	def test_nested_dir_overlap(self) -> None:
-		assert _paths_overlap("src/", "src/mission_control/models.py")
+		assert _paths_overlap("src/", "src/autodev/models.py")
 
 	def test_dir_does_not_overlap_sibling(self) -> None:
 		assert not _paths_overlap("src/", "tests/foo.py")
@@ -32,10 +32,10 @@ class TestPathsOverlap:
 		assert _paths_overlap("src/", "src/")
 
 	def test_deep_nested(self) -> None:
-		assert _paths_overlap("src/mission_control/", "src/mission_control/db.py")
+		assert _paths_overlap("src/autodev/", "src/autodev/db.py")
 
 	def test_no_overlap_different_trees(self) -> None:
-		assert not _paths_overlap("src/mission_control/", "tests/test_db.py")
+		assert not _paths_overlap("src/autodev/", "tests/test_db.py")
 
 
 class TestFileLockRegistry:
@@ -64,15 +64,15 @@ class TestFileLockRegistry:
 
 	def test_directory_conflict(self) -> None:
 		reg = FileLockRegistry()
-		reg.claim("u1", ["src/mission_control/"])
-		conflicts = reg.claim("u2", ["src/mission_control/db.py"])
-		assert "src/mission_control/db.py" in conflicts
+		reg.claim("u1", ["src/autodev/"])
+		conflicts = reg.claim("u2", ["src/autodev/db.py"])
+		assert "src/autodev/db.py" in conflicts
 
 	def test_file_conflicts_with_dir_claim(self) -> None:
 		reg = FileLockRegistry()
-		reg.claim("u1", ["src/mission_control/db.py"])
-		conflicts = reg.claim("u2", ["src/mission_control/"])
-		assert "src/mission_control/" in conflicts
+		reg.claim("u1", ["src/autodev/db.py"])
+		conflicts = reg.claim("u2", ["src/autodev/"])
+		assert "src/autodev/" in conflicts
 
 	def test_no_conflict_disjoint_files(self) -> None:
 		reg = FileLockRegistry()

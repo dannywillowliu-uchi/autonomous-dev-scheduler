@@ -10,8 +10,8 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from mission_control.intelligence.models import Finding
-from mission_control.intelligence.sources import (
+from autodev.intelligence.models import Finding
+from autodev.intelligence.sources import (
 	IncrementalScanner,
 	ScanCache,
 	_deserialize_cache,
@@ -258,7 +258,7 @@ class TestIncrementalMerge:
 		transport = httpx.MockTransport(_route_mock)
 		client = httpx.AsyncClient(transport=transport)
 
-		with patch("mission_control.intelligence.sources.time.time", return_value=now):
+		with patch("autodev.intelligence.sources.time.time", return_value=now):
 			results = await scanner.scan(client=client)
 		await client.aclose()
 
@@ -279,7 +279,7 @@ class TestIncrementalMerge:
 		cached = _make_finding("Cached", "https://cached.com", "test")
 		scanner.cache.findings = [cached]
 
-		with patch("mission_control.intelligence.sources.time.time", return_value=now):
+		with patch("autodev.intelligence.sources.time.time", return_value=now):
 			results = await scanner.scan()
 
 		assert len(results) == 1

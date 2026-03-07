@@ -10,11 +10,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mission_control.backends.base import WorkerHandle
-from mission_control.backends.container import ContainerBackend
-from mission_control.backends.local import _MB, HealthCheckResult, LocalBackend
-from mission_control.backends.ssh import SSHBackend
-from mission_control.config import ContainerConfig, MissionConfig, SSHHostConfig
+from autodev.backends.base import WorkerHandle
+from autodev.backends.container import ContainerBackend
+from autodev.backends.local import _MB, HealthCheckResult, LocalBackend
+from autodev.backends.ssh import SSHBackend
+from autodev.config import ContainerConfig, MissionConfig, SSHHostConfig
 
 # ---------------------------------------------------------------------------
 # WorkerHandle dataclass
@@ -51,7 +51,7 @@ class TestLocalBackend:
 	@pytest.fixture()
 	def backend(self) -> LocalBackend:
 		"""LocalBackend with a mocked WorkspacePool and healthy workspace."""
-		with patch("mission_control.backends.local.WorkspacePool") as mock_pool_cls:
+		with patch("autodev.backends.local.WorkspacePool") as mock_pool_cls:
 			mock_pool_instance = MagicMock()
 			mock_pool_cls.return_value = mock_pool_instance
 			# Ensure async methods are AsyncMock
@@ -72,7 +72,7 @@ class TestLocalBackend:
 
 	def test_init_creates_pool(self) -> None:
 		"""Constructor instantiates a WorkspacePool with correct args."""
-		with patch("mission_control.backends.local.WorkspacePool") as mock_pool_cls:
+		with patch("autodev.backends.local.WorkspacePool") as mock_pool_cls:
 			b = LocalBackend(
 				source_repo="/repo",
 				pool_dir="/pool",
@@ -92,8 +92,8 @@ class TestLocalBackend:
 	def test_init_passes_green_branch_from_config(self) -> None:
 		"""Constructor passes green_branch from config to WorkspacePool."""
 		cfg = MissionConfig()
-		cfg.green_branch.green_branch = "mc/green"
-		with patch("mission_control.backends.local.WorkspacePool") as mock_pool_cls:
+		cfg.green_branch.green_branch = "autodev/green"
+		with patch("autodev.backends.local.WorkspacePool") as mock_pool_cls:
 			LocalBackend(
 				source_repo="/repo",
 				pool_dir="/pool",
@@ -106,12 +106,13 @@ class TestLocalBackend:
 				pool_dir="/pool",
 				max_clones=5,
 				base_branch="main",
-				green_branch="mc/green",
+				green_branch="autodev/green",
 			)
 
-	@patch("mission_control.backends.local.asyncio.create_subprocess_exec")
+	@patch.object(LocalBackend, "_write_worker_claude_md", new_callable=AsyncMock)
+	@patch("autodev.backends.local.asyncio.create_subprocess_exec")
 	async def test_provision_workspace(
-		self, mock_exec: AsyncMock, backend: LocalBackend,
+		self, mock_exec: AsyncMock, _mock_write: AsyncMock, backend: LocalBackend,
 	) -> None:
 		"""provision_workspace acquires from pool, checks out base_branch, then creates feature branch."""
 		backend._pool.acquire.return_value = Path("/pool/clone-1")
@@ -141,9 +142,10 @@ class TestLocalBackend:
 		assert pushurl_call[0] == ("git", "config", "remote.origin.pushUrl", "no_push_allowed")
 		assert pushurl_call[1]["cwd"] == "/pool/clone-1"
 
-	@patch("mission_control.backends.local.asyncio.create_subprocess_exec")
+	@patch.object(LocalBackend, "_write_worker_claude_md", new_callable=AsyncMock)
+	@patch("autodev.backends.local.asyncio.create_subprocess_exec")
 	async def test_provision_creates_marker_file(
-		self, mock_exec: AsyncMock, backend: LocalBackend, tmp_path: Path,
+		self, mock_exec: AsyncMock, _mock_write: AsyncMock, backend: LocalBackend, tmp_path: Path,
 	) -> None:
 		"""provision_workspace creates .editable-install-protected marker."""
 		workspace = tmp_path / "clone-1"
@@ -165,9 +167,10 @@ class TestLocalBackend:
 		assert marker.exists()
 		assert "Do not run pip install" in marker.read_text()
 
-	@patch("mission_control.backends.local.asyncio.create_subprocess_exec")
+	@patch.object(LocalBackend, "_write_worker_claude_md", new_callable=AsyncMock)
+	@patch("autodev.backends.local.asyncio.create_subprocess_exec")
 	async def test_provision_workspace_uses_force_create_branch(
-		self, mock_exec: AsyncMock, backend: LocalBackend,
+		self, mock_exec: AsyncMock, _mock_write: AsyncMock, backend: LocalBackend,
 	) -> None:
 		"""provision_workspace uses checkout -B (force) so retried units succeed."""
 		backend._pool.acquire.return_value = Path("/pool/clone-1")
@@ -183,7 +186,7 @@ class TestLocalBackend:
 		args = mock_exec.call_args_list[2][0]
 		assert args == ("git", "checkout", "-B", "mc/unit-w1")
 
-	@patch("mission_control.backends.local.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.local.asyncio.create_subprocess_exec")
 	async def test_provision_workspace_checkout_failure_raises(
 		self, mock_exec: AsyncMock, backend: LocalBackend,
 	) -> None:
@@ -209,7 +212,7 @@ class TestLocalBackend:
 		# Should have released the workspace back to the pool
 		backend._pool.release.assert_awaited_once_with(Path("/pool/clone-1"))
 
-	@patch("mission_control.backends.local.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.local.asyncio.create_subprocess_exec")
 	async def test_provision_workspace_base_checkout_failure_raises(
 		self, mock_exec: AsyncMock, backend: LocalBackend,
 	) -> None:
@@ -226,7 +229,7 @@ class TestLocalBackend:
 		mock_exec.side_effect = [mock_fetch_proc, mock_fail_proc]
 
 		with pytest.raises(RuntimeError, match="Failed to checkout base branch"):
-			await backend.provision_workspace("w1", "/repo", "mc/green")
+			await backend.provision_workspace("w1", "/repo", "autodev/green")
 
 		backend._pool.release.assert_awaited_once_with(Path("/pool/clone-1"))
 
@@ -240,9 +243,10 @@ class TestLocalBackend:
 			await backend.provision_workspace("w1", "/repo", "main")
 
 
-	@patch("mission_control.backends.local.asyncio.create_subprocess_exec")
+	@patch.object(LocalBackend, "_write_worker_claude_md", new_callable=AsyncMock)
+	@patch("autodev.backends.local.asyncio.create_subprocess_exec")
 	async def test_provision_workspace_uses_specified_base_branch(
-		self, mock_exec: AsyncMock, backend: LocalBackend,
+		self, mock_exec: AsyncMock, _mock_write: AsyncMock, backend: LocalBackend,
 	) -> None:
 		"""provision_workspace checks out the specified base_branch, not hardcoded main."""
 		backend._pool.acquire.return_value = Path("/pool/clone-1")
@@ -252,20 +256,21 @@ class TestLocalBackend:
 		mock_proc.communicate = AsyncMock(return_value=(b"", None))
 		mock_exec.return_value = mock_proc
 
-		await backend.provision_workspace("w1", "/repo", "mc/green")
+		await backend.provision_workspace("w1", "/repo", "autodev/green")
 
-		# call 0 = fetch, call 1 = base checkout (should be mc/green, not main)
+		# call 0 = fetch, call 1 = base checkout (should be autodev/green, not main)
 		base_call = mock_exec.call_args_list[1]
-		assert base_call[0] == ("git", "checkout", "-B", "mc/green", "origin/mc/green")
+		assert base_call[0] == ("git", "checkout", "-B", "autodev/green", "origin/autodev/green")
 
-	@patch("mission_control.backends.local.asyncio.create_subprocess_exec")
+	@patch.object(LocalBackend, "_write_worker_claude_md", new_callable=AsyncMock)
+	@patch("autodev.backends.local.asyncio.create_subprocess_exec")
 	async def test_provision_workspace_resets_base_branch_to_origin(
-		self, mock_exec: AsyncMock, backend: LocalBackend,
+		self, mock_exec: AsyncMock, _mock_write: AsyncMock, backend: LocalBackend,
 	) -> None:
 		"""provision_workspace uses -B to force-reset the local base branch to origin.
 
-		Without -B, a stale local mc/green would be checked out instead of the
-		latest origin/mc/green, causing merge conflicts when multiple workers
+		Without -B, a stale local autodev/green would be checked out instead of the
+		latest origin/autodev/green, causing merge conflicts when multiple workers
 		fork from outdated code.
 		"""
 		backend._pool.acquire.return_value = Path("/pool/clone-1")
@@ -275,15 +280,15 @@ class TestLocalBackend:
 		mock_proc.communicate = AsyncMock(return_value=(b"", None))
 		mock_exec.return_value = mock_proc
 
-		await backend.provision_workspace("w1", "/repo", "mc/green")
+		await backend.provision_workspace("w1", "/repo", "autodev/green")
 
 		# The base branch checkout (call 1) must use -B to reset to origin
 		base_call = mock_exec.call_args_list[1]
 		assert base_call[0] == (
-			"git", "checkout", "-B", "mc/green", "origin/mc/green",
+			"git", "checkout", "-B", "autodev/green", "origin/autodev/green",
 		), "Base branch checkout must use -B to reset local branch to origin"
 
-	@patch("mission_control.backends.local.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.local.asyncio.create_subprocess_exec")
 	async def test_spawn(self, mock_exec: AsyncMock, backend: LocalBackend) -> None:
 		"""spawn creates a subprocess and returns a WorkerHandle."""
 		mock_proc = AsyncMock()
@@ -304,14 +309,14 @@ class TestLocalBackend:
 		assert "w1" in backend._processes
 		assert backend._stdout_bufs["w1"] == b""
 
-	@patch("mission_control.backends.local.asyncio.create_subprocess_exec")
-	@patch("mission_control.backends.local.claude_subprocess_env")
+	@patch("autodev.backends.local.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.local.claude_subprocess_env")
 	async def test_spawn_passes_config_to_claude_subprocess_env(
 		self, mock_env: MagicMock, mock_exec: AsyncMock,
 	) -> None:
 		"""spawn passes stored config to claude_subprocess_env."""
 		config = MagicMock(spec=MissionConfig)
-		with patch("mission_control.backends.local.WorkspacePool"):
+		with patch("autodev.backends.local.WorkspacePool"):
 			b = LocalBackend(source_repo="/repo", pool_dir="/pool", config=config)
 		mock_env.return_value = {"PATH": "/usr/bin"}
 		mock_proc = AsyncMock()
@@ -322,7 +327,7 @@ class TestLocalBackend:
 
 		mock_env.assert_called_once_with(config)
 
-	@patch("mission_control.backends.local.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.local.asyncio.create_subprocess_exec")
 	async def test_spawn_clears_stdout_collected(self, mock_exec: AsyncMock, backend: LocalBackend) -> None:
 		"""spawn should clear _stdout_collected so a reused worker collects output."""
 		mock_proc = AsyncMock()
@@ -495,7 +500,7 @@ class TestWorkspaceHealthCheck:
 	@pytest.fixture()
 	def backend(self) -> LocalBackend:
 		"""LocalBackend with a mocked WorkspacePool."""
-		with patch("mission_control.backends.local.WorkspacePool") as mock_pool_cls:
+		with patch("autodev.backends.local.WorkspacePool") as mock_pool_cls:
 			mock_pool_instance = MagicMock()
 			mock_pool_cls.return_value = mock_pool_instance
 			mock_pool_instance.acquire = AsyncMock()
@@ -513,7 +518,7 @@ class TestWorkspaceHealthCheck:
 
 	async def test_healthy_workspace_passes(self, tmp_path: Path) -> None:
 		"""A workspace with valid .git/HEAD and working git status passes health check."""
-		with patch("mission_control.backends.local.WorkspacePool") as mock_pool_cls:
+		with patch("autodev.backends.local.WorkspacePool") as mock_pool_cls:
 			mock_pool_cls.return_value = MagicMock()
 			backend = LocalBackend(source_repo="/repo", pool_dir="/pool")
 
@@ -522,7 +527,7 @@ class TestWorkspaceHealthCheck:
 		git_dir.mkdir()
 		(git_dir / "HEAD").write_text("ref: refs/heads/main\n")
 
-		with patch("mission_control.backends.local.asyncio.create_subprocess_exec") as mock_exec:
+		with patch("autodev.backends.local.asyncio.create_subprocess_exec") as mock_exec:
 			mock_proc = AsyncMock()
 			mock_proc.returncode = 0
 			mock_proc.communicate = AsyncMock(return_value=(b"", None))
@@ -535,12 +540,12 @@ class TestWorkspaceHealthCheck:
 
 	async def test_missing_git_head_fails(self, tmp_path: Path) -> None:
 		"""A workspace with missing .git/HEAD reports an issue."""
-		with patch("mission_control.backends.local.WorkspacePool") as mock_pool_cls:
+		with patch("autodev.backends.local.WorkspacePool") as mock_pool_cls:
 			mock_pool_cls.return_value = MagicMock()
 			backend = LocalBackend(source_repo="/repo", pool_dir="/pool")
 
 		# No .git directory at all
-		with patch("mission_control.backends.local.asyncio.create_subprocess_exec") as mock_exec:
+		with patch("autodev.backends.local.asyncio.create_subprocess_exec") as mock_exec:
 			mock_proc = AsyncMock()
 			mock_proc.returncode = 0
 			mock_proc.communicate = AsyncMock(return_value=(b"", None))
@@ -553,7 +558,7 @@ class TestWorkspaceHealthCheck:
 
 	async def test_corrupted_git_status_fails(self, tmp_path: Path) -> None:
 		"""Non-zero git status exit code reports corruption."""
-		with patch("mission_control.backends.local.WorkspacePool") as mock_pool_cls:
+		with patch("autodev.backends.local.WorkspacePool") as mock_pool_cls:
 			mock_pool_cls.return_value = MagicMock()
 			backend = LocalBackend(source_repo="/repo", pool_dir="/pool")
 
@@ -561,7 +566,7 @@ class TestWorkspaceHealthCheck:
 		git_dir.mkdir()
 		(git_dir / "HEAD").write_text("ref: refs/heads/main\n")
 
-		with patch("mission_control.backends.local.asyncio.create_subprocess_exec") as mock_exec:
+		with patch("autodev.backends.local.asyncio.create_subprocess_exec") as mock_exec:
 			mock_proc = AsyncMock()
 			mock_proc.returncode = 128  # git error
 			mock_proc.communicate = AsyncMock(return_value=(b"fatal: bad object", None))
@@ -574,7 +579,7 @@ class TestWorkspaceHealthCheck:
 
 	async def test_git_status_timeout_fails(self, tmp_path: Path) -> None:
 		"""git status timing out reports an issue."""
-		with patch("mission_control.backends.local.WorkspacePool") as mock_pool_cls:
+		with patch("autodev.backends.local.WorkspacePool") as mock_pool_cls:
 			mock_pool_cls.return_value = MagicMock()
 			backend = LocalBackend(source_repo="/repo", pool_dir="/pool")
 
@@ -582,12 +587,12 @@ class TestWorkspaceHealthCheck:
 		git_dir.mkdir()
 		(git_dir / "HEAD").write_text("ref: refs/heads/main\n")
 
-		with patch("mission_control.backends.local.asyncio.create_subprocess_exec") as mock_exec:
+		with patch("autodev.backends.local.asyncio.create_subprocess_exec") as mock_exec:
 			mock_proc = AsyncMock()
 			mock_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
 			mock_exec.return_value = mock_proc
 
-			with patch("mission_control.backends.local.asyncio.wait_for", side_effect=asyncio.TimeoutError):
+			with patch("autodev.backends.local.asyncio.wait_for", side_effect=asyncio.TimeoutError):
 				result = await backend._verify_workspace_health(tmp_path)
 
 		assert result.passed is False
@@ -595,7 +600,7 @@ class TestWorkspaceHealthCheck:
 
 	async def test_broken_venv_symlink_warns(self, tmp_path: Path) -> None:
 		"""A .venv symlink pointing to a nonexistent target reports an issue."""
-		with patch("mission_control.backends.local.WorkspacePool") as mock_pool_cls:
+		with patch("autodev.backends.local.WorkspacePool") as mock_pool_cls:
 			mock_pool_cls.return_value = MagicMock()
 			backend = LocalBackend(source_repo="/repo", pool_dir="/pool")
 
@@ -607,7 +612,7 @@ class TestWorkspaceHealthCheck:
 		venv_link = tmp_path / ".venv"
 		venv_link.symlink_to("/nonexistent/venv/path")
 
-		with patch("mission_control.backends.local.asyncio.create_subprocess_exec") as mock_exec:
+		with patch("autodev.backends.local.asyncio.create_subprocess_exec") as mock_exec:
 			mock_proc = AsyncMock()
 			mock_proc.returncode = 0
 			mock_proc.communicate = AsyncMock(return_value=(b"", None))
@@ -620,7 +625,7 @@ class TestWorkspaceHealthCheck:
 
 	async def test_valid_venv_symlink_passes(self, tmp_path: Path) -> None:
 		"""A .venv symlink pointing to an existing target passes."""
-		with patch("mission_control.backends.local.WorkspacePool") as mock_pool_cls:
+		with patch("autodev.backends.local.WorkspacePool") as mock_pool_cls:
 			mock_pool_cls.return_value = MagicMock()
 			backend = LocalBackend(source_repo="/repo", pool_dir="/pool")
 
@@ -634,7 +639,7 @@ class TestWorkspaceHealthCheck:
 		venv_link = tmp_path / ".venv"
 		venv_link.symlink_to(real_venv)
 
-		with patch("mission_control.backends.local.asyncio.create_subprocess_exec") as mock_exec:
+		with patch("autodev.backends.local.asyncio.create_subprocess_exec") as mock_exec:
 			mock_proc = AsyncMock()
 			mock_proc.returncode = 0
 			mock_proc.communicate = AsyncMock(return_value=(b"", None))
@@ -645,7 +650,7 @@ class TestWorkspaceHealthCheck:
 		assert result.passed is True
 		assert result.issues == []
 
-	@patch("mission_control.backends.local.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.local.asyncio.create_subprocess_exec")
 	async def test_provision_reprovisions_on_health_failure(
 		self, mock_exec: AsyncMock, backend: LocalBackend,
 	) -> None:
@@ -673,7 +678,7 @@ class TestWorkspaceHealthCheck:
 		# Two acquires: initial + re-provision
 		assert backend._pool.acquire.await_count == 2
 
-	@patch("mission_control.backends.local.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.local.asyncio.create_subprocess_exec")
 	async def test_provision_raises_after_retry_health_failure(
 		self, mock_exec: AsyncMock, backend: LocalBackend,
 	) -> None:
@@ -703,7 +708,7 @@ class TestWorkerOutputOverflow:
 	@pytest.fixture()
 	def backend(self) -> LocalBackend:
 		"""LocalBackend with 1MB output limit for fast testing."""
-		with patch("mission_control.backends.local.WorkspacePool") as mock_pool_cls:
+		with patch("autodev.backends.local.WorkspacePool") as mock_pool_cls:
 			mock_pool_instance = MagicMock()
 			mock_pool_cls.return_value = mock_pool_instance
 			mock_pool_instance.acquire = AsyncMock()
@@ -757,7 +762,7 @@ class TestWorkerOutputOverflow:
 		backend._stdout_collected.add("w1")  # already collected
 
 		handle = WorkerHandle(worker_id="w1", pid=200)
-		with caplog.at_level(logging.WARNING, logger="mission_control.backends.local"):
+		with caplog.at_level(logging.WARNING, logger="autodev.backends.local"):
 			await backend.get_output(handle)
 
 		assert any("10MB" in msg for msg in caplog.messages)
@@ -782,7 +787,7 @@ class TestWorkerOutputOverflow:
 		backend._output_warnings_fired["w1"] = set()
 
 		handle = WorkerHandle(worker_id="w1", pid=300)
-		with caplog.at_level(logging.ERROR, logger="mission_control.backends.local"):
+		with caplog.at_level(logging.ERROR, logger="autodev.backends.local"):
 			output = await backend.get_output(handle)
 
 		# Output should be truncated to exactly max_output_bytes
@@ -868,7 +873,7 @@ class TestSSHBackend:
 		host = SSHHostConfig(hostname="server1", user="")
 		assert backend._ssh_target(host) == "server1"
 
-	@patch("mission_control.backends.ssh.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.ssh.asyncio.create_subprocess_exec")
 	async def test_provision_workspace(
 		self, mock_exec: AsyncMock, backend: SSHBackend,
 	) -> None:
@@ -894,7 +899,7 @@ class TestSSHBackend:
 		# ssh target should be user@hostname
 		assert "@" in call_args[1]
 
-	@patch("mission_control.backends.ssh.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.ssh.asyncio.create_subprocess_exec")
 	async def test_provision_workspace_quotes_arguments(
 		self, mock_exec: AsyncMock, backend: SSHBackend,
 	) -> None:
@@ -916,7 +921,7 @@ class TestSSHBackend:
 		assert shlex.quote("git@host:repo with spaces.git") in remote_cmd
 		assert shlex.quote("/tmp/mc-worker-w1") in remote_cmd
 
-	@patch("mission_control.backends.ssh.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.ssh.asyncio.create_subprocess_exec")
 	async def test_release_workspace_quotes_path(
 		self, mock_exec: AsyncMock, backend: SSHBackend,
 	) -> None:
@@ -935,7 +940,7 @@ class TestSSHBackend:
 		import shlex
 		assert shlex.quote("/tmp/path with spaces") in call_args[2]
 
-	@patch("mission_control.backends.ssh.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.ssh.asyncio.create_subprocess_exec")
 	async def test_kill_quotes_worker_id_in_pkill(
 		self, mock_exec: AsyncMock, backend: SSHBackend,
 	) -> None:
@@ -963,7 +968,7 @@ class TestSSHBackend:
 		import shlex
 		assert shlex.quote("mc-worker-w1; evil") in call_args[2]
 
-	@patch("mission_control.backends.ssh.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.ssh.asyncio.create_subprocess_exec")
 	async def test_provision_workspace_failure(
 		self, mock_exec: AsyncMock, backend: SSHBackend,
 	) -> None:
@@ -976,7 +981,7 @@ class TestSSHBackend:
 		with pytest.raises(RuntimeError, match="Failed to provision"):
 			await backend.provision_workspace("w1", "bad-repo", "main")
 
-	@patch("mission_control.backends.ssh.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.ssh.asyncio.create_subprocess_exec")
 	async def test_spawn_quotes_command(
 		self, mock_exec: AsyncMock, backend: SSHBackend,
 	) -> None:
@@ -1002,7 +1007,7 @@ class TestSSHBackend:
 		import shlex
 		assert shlex.quote('fix $(rm -rf /); echo "pwned"') in remote_cmd
 
-	@patch("mission_control.backends.ssh.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.ssh.asyncio.create_subprocess_exec")
 	async def test_get_output_consistent_on_repeated_calls(
 		self, mock_exec: AsyncMock, backend: SSHBackend,
 	) -> None:
@@ -1027,7 +1032,7 @@ class TestSSHBackend:
 		result2 = await backend.get_output(handle)
 		assert result2 == "test output data"
 
-	@patch("mission_control.backends.ssh.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.ssh.asyncio.create_subprocess_exec")
 	async def test_spawn(self, mock_exec: AsyncMock, backend: SSHBackend) -> None:
 		"""spawn ssh-es into the remote host and runs the command."""
 		mock_proc = AsyncMock()
@@ -1072,7 +1077,7 @@ class TestSSHBackend:
 		handle = WorkerHandle(worker_id="w1")
 		assert await backend.check_status(handle) == "failed"
 
-	@patch("mission_control.backends.ssh.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.ssh.asyncio.create_subprocess_exec")
 	async def test_kill(self, mock_exec: AsyncMock, backend: SSHBackend) -> None:
 		"""kill terminates local ssh process and sends remote pkill."""
 		mock_proc = MagicMock()
@@ -1103,7 +1108,7 @@ class TestSSHBackend:
 		assert call_args[0] == "ssh"
 		assert "pkill" in call_args[2]
 
-	@patch("mission_control.backends.ssh.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.ssh.asyncio.create_subprocess_exec")
 	async def test_release_workspace_with_metadata(
 		self, mock_exec: AsyncMock, backend: SSHBackend,
 	) -> None:
@@ -1151,7 +1156,7 @@ class TestSSHBackend:
 		assert backend._processes == {}
 		assert backend._worker_count == {"host-a": 0, "host-b": 0}
 
-	@patch("mission_control.backends.ssh.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.ssh.asyncio.create_subprocess_exec")
 	async def test_get_output_drains_stdout_while_running(
 		self, mock_exec: AsyncMock, backend: SSHBackend,
 	) -> None:
@@ -1184,7 +1189,7 @@ class TestSSHBackend:
 		out3 = await backend.get_output(handle)
 		assert out3 == "chunk1chunk2final"
 
-	@patch("mission_control.backends.ssh.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.ssh.asyncio.create_subprocess_exec")
 	async def test_spawn_clears_stdout_collected_on_reuse(
 		self, mock_exec: AsyncMock, backend: SSHBackend,
 	) -> None:
@@ -1220,7 +1225,7 @@ class TestSSHBackend:
 		out2 = await backend.get_output(handle2)
 		assert out2 == "output-2"
 
-	@patch("mission_control.backends.ssh.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.ssh.asyncio.create_subprocess_exec")
 	async def test_kill_ssh_timeout_logs_warning(
 		self, mock_exec: AsyncMock, backend: SSHBackend, caplog: pytest.LogCaptureFixture,
 	) -> None:
@@ -1243,8 +1248,8 @@ class TestSSHBackend:
 			backend_metadata=metadata,
 		)
 
-		with patch("mission_control.backends.ssh.asyncio.wait_for", side_effect=asyncio.TimeoutError):
-			with caplog.at_level(logging.WARNING, logger="mission_control.backends.ssh"):
+		with patch("autodev.backends.ssh.asyncio.wait_for", side_effect=asyncio.TimeoutError):
+			with caplog.at_level(logging.WARNING, logger="autodev.backends.ssh"):
 				await backend.kill(handle)
 
 		# Local process was still killed
@@ -1253,7 +1258,7 @@ class TestSSHBackend:
 		# Warning was logged about the timeout
 		assert any("SSH pkill timed out" in msg for msg in caplog.messages)
 
-	@patch("mission_control.backends.ssh.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.ssh.asyncio.create_subprocess_exec")
 	async def test_release_workspace_timeout_logs_warning(
 		self, mock_exec: AsyncMock, backend: SSHBackend, caplog: pytest.LogCaptureFixture,
 	) -> None:
@@ -1266,8 +1271,8 @@ class TestSSHBackend:
 		metadata = json.dumps({"hostname": "host-a", "user": "deploy"})
 		workspace_path = f"/tmp/mc-worker-w1::{metadata}"
 
-		with patch("mission_control.backends.ssh.asyncio.wait_for", side_effect=asyncio.TimeoutError):
-			with caplog.at_level(logging.WARNING, logger="mission_control.backends.ssh"):
+		with patch("autodev.backends.ssh.asyncio.wait_for", side_effect=asyncio.TimeoutError):
+			with caplog.at_level(logging.WARNING, logger="autodev.backends.ssh"):
 				await backend.release_workspace(workspace_path)
 
 		assert any("SSH rm -rf timed out" in msg for msg in caplog.messages)
@@ -1328,14 +1333,14 @@ class TestContainerBackend:
 	@pytest.fixture()
 	def container_config(self) -> ContainerConfig:
 		return ContainerConfig(
-			image="mission-control-worker:latest",
+			image="autodev-worker:latest",
 			claude_config_dir="/home/user/.config/claude",
 		)
 
 	@pytest.fixture()
 	def backend(self, container_config: ContainerConfig) -> ContainerBackend:
 		"""ContainerBackend with a mocked WorkspacePool."""
-		with patch("mission_control.backends.container.WorkspacePool") as mock_pool_cls:
+		with patch("autodev.backends.container.WorkspacePool") as mock_pool_cls:
 			mock_pool_instance = MagicMock()
 			mock_pool_cls.return_value = mock_pool_instance
 			mock_pool_instance.acquire = AsyncMock()
@@ -1354,7 +1359,7 @@ class TestContainerBackend:
 	def test_init_creates_pool(self) -> None:
 		"""Constructor instantiates a WorkspacePool with correct args."""
 		cc = ContainerConfig()
-		with patch("mission_control.backends.container.WorkspacePool") as mock_pool_cls:
+		with patch("autodev.backends.container.WorkspacePool") as mock_pool_cls:
 			ContainerBackend(
 				source_repo="/repo",
 				pool_dir="/pool",
@@ -1412,14 +1417,14 @@ class TestContainerBackend:
 		# ANTHROPIC_API_KEY must NOT be passed
 		assert "sk-secret" not in cmd_str
 
-	@patch("mission_control.backends.container.claude_subprocess_env")
+	@patch("autodev.backends.container.claude_subprocess_env")
 	def test_build_docker_command_passes_config_to_claude_subprocess_env(
 		self, mock_env: MagicMock,
 	) -> None:
 		"""_build_docker_command passes stored config to claude_subprocess_env."""
 		config = MagicMock(spec=MissionConfig)
 		cc = ContainerConfig(claude_config_dir="")
-		with patch("mission_control.backends.container.WorkspacePool"):
+		with patch("autodev.backends.container.WorkspacePool"):
 			b = ContainerBackend(
 				source_repo="/repo", pool_dir="/pool",
 				container_config=cc, config=config,
@@ -1435,7 +1440,7 @@ class TestContainerBackend:
 	def test_build_docker_command_skips_claude_config_when_empty(self) -> None:
 		"""No claude config volume when claude_config_dir is empty and env unset."""
 		cc = ContainerConfig(claude_config_dir="")
-		with patch("mission_control.backends.container.WorkspacePool"):
+		with patch("autodev.backends.container.WorkspacePool"):
 			b = ContainerBackend(
 				source_repo="/repo", pool_dir="/pool",
 				container_config=cc,
@@ -1448,7 +1453,7 @@ class TestContainerBackend:
 		# Should not contain the mcworker config mount
 		assert "/home/mcworker/.config/claude:ro" not in " ".join(cmd)
 
-	@patch("mission_control.backends.container.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.container.asyncio.create_subprocess_exec")
 	async def test_spawn_builds_docker_command(
 		self, mock_exec: AsyncMock, backend: ContainerBackend,
 	) -> None:
@@ -1469,7 +1474,7 @@ class TestContainerBackend:
 		assert call_args[1] == "run"
 		assert "--rm" in call_args
 
-	@patch("mission_control.backends.container.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.container.asyncio.create_subprocess_exec")
 	async def test_spawn_returns_host_workspace_path(
 		self, mock_exec: AsyncMock, backend: ContainerBackend,
 	) -> None:
@@ -1525,7 +1530,7 @@ class TestContainerBackend:
 		handle = WorkerHandle(worker_id="unknown")
 		assert await backend.get_output(handle) == ""
 
-	@patch("mission_control.backends.container.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.container.asyncio.create_subprocess_exec")
 	async def test_kill_stops_container(
 		self, mock_exec: AsyncMock, backend: ContainerBackend,
 	) -> None:
@@ -1603,7 +1608,7 @@ class TestContainerBackend:
 			claude_config_dir="",
 			extra_volumes=["/data:/data:ro", "/logs:/logs"],
 		)
-		with patch("mission_control.backends.container.WorkspacePool"):
+		with patch("autodev.backends.container.WorkspacePool"):
 			b = ContainerBackend(
 				source_repo="/repo", pool_dir="/pool",
 				container_config=cc,
@@ -1627,3 +1632,102 @@ class TestContainerBackend:
 		"""Container name follows mc-worker-{id} pattern."""
 		backend._build_docker_command("abc123", "/host/ws", ["echo"])
 		assert backend._container_names["abc123"] == "mc-worker-abc123"
+
+
+# ---------------------------------------------------------------------------
+# Worker CLAUDE.md provisioning
+# ---------------------------------------------------------------------------
+
+class TestWorkerClaudeMd:
+	"""Tests for _write_worker_claude_md in LocalBackend."""
+
+	@pytest.fixture()
+	def backend_with_config(self, tmp_path: Path) -> LocalBackend:
+		"""LocalBackend with a config that has a verification command."""
+		cfg = MissionConfig()
+		cfg.target.verification.command = "make test && make lint"
+		with patch("autodev.backends.local.WorkspacePool"):
+			b = LocalBackend(
+				source_repo="/repo",
+				pool_dir="/pool",
+				max_clones=5,
+				base_branch="main",
+				config=cfg,
+			)
+		return b
+
+	@pytest.fixture()
+	def backend_no_verification(self) -> LocalBackend:
+		"""LocalBackend without a verification command in config."""
+		cfg = MissionConfig()
+		cfg.target.verification.command = ""
+		with patch("autodev.backends.local.WorkspacePool"):
+			b = LocalBackend(
+				source_repo="/repo",
+				pool_dir="/pool",
+				max_clones=5,
+				base_branch="main",
+				config=cfg,
+			)
+		return b
+
+	async def test_write_worker_claude_md_interpolates_verification_command(
+		self, backend_with_config: LocalBackend, tmp_path: Path,
+	) -> None:
+		"""_write_worker_claude_md replaces {verification_command} with config value."""
+		await backend_with_config._write_worker_claude_md(tmp_path)
+
+		claude_md = tmp_path / "CLAUDE.md"
+		assert claude_md.exists()
+		content = claude_md.read_text()
+		assert "make test && make lint" in content
+		assert "{verification_command}" not in content
+
+	async def test_write_worker_claude_md_uses_default_when_no_config_command(
+		self, backend_no_verification: LocalBackend, tmp_path: Path,
+	) -> None:
+		"""_write_worker_claude_md falls back to default verification command."""
+		await backend_no_verification._write_worker_claude_md(tmp_path)
+
+		claude_md = tmp_path / "CLAUDE.md"
+		assert claude_md.exists()
+		content = claude_md.read_text()
+		assert ".venv/bin/python -m pytest -q && .venv/bin/ruff check src/ tests/" in content
+		assert "{verification_command}" not in content
+
+	async def test_write_worker_claude_md_handles_missing_template(
+		self, backend_with_config: LocalBackend, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+	) -> None:
+		"""_write_worker_claude_md returns gracefully when template is missing."""
+		with patch.object(Path, "read_text", side_effect=FileNotFoundError):
+			await backend_with_config._write_worker_claude_md(tmp_path)
+
+		# No CLAUDE.md should be created
+		claude_md = tmp_path / "CLAUDE.md"
+		assert not claude_md.exists()
+
+
+# ---------------------------------------------------------------------------
+# build_claude_cmd setting_sources
+# ---------------------------------------------------------------------------
+
+class TestBuildClaudeCmdSettingSources:
+	"""Tests for the setting_sources parameter in build_claude_cmd."""
+
+	def test_setting_sources_included_when_provided(self) -> None:
+		"""build_claude_cmd includes --setting-sources when setting_sources is given."""
+		from autodev.config import build_claude_cmd
+
+		cfg = MissionConfig()
+		cmd = build_claude_cmd(cfg, model="sonnet", setting_sources="project")
+		assert "--setting-sources" in cmd
+		idx = cmd.index("--setting-sources")
+		assert cmd[idx + 1] == "project"
+
+	def test_setting_sources_omitted_when_none(self) -> None:
+		"""build_claude_cmd omits --setting-sources when not provided."""
+		from autodev.config import build_claude_cmd
+
+		cfg = MissionConfig()
+		cmd = build_claude_cmd(cfg, model="sonnet")
+		assert "--setting-sources" not in cmd

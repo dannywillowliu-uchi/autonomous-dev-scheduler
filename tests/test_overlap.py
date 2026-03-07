@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from mission_control.models import WorkUnit
-from mission_control.overlap import resolve_file_overlaps
+from autodev.models import WorkUnit
+from autodev.overlap import resolve_file_overlaps
 
 
 def _wu(title: str = "", files_hint: str = "", priority: int = 1, depends_on: str = "") -> WorkUnit:

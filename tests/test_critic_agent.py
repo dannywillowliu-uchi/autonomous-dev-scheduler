@@ -8,16 +8,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mission_control.batch_analyzer import BatchSignals
-from mission_control.config import DeliberationConfig, MissionConfig, TargetConfig
-from mission_control.critic_agent import (
+from autodev.batch_analyzer import BatchSignals
+from autodev.config import DeliberationConfig, MissionConfig, TargetConfig
+from autodev.critic_agent import (
 	CRITIC_RESULT_MARKER,
 	CriticAgent,
 	_build_batch_signals_text,
 	_parse_critic_output,
 	validate_units_preflight,
 )
-from mission_control.models import CriticFinding, Mission, WorkUnit
+from autodev.models import CriticFinding, Mission, WorkUnit
 
 
 def _config(tmp_path: Path | None = None) -> MissionConfig:
@@ -157,7 +157,7 @@ class TestCriticGatherContext:
 		del db.get_strategic_context
 		agent = CriticAgent(_config(tmp_path), db)
 		with patch(
-			"mission_control.critic_agent.get_git_log",
+			"autodev.critic_agent.get_git_log",
 			new_callable=AsyncMock, return_value="abc123 feat: add X",
 		):
 			ctx = await agent.gather_context_async()
@@ -266,7 +266,7 @@ class TestCriticProposeNext:
 
 		with (
 			patch.object(agent, "_invoke_llm", new_callable=AsyncMock, return_value=(fake_output, 0.50)),
-			patch("mission_control.critic_agent.get_git_log", new_callable=AsyncMock, return_value=""),
+			patch("autodev.critic_agent.get_git_log", new_callable=AsyncMock, return_value=""),
 		):
 			result, cost = await agent.propose_next(mission, mock_result, "context")
 

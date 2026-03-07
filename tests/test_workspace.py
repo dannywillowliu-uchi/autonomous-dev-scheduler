@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from mission_control.workspace import WorkspacePool
+from autodev.workspace import WorkspacePool
 
 
 @pytest.fixture()
@@ -112,8 +112,8 @@ class TestWorkspacePool:
 			"PATH": subprocess.check_output(["bash", "-c", "echo $PATH"]).decode().strip(),
 		}
 
-		# Create mc/green branch with an extra file in source
-		subprocess.run(["git", "checkout", "-b", "mc/green"], cwd=str(source_repo), check=True, capture_output=True)
+		# Create autodev/green branch with an extra file in source
+		subprocess.run(["git", "checkout", "-b", "autodev/green"], cwd=str(source_repo), check=True, capture_output=True)
 		green_file = source_repo / "green.txt"
 		green_file.write_text("from green branch")
 		subprocess.run(["git", "add", "."], cwd=str(source_repo), check=True, capture_output=True)
@@ -123,13 +123,13 @@ class TestWorkspacePool:
 		)
 		subprocess.run(["git", "checkout", "main"], cwd=str(source_repo), check=True, capture_output=True)
 
-		pool = WorkspacePool(source_repo, pool_dir, max_clones=3, green_branch="mc/green")
+		pool = WorkspacePool(source_repo, pool_dir, max_clones=3, green_branch="autodev/green")
 		await pool.initialize()
 
 		workspace = await pool.acquire()
 		assert workspace is not None
 
-		# Release triggers _reset_clone which should reset to origin/mc/green
+		# Release triggers _reset_clone which should reset to origin/autodev/green
 		await pool.release(workspace)
 
 		# After reset, the workspace should have the green branch content

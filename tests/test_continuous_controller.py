@@ -11,17 +11,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mission_control.backends import LocalBackend
-from mission_control.config import MissionConfig
-from mission_control.continuous_controller import (
+from autodev.backends import LocalBackend
+from autodev.config import MissionConfig
+from autodev.continuous_controller import (
 	ContinuousController,
 	ContinuousMissionResult,
 	DynamicSemaphore,
 	WorkerCompletion,
 )
-from mission_control.db import Database
-from mission_control.green_branch import UnitMergeResult
-from mission_control.models import Epoch, Handoff, Mission, Plan, Signal, Worker, WorkUnit
+from autodev.db import Database
+from autodev.green_branch import UnitMergeResult
+from autodev.models import Epoch, Handoff, Mission, Plan, Signal, Worker, WorkUnit
 
 
 def _assert_semaphore_available(sem: asyncio.Semaphore | DynamicSemaphore, expected: int) -> None:
@@ -518,15 +518,15 @@ class TestCriteriaValidation:
 		ctrl._backend.get_output = AsyncMock(return_value="")
 		ctrl._backend.kill = AsyncMock()
 
-		with patch("mission_control.continuous_controller.render_mission_worker_prompt") as mock_render:
+		with patch("autodev.continuous_controller.render_mission_worker_prompt") as mock_render:
 			mock_render.return_value = "test prompt"
 			with (
-				patch("mission_control.memory.load_context_for_mission_worker", return_value=""),
-				patch("mission_control.continuous_controller.get_worker_context", return_value=""),
-				patch("mission_control.continuous_controller.load_specialist_template", return_value=""),
-				patch("mission_control.continuous_controller.build_claude_cmd", return_value=["echo", "test"]),
+				patch("autodev.memory.load_context_for_mission_worker", return_value=""),
+				patch("autodev.continuous_controller.get_worker_context", return_value=""),
+				patch("autodev.continuous_controller.load_specialist_template", return_value=""),
+				patch("autodev.continuous_controller.build_claude_cmd", return_value=["echo", "test"]),
 				patch(
-					"mission_control.continuous_controller.parse_stream_json",
+					"autodev.continuous_controller.parse_stream_json",
 					return_value=MagicMock(
 						mc_result=None, text_content="",
 						usage=MagicMock(
@@ -535,7 +535,7 @@ class TestCriteriaValidation:
 						),
 					),
 				),
-				patch("mission_control.continuous_controller.parse_mc_result", return_value=None),
+				patch("autodev.continuous_controller.parse_mc_result", return_value=None),
 			):
 				await ctrl._execute_single_unit(unit, epoch, Mission(id="m1"))
 
@@ -558,15 +558,15 @@ class TestCriteriaValidation:
 		unit.acceptance_criteria = "pytest tests/test_foo.py -q && ruff check src/"
 		db.update_work_unit(unit)
 
-		with patch("mission_control.continuous_controller.render_mission_worker_prompt") as mock_render:
+		with patch("autodev.continuous_controller.render_mission_worker_prompt") as mock_render:
 			mock_render.return_value = "test prompt"
 			with (
-				patch("mission_control.memory.load_context_for_mission_worker", return_value=""),
-				patch("mission_control.continuous_controller.get_worker_context", return_value=""),
-				patch("mission_control.continuous_controller.load_specialist_template", return_value=""),
-				patch("mission_control.continuous_controller.build_claude_cmd", return_value=["echo", "test"]),
+				patch("autodev.memory.load_context_for_mission_worker", return_value=""),
+				patch("autodev.continuous_controller.get_worker_context", return_value=""),
+				patch("autodev.continuous_controller.load_specialist_template", return_value=""),
+				patch("autodev.continuous_controller.build_claude_cmd", return_value=["echo", "test"]),
 				patch(
-					"mission_control.continuous_controller.parse_stream_json",
+					"autodev.continuous_controller.parse_stream_json",
 					return_value=MagicMock(
 						mc_result=None, text_content="",
 						usage=MagicMock(
@@ -575,7 +575,7 @@ class TestCriteriaValidation:
 						),
 					),
 				),
-				patch("mission_control.continuous_controller.parse_mc_result", return_value=None),
+				patch("autodev.continuous_controller.parse_mc_result", return_value=None),
 			):
 				ctrl._backend.spawn = AsyncMock(return_value=MagicMock(pid=123, workspace_path=str(tmp_path)))
 				ctrl._backend.check_status = AsyncMock(return_value="exited")
@@ -658,7 +658,7 @@ class TestEndToEnd:
 		with (
 			patch.object(ctrl, "_init_components", mock_init),
 			patch.object(ctrl, "_execute_single_unit", side_effect=mock_execute),
-			patch("mission_control.continuous_controller.EventStream"),
+			patch("autodev.continuous_controller.EventStream"),
 		):
 			result = await asyncio.wait_for(ctrl.run(), timeout=5.0)
 
@@ -869,8 +869,8 @@ class TestVenvSymlink:
 				mock_gbm.initialize = AsyncMock()
 
 				with (
-					patch("mission_control.continuous_controller.GreenBranchManager", return_value=mock_gbm),
-					patch("mission_control.continuous_controller.LocalBackend", return_value=mock_backend),
+					patch("autodev.continuous_controller.GreenBranchManager", return_value=mock_gbm),
+					patch("autodev.continuous_controller.LocalBackend", return_value=mock_backend),
 					patch.object(ctrl, "_backend", mock_backend),
 				):
 					# Simulate the relevant part of _init_components
@@ -903,7 +903,7 @@ class TestWorkerRecordPersistence:
 			return getattr(db, method)(*args)
 		db.locked_call = mock_locked_call  # type: ignore[attr-defined]
 
-		with patch("mission_control.continuous_controller.build_claude_cmd", return_value=["echo", "test"]):
+		with patch("autodev.continuous_controller.build_claude_cmd", return_value=["echo", "test"]):
 			yield db, ctrl, epoch
 
 	@pytest.mark.asyncio
@@ -940,7 +940,7 @@ class TestWorkerRecordPersistence:
 			"status": "completed", "commits": ["abc123"],
 			"summary": "Done", "files_changed": [], "discoveries": [], "concerns": [],
 		})
-		output = f"MC_RESULT:{mc_result}"
+		output = f"AD_RESULT:{mc_result}"
 
 		mock_backend = AsyncMock()
 		mock_handle = MagicMock()
@@ -1137,7 +1137,7 @@ class TestSequentialOrchestration:
 		with (
 			patch.object(ctrl, "_init_components", mock_init),
 			patch.object(ctrl, "_execute_single_unit", side_effect=mock_execute),
-			patch("mission_control.continuous_controller.EventStream"),
+			patch("autodev.continuous_controller.EventStream"),
 		):
 			result = await asyncio.wait_for(ctrl.run(), timeout=10.0)
 
@@ -1389,7 +1389,7 @@ class TestAmbitionScoringInDispatch:
 		with (
 			patch.object(ctrl, "_init_components", mock_init),
 			patch.object(ctrl, "_execute_single_unit", side_effect=mock_execute),
-			patch("mission_control.continuous_controller.EventStream"),
+			patch("autodev.continuous_controller.EventStream"),
 		):
 			result = await asyncio.wait_for(ctrl.run(), timeout=5.0)
 
@@ -1463,7 +1463,7 @@ class TestInFlightUnitsPreventPrematureCompletion:
 		with (
 			patch.object(ctrl, "_init_components", mock_init),
 			patch.object(ctrl, "_execute_single_unit", side_effect=mock_execute),
-			patch("mission_control.continuous_controller.EventStream"),
+			patch("autodev.continuous_controller.EventStream"),
 		):
 			result = await asyncio.wait_for(ctrl.run(), timeout=5.0)
 
@@ -1958,7 +1958,7 @@ class TestLayerByLayerDispatch:
 		with (
 			patch.object(ctrl, "_init_components", mock_init),
 			patch.object(ctrl, "_execute_single_unit", side_effect=mock_execute),
-			patch("mission_control.continuous_controller.EventStream"),
+			patch("autodev.continuous_controller.EventStream"),
 		):
 			result = await asyncio.wait_for(ctrl.run(), timeout=10.0)
 
@@ -2038,7 +2038,7 @@ class TestLayerByLayerDispatch:
 		with (
 			patch.object(ctrl, "_init_components", mock_init),
 			patch.object(ctrl, "_execute_single_unit", side_effect=mock_execute),
-			patch("mission_control.continuous_controller.EventStream"),
+			patch("autodev.continuous_controller.EventStream"),
 		):
 			result = await asyncio.wait_for(ctrl.run(), timeout=10.0)
 
@@ -2197,7 +2197,7 @@ class TestEvaluatorAgent:
 		mock_proc.returncode = 0
 		mock_proc.communicate = AsyncMock(return_value=(eval_output.encode(), b""))
 
-		mod = "mission_control.continuous_controller"
+		mod = "autodev.continuous_controller"
 		with patch(f"{mod}.claude_subprocess_env", return_value={}):
 			with patch(f"{mod}.asyncio.create_subprocess_exec", return_value=mock_proc):
 				with patch(f"{mod}.asyncio.wait_for", return_value=(eval_output.encode(), b"")):
@@ -2218,7 +2218,7 @@ class TestEvaluatorAgent:
 		mock_proc.returncode = 0
 		mock_proc.communicate = AsyncMock(return_value=(eval_output.encode(), b""))
 
-		mod = "mission_control.continuous_controller"
+		mod = "autodev.continuous_controller"
 		with patch(f"{mod}.claude_subprocess_env", return_value={}):
 			with patch(f"{mod}.asyncio.create_subprocess_exec", return_value=mock_proc):
 				with patch(f"{mod}.asyncio.wait_for", return_value=(eval_output.encode(), b"")):
@@ -2238,9 +2238,9 @@ class TestEvaluatorAgent:
 		mock_proc.kill = MagicMock()
 		mock_proc.wait = AsyncMock()
 
-		with patch("mission_control.continuous_controller.claude_subprocess_env", return_value={}):
-			with patch("mission_control.continuous_controller.asyncio.create_subprocess_exec", return_value=mock_proc):
-				with patch("mission_control.continuous_controller.asyncio.wait_for", side_effect=asyncio.TimeoutError):
+		with patch("autodev.continuous_controller.claude_subprocess_env", return_value={}):
+			with patch("autodev.continuous_controller.asyncio.create_subprocess_exec", return_value=mock_proc):
+				with patch("autodev.continuous_controller.asyncio.wait_for", side_effect=asyncio.TimeoutError):
 					result = await ctrl._run_evaluator_agent(mission, "/tmp/workspace")
 
 		assert result["passed"] is False
@@ -2259,7 +2259,7 @@ class TestReviewerSkip:
 
 	def test_review_default_model_is_haiku(self) -> None:
 		"""Verify the default review model changed to haiku."""
-		from mission_control.config import ReviewConfig
+		from autodev.config import ReviewConfig
 		rc = ReviewConfig()
 		assert rc.model == "haiku"
 		assert rc.budget_per_review_usd == 0.05
@@ -2267,7 +2267,7 @@ class TestReviewerSkip:
 
 	def test_review_skip_when_criteria_passed_default(self) -> None:
 		"""skip_when_criteria_passed defaults to True."""
-		from mission_control.config import ReviewConfig
+		from autodev.config import ReviewConfig
 		rc = ReviewConfig()
 		assert rc.skip_when_criteria_passed is True
 

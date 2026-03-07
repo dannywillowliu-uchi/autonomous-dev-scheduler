@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from mission_control.models import Snapshot, VerificationNodeKind
-from mission_control.state import (
+from autodev.models import Snapshot, VerificationNodeKind
+from autodev.state import (
 	_build_result_from_single_command,
 	_parse_mypy,
 	_parse_pytest,
@@ -117,8 +117,8 @@ tests/test_baz.py::test_qux PASSED
 		output = """\
 10 passed, 1 failed in 0.5s
 FAILED tests/test_foo.py::test_bar - AssertionError: error: mismatch
-src/mission_control/db.py:10: error: Incompatible types
-src/mission_control/worker.py:20: error: Missing return
+src/autodev/db.py:10: error: Incompatible types
+src/autodev/worker.py:20: error: Missing return
 Found 2 errors in 2 files"""
 		result = _parse_mypy(output)
 		assert result["type_errors"] == 2
@@ -168,7 +168,7 @@ class TestRunCommandTimeout:
 		"""Timed-out subprocesses should be killed, not left as zombies."""
 		from unittest.mock import AsyncMock, MagicMock, patch
 
-		from mission_control.state import _run_command
+		from autodev.state import _run_command
 
 		mock_proc = AsyncMock()
 		mock_proc.kill = MagicMock()  # kill() is synchronous
@@ -176,8 +176,8 @@ class TestRunCommandTimeout:
 
 		import asyncio
 
-		with patch("mission_control.state.asyncio.create_subprocess_exec", return_value=mock_proc):
-			with patch("mission_control.state.asyncio.wait_for", side_effect=asyncio.TimeoutError):
+		with patch("autodev.state.asyncio.create_subprocess_exec", return_value=mock_proc):
+			with patch("autodev.state.asyncio.wait_for", side_effect=asyncio.TimeoutError):
 				result = await _run_command("sleep 999", "/tmp", timeout=1)
 
 		assert result["returncode"] == -1

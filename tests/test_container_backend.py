@@ -9,15 +9,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mission_control.backends.container import ContainerBackend
-from mission_control.backends.local import HealthCheckResult
-from mission_control.config import ContainerConfig
+from autodev.backends.container import ContainerBackend
+from autodev.backends.local import HealthCheckResult
+from autodev.config import ContainerConfig
 
 
 @pytest.fixture()
 def container_config() -> ContainerConfig:
 	return ContainerConfig(
-		image="mission-control-worker:latest",
+		image="autodev-worker:latest",
 		docker_executable="docker",
 		workspace_mount="/workspace",
 	)
@@ -26,7 +26,7 @@ def container_config() -> ContainerConfig:
 @pytest.fixture()
 def backend(container_config: ContainerConfig) -> ContainerBackend:
 	"""ContainerBackend with a mocked WorkspacePool."""
-	with patch("mission_control.backends.container.WorkspacePool") as mock_pool_cls:
+	with patch("autodev.backends.container.WorkspacePool") as mock_pool_cls:
 		mock_pool_instance = MagicMock()
 		mock_pool_cls.return_value = mock_pool_instance
 		mock_pool_instance.acquire = AsyncMock()
@@ -56,7 +56,7 @@ class TestContainerHealthCheck:
 		git_dir.mkdir()
 		(git_dir / "HEAD").write_text("ref: refs/heads/main\n")
 
-		with patch("mission_control.backends.container.asyncio.create_subprocess_exec") as mock_exec:
+		with patch("autodev.backends.container.asyncio.create_subprocess_exec") as mock_exec:
 			# docker inspect returns non-zero (no stale container)
 			inspect_proc = AsyncMock()
 			inspect_proc.returncode = 1
@@ -80,7 +80,7 @@ class TestContainerHealthCheck:
 		git_dir.mkdir()
 		(git_dir / "HEAD").write_text("ref: refs/heads/main\n")
 
-		with patch("mission_control.backends.container.asyncio.create_subprocess_exec") as mock_exec:
+		with patch("autodev.backends.container.asyncio.create_subprocess_exec") as mock_exec:
 			# docker inspect returns 0 (stale container exists)
 			inspect_proc = AsyncMock()
 			inspect_proc.returncode = 0
@@ -101,7 +101,7 @@ class TestContainerHealthCheck:
 		backend._container_names["w1"] = "mc-worker-w1"
 		# No .git directory at all
 
-		with patch("mission_control.backends.container.asyncio.create_subprocess_exec") as mock_exec:
+		with patch("autodev.backends.container.asyncio.create_subprocess_exec") as mock_exec:
 			inspect_proc = AsyncMock()
 			inspect_proc.returncode = 1
 			inspect_proc.communicate = AsyncMock(return_value=(b"", None))
@@ -123,7 +123,7 @@ class TestContainerHealthCheck:
 		git_dir.mkdir()
 		(git_dir / "HEAD").write_text("ref: refs/heads/main\n")
 
-		with patch("mission_control.backends.container.asyncio.create_subprocess_exec") as mock_exec:
+		with patch("autodev.backends.container.asyncio.create_subprocess_exec") as mock_exec:
 			inspect_proc = AsyncMock()
 			inspect_proc.returncode = 1
 			inspect_proc.communicate = AsyncMock(return_value=(b"", None))
@@ -146,12 +146,12 @@ class TestContainerHealthCheck:
 		git_dir.mkdir()
 		(git_dir / "HEAD").write_text("ref: refs/heads/main\n")
 
-		with patch("mission_control.backends.container.asyncio.create_subprocess_exec") as mock_exec:
+		with patch("autodev.backends.container.asyncio.create_subprocess_exec") as mock_exec:
 			mock_proc = AsyncMock()
 			mock_proc.communicate = AsyncMock(return_value=(b"", None))
 			mock_exec.return_value = mock_proc
 
-			with patch("mission_control.backends.container.asyncio.wait_for", side_effect=asyncio.TimeoutError):
+			with patch("autodev.backends.container.asyncio.wait_for", side_effect=asyncio.TimeoutError):
 				result = await backend._verify_container_workspace("w1", str(tmp_path))
 
 		assert result.passed is False
@@ -167,7 +167,7 @@ class TestContainerHealthCheck:
 		git_dir.mkdir()
 		(git_dir / "HEAD").write_text("ref: refs/heads/main\n")
 
-		with patch("mission_control.backends.container.asyncio.create_subprocess_exec") as mock_exec:
+		with patch("autodev.backends.container.asyncio.create_subprocess_exec") as mock_exec:
 			inspect_proc = AsyncMock()
 			inspect_proc.returncode = 1
 			inspect_proc.communicate = AsyncMock(return_value=(b"", None))
@@ -176,7 +176,7 @@ class TestContainerHealthCheck:
 			status_proc.communicate = AsyncMock(return_value=(b"", None))
 			mock_exec.side_effect = [inspect_proc, status_proc]
 
-			with caplog.at_level(logging.INFO, logger="mission_control.backends.container"):
+			with caplog.at_level(logging.INFO, logger="autodev.backends.container"):
 				await backend._verify_container_workspace("w1", str(tmp_path))
 
 		ws_path = str(tmp_path)
@@ -191,7 +191,7 @@ class TestContainerHealthCheck:
 		git_dir.mkdir()
 		(git_dir / "HEAD").write_text("ref: refs/heads/main\n")
 
-		with patch("mission_control.backends.container.asyncio.create_subprocess_exec") as mock_exec:
+		with patch("autodev.backends.container.asyncio.create_subprocess_exec") as mock_exec:
 			inspect_proc = AsyncMock()
 			inspect_proc.returncode = 1
 			inspect_proc.communicate = AsyncMock(return_value=(b"", None))
@@ -210,7 +210,7 @@ class TestContainerHealthCheck:
 class TestContainerSpawnHealthCheck:
 	"""Tests for health check integration in spawn()."""
 
-	@patch("mission_control.backends.container.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.container.asyncio.create_subprocess_exec")
 	async def test_healthy_spawn_proceeds(
 		self, mock_exec: AsyncMock, backend: ContainerBackend,
 	) -> None:
@@ -229,7 +229,7 @@ class TestContainerSpawnHealthCheck:
 		assert handle.pid == 9999
 		backend._verify_container_workspace.assert_awaited_once_with("w1", "/host/ws")
 
-	@patch("mission_control.backends.container.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.container.asyncio.create_subprocess_exec")
 	async def test_unhealthy_triggers_repair_then_succeeds(
 		self, mock_exec: AsyncMock, backend: ContainerBackend,
 	) -> None:
@@ -249,7 +249,7 @@ class TestContainerSpawnHealthCheck:
 		backend._repair_container.assert_awaited_once_with("w1")
 		assert backend._verify_container_workspace.await_count == 2
 
-	@patch("mission_control.backends.container.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.container.asyncio.create_subprocess_exec")
 	async def test_repair_failure_raises(
 		self, mock_exec: AsyncMock, backend: ContainerBackend,
 	) -> None:
@@ -264,7 +264,7 @@ class TestContainerSpawnHealthCheck:
 
 		backend._repair_container.assert_awaited_once_with("w1")
 
-	@patch("mission_control.backends.container.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.container.asyncio.create_subprocess_exec")
 	async def test_repair_stops_and_removes_container(
 		self, mock_exec: AsyncMock, backend: ContainerBackend,
 	) -> None:
@@ -290,7 +290,7 @@ class TestContainerSpawnHealthCheck:
 		assert "--force" in rm_call[0]
 		assert "mc-worker-w1" in rm_call[0]
 
-	@patch("mission_control.backends.container.asyncio.create_subprocess_exec")
+	@patch("autodev.backends.container.asyncio.create_subprocess_exec")
 	async def test_repair_handles_timeout(
 		self, mock_exec: AsyncMock, backend: ContainerBackend, caplog: pytest.LogCaptureFixture,
 	) -> None:
@@ -305,10 +305,10 @@ class TestContainerSpawnHealthCheck:
 		mock_exec.side_effect = timeout_exec
 
 		with patch(
-			"mission_control.backends.container.asyncio.wait_for",
+			"autodev.backends.container.asyncio.wait_for",
 			side_effect=asyncio.TimeoutError,
 		):
-			with caplog.at_level(logging.WARNING, logger="mission_control.backends.container"):
+			with caplog.at_level(logging.WARNING, logger="autodev.backends.container"):
 				await backend._repair_container("w1")
 
 		assert any("docker stop failed" in msg or "docker rm failed" in msg for msg in caplog.messages)
@@ -319,7 +319,7 @@ class TestContainerHealthTimeout:
 
 	def test_default_timeout(self) -> None:
 		"""Default container_health_timeout is 10 seconds."""
-		with patch("mission_control.backends.container.WorkspacePool"):
+		with patch("autodev.backends.container.WorkspacePool"):
 			b = ContainerBackend(
 				source_repo="/repo",
 				pool_dir="/pool",
@@ -329,7 +329,7 @@ class TestContainerHealthTimeout:
 
 	def test_custom_timeout(self) -> None:
 		"""container_health_timeout can be overridden."""
-		with patch("mission_control.backends.container.WorkspacePool"):
+		with patch("autodev.backends.container.WorkspacePool"):
 			b = ContainerBackend(
 				source_repo="/repo",
 				pool_dir="/pool",

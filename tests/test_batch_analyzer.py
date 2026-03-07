@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import json
 
-from mission_control.batch_analyzer import (
+from autodev.batch_analyzer import (
 	BatchAnalyzer,
 	EpochCostSummary,
 	format_cost_trend,
 	format_failure_stages,
 )
-from mission_control.db import Database
-from mission_control.models import (
+from autodev.db import Database
+from autodev.models import (
 	Epoch,
 	Handoff,
 	KnowledgeItem,

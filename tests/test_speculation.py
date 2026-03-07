@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from mission_control.config import MissionConfig, SpeculationConfig, _build_speculation, load_config
-from mission_control.continuous_controller import ContinuousController, DynamicSemaphore, WorkerCompletion
-from mission_control.db import Database
-from mission_control.models import (
+from autodev.config import MissionConfig, SpeculationConfig, _build_speculation, load_config
+from autodev.continuous_controller import ContinuousController, DynamicSemaphore, WorkerCompletion
+from autodev.db import Database
+from autodev.models import (
 	Epoch,
 	Mission,
 	Plan,
@@ -84,7 +84,7 @@ branch_count = 3
 selection_metric = "cost"
 cost_limit_multiplier = 2.5
 """
-		config_path = tmp_path / "mission-control.toml"
+		config_path = tmp_path / "autodev.toml"
 		config_path.write_text(toml_content)
 		mc = load_config(config_path)
 		assert mc.speculation.enabled is True

@@ -1,0 +1,95 @@
+[target]
+name = "adderboard-challenge"
+path = "/Users/dannyliu/personal_projects/adderboard-challenge"
+branch = "main"
+objective = """Beat the AdderBoard trained-weights leaderboard (current #1: 311 params, 99.999% accuracy).
+
+Build the smallest autoregressive transformer that adds two 10-digit numbers with >=99% accuracy on 10K held-out test pairs (verify.py --seed 2025).
+
+Rules:
+- Must have genuine self-attention layers
+- Must operate autoregressively (predict next token one at a time)
+- No problem-specific control flow in forward()
+- Parameter count = unique params after weight tying/deduplication
+- Fixed/sinusoidal positional encodings are NOT counted
+
+Known techniques from current leaders (see RESEARCH.md for details):
+- Rank-3 factorization of projection matrices
+- 1-layer decoder with d=4, 1 head, ff=8
+- Grokking: train well past apparent convergence
+- Shared-A tied-KV attention patterns
+- Tied embeddings (input/output share weights)
+- Reversed output digit order for carry propagation
+- Zero-padded fixed-length input format
+
+This is an open research problem. Workers should freely experiment with:
+- Different architecture configurations (vary d_model, d_ff, qkv_rank, number of layers)
+- New weight-tying schemes and parameter sharing strategies
+- Training hyperparameters (learning rate, warmup, batch size, curriculum phases)
+- Long training runs -- grokking may require 50K-200K steps, be patient
+- Studying RESEARCH.md and the hand-coded 36-param solution for structural insights
+
+Each worker should pick ONE concrete experiment, run it to convergence, and report results (param count, accuracy, what worked/didn't) in their AD_RESULT discoveries field. Negative results are valuable.
+
+Validate with: .venv/bin/python verify.py submission.py --seed 2025 (must report >=99%)
+Use .venv/bin/python for all Python commands (venv is pre-configured).
+"""
+
+[target.verification]
+command = ".venv/bin/python -c 'import model; import train; import submission; m = model.NanoAdder(model.make_baseline_config()); print(f\"OK: {m.param_count()} params\")'"
+timeout = 600
+setup_command = "bash -c '[ -d .venv ] || python3 -m venv .venv && .venv/bin/pip install -r requirements.txt'"
+setup_timeout = 120
+
+[scheduler]
+session_timeout = 5400
+model = "opus"
+
+[scheduler.parallel]
+num_workers = 2
+pool_dir = "/Users/dannyliu/personal_projects/.mc-pool-adderboard"
+warm_clones = 2
+
+[scheduler.budget]
+max_per_session_usd = 8.0
+max_per_run_usd = 50.0
+
+[rounds]
+max_rounds = 10
+stall_threshold = 7
+cooldown_between_rounds = 60
+
+[planner]
+max_depth = 1
+max_children_per_node = 3
+budget_per_call_usd = 3.0
+
+[planner.deliberation]
+max_rounds = 1
+critic_model = "haiku"
+
+[continuous]
+max_wall_time_seconds = 10800
+min_ambition_score = 2
+max_replan_attempts = 3
+layer_drain_timeout_base = 5400
+layer_drain_timeout_per_unit = 600
+
+[green_branch]
+working_branch = "autodev/working"
+green_branch = "autodev/green"
+fixup_max_attempts = 5
+
+[discovery]
+enabled = false
+
+[heartbeat]
+interval = 600
+idle_threshold = 5
+
+[deliberation]
+max_rounds = 1
+critic_model = "haiku"
+
+[backend]
+type = "local"

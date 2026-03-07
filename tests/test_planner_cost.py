@@ -7,16 +7,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mission_control.config import (
+from autodev.config import (
 	DeliberationConfig,
 	MissionConfig,
 	PlannerConfig,
 	TargetConfig,
 )
-from mission_control.db import Database
-from mission_control.deliberative_planner import DeliberativePlanner
-from mission_control.models import CriticFinding, Epoch, Mission, Plan, WorkUnit
-from mission_control.recursive_planner import (
+from autodev.db import Database
+from autodev.deliberative_planner import DeliberativePlanner
+from autodev.models import CriticFinding, Epoch, Mission, Plan, WorkUnit
+from autodev.recursive_planner import (
 	PlannerResult,
 	RecursivePlanner,
 	_parse_subprocess_cost,

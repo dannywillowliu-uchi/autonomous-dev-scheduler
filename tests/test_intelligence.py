@@ -9,8 +9,8 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from mission_control.cli import build_parser, cmd_intel
-from mission_control.intelligence import IntelReport, run_scan
+from autodev.cli import build_parser, cmd_intel
+from autodev.intelligence import IntelReport, run_scan
 
 
 def _mock_hn_response() -> httpx.Response:
@@ -87,7 +87,7 @@ async def test_run_scan_returns_report() -> None:
 	transport = httpx.MockTransport(_route_mock_response)
 	mock_client = httpx.AsyncClient(transport=transport)
 
-	with patch("mission_control.intelligence.scanner.httpx.AsyncClient") as mock_cls:
+	with patch("autodev.intelligence.scanner.httpx.AsyncClient") as mock_cls:
 		mock_cls.return_value = mock_client
 		report = await run_scan(threshold=0.3)
 
@@ -109,12 +109,12 @@ async def test_threshold_filters_proposals() -> None:
 	transport = httpx.MockTransport(_route_mock_response)
 	mock_client = httpx.AsyncClient(transport=transport)
 
-	with patch("mission_control.intelligence.scanner.httpx.AsyncClient") as mock_cls:
+	with patch("autodev.intelligence.scanner.httpx.AsyncClient") as mock_cls:
 		mock_cls.return_value = mock_client
 		report_low = await run_scan(threshold=0.0)
 
 	mock_client2 = httpx.AsyncClient(transport=transport)
-	with patch("mission_control.intelligence.scanner.httpx.AsyncClient") as mock_cls:
+	with patch("autodev.intelligence.scanner.httpx.AsyncClient") as mock_cls:
 		mock_cls.return_value = mock_client2
 		report_high = await run_scan(threshold=999.0)
 
@@ -130,7 +130,7 @@ def test_cmd_intel_json(capsys: pytest.CaptureFixture[str]) -> None:
 	parser = build_parser()
 	args = parser.parse_args(["intel", "--json"])
 
-	with patch("mission_control.intelligence.scanner.httpx.AsyncClient") as mock_cls:
+	with patch("autodev.intelligence.scanner.httpx.AsyncClient") as mock_cls:
 		mock_cls.return_value = mock_client
 		result = cmd_intel(args)
 
@@ -152,7 +152,7 @@ def test_cmd_intel_table(capsys: pytest.CaptureFixture[str]) -> None:
 	parser = build_parser()
 	args = parser.parse_args(["intel"])
 
-	with patch("mission_control.intelligence.scanner.httpx.AsyncClient") as mock_cls:
+	with patch("autodev.intelligence.scanner.httpx.AsyncClient") as mock_cls:
 		mock_cls.return_value = mock_client
 		result = cmd_intel(args)
 
@@ -170,7 +170,7 @@ def test_cmd_intel_threshold_flag(capsys: pytest.CaptureFixture[str]) -> None:
 	parser = build_parser()
 	args = parser.parse_args(["intel", "--json", "--threshold", "999"])
 
-	with patch("mission_control.intelligence.scanner.httpx.AsyncClient") as mock_cls:
+	with patch("autodev.intelligence.scanner.httpx.AsyncClient") as mock_cls:
 		mock_cls.return_value = mock_client
 		result = cmd_intel(args)
 
