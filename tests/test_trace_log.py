@@ -6,7 +6,7 @@ import json
 import threading
 from pathlib import Path
 
-from mission_control.trace_log import TraceEvent, TraceLogConfig, TraceLogger
+from autodev.trace_log import TraceEvent, TraceLogConfig, TraceLogger
 
 
 class TestTraceEvent:
@@ -36,7 +36,7 @@ class TestTraceEvent:
 			worker_id="w2",
 			unit_id="u3",
 			event_type="merge",
-			details={"branch": "mc/green", "success": True},
+			details={"branch": "autodev/green", "success": True},
 		)
 		d = original.to_dict()
 		restored = TraceEvent.from_dict(d)

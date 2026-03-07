@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mission_control.config import MissionConfig, PlannerConfig, SchedulerConfig, TargetConfig
-from mission_control.models import Plan, WorkUnit
-from mission_control.recursive_planner import (
+from autodev.config import MissionConfig, PlannerConfig, SchedulerConfig, TargetConfig
+from autodev.models import Plan, WorkUnit
+from autodev.recursive_planner import (
 	PlannerResult,
 	RecursivePlanner,
 	_format_locked_files,
@@ -54,7 +54,7 @@ class TestSubprocessCwd:
 		mock_proc.communicate.return_value = (response.encode(), b"")
 
 		with patch(
-			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
+			"autodev.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		) as mock_exec:
 			await planner._run_planner_subprocess("test prompt")
@@ -78,7 +78,7 @@ class TestSubprocessCwd:
 		mock_proc.communicate.return_value = (response.encode(), b"")
 
 		with patch(
-			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
+			"autodev.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		) as mock_exec:
 			await planner._run_planner_subprocess("test prompt")
@@ -295,7 +295,7 @@ class TestCostTracking:
 		mock_proc.communicate.return_value = (response.encode(), b"Session cost: $0.88\n")
 
 		with patch(
-			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
+			"autodev.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		):
 			result = await planner._run_planner_subprocess("test")
@@ -311,7 +311,7 @@ class TestCostTracking:
 		mock_proc.communicate.return_value = (b"", b"Error")
 
 		with patch(
-			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
+			"autodev.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		):
 			result = await planner._run_planner_subprocess("test")
@@ -328,7 +328,7 @@ class TestCostTracking:
 		mock_proc.wait = AsyncMock()
 
 		with patch(
-			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
+			"autodev.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		):
 			result = await planner._run_planner_subprocess("test")
@@ -600,7 +600,7 @@ class TestLockedFilesInPrompt:
 		mock_proc.communicate.return_value = (response.encode(), b"")
 
 		with patch(
-			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
+			"autodev.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		):
 			await planner.plan_round("Test", locked_files=locked)
@@ -622,7 +622,7 @@ class TestLockedFilesInPrompt:
 		mock_proc.communicate.return_value = (response.encode(), b"")
 
 		with patch(
-			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
+			"autodev.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		):
 			await planner.plan_round("Test", locked_files={})
@@ -643,7 +643,7 @@ class TestLockedFilesInPrompt:
 		mock_proc.communicate.return_value = (response.encode(), b"")
 
 		with patch(
-			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
+			"autodev.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		):
 			await planner.plan_round("Test", locked_files=locked)

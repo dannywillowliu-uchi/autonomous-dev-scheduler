@@ -8,10 +8,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from mission_control.cli import build_parser
-from mission_control.db import Database
-from mission_control.models import Epoch, ExperimentResult, Handoff, Mission, Plan, WorkUnit, _now_iso
-from mission_control.worker import render_mission_worker_prompt
+from autodev.cli import build_parser
+from autodev.db import Database
+from autodev.models import Epoch, ExperimentResult, Handoff, Mission, Plan, WorkUnit, _now_iso
+from autodev.worker import render_mission_worker_prompt
 
 # -- DB experiment_results CRUD tests --
 
@@ -25,7 +25,7 @@ def db(tmp_path: Path) -> Database:
 
 def _create_mission_and_unit(db: Database, mission_id: str, unit_id: str) -> None:
 	"""Helper: insert a mission and work unit to satisfy FK constraints."""
-	from mission_control.models import Mission, Plan
+	from autodev.models import Mission, Plan
 	mission = Mission(id=mission_id, objective="test")
 	db.insert_mission(mission)
 	plan = Plan(id="plan-" + unit_id, objective="test")
@@ -56,7 +56,7 @@ class TestExperimentResultDB:
 		assert fetched.recommended_approach == "A"
 
 	def test_get_results_for_mission(self, db: Database) -> None:
-		from mission_control.models import Mission, Plan
+		from autodev.models import Mission, Plan
 		mission = Mission(id="m-1", objective="test")
 		db.insert_mission(mission)
 		plan = Plan(id="plan-multi", objective="test")
@@ -184,9 +184,9 @@ class TestControllerExperimentCompletion:
 
 	def _make_controller(self, db: Database) -> MagicMock:
 		"""Create a minimal mock controller with the experiment completion logic."""
-		from mission_control.causal import CausalAttributor
-		from mission_control.continuous_controller import ContinuousController
-		from mission_control.degradation import DegradationManager
+		from autodev.causal import CausalAttributor
+		from autodev.continuous_controller import ContinuousController
+		from autodev.degradation import DegradationManager
 
 		config = MagicMock()
 		config.target.resolved_path = Path("/tmp/fake")
@@ -209,7 +209,7 @@ class TestControllerExperimentCompletion:
 
 	def test_experiment_unit_skips_merge(self, db_runtime: Database) -> None:
 		"""Experiment units should not call merge_unit on green branch."""
-		from mission_control.continuous_controller import WorkerCompletion
+		from autodev.continuous_controller import WorkerCompletion
 
 		controller = self._make_controller(db_runtime)
 		mission = Mission(id="m-1", objective="test")
@@ -260,7 +260,7 @@ class TestControllerExperimentCompletion:
 
 	def test_experiment_result_stored_in_db(self, db_runtime: Database) -> None:
 		"""ExperimentResult should be inserted into DB for completed experiment units."""
-		from mission_control.continuous_controller import WorkerCompletion
+		from autodev.continuous_controller import WorkerCompletion
 
 		controller = self._make_controller(db_runtime)
 		mission = Mission(id="m-2", objective="test")
@@ -313,7 +313,7 @@ class TestControllerExperimentCompletion:
 
 	def test_failed_experiment_increments_failed_counter(self, db_runtime: Database) -> None:
 		"""Failed experiment units should increment _total_failed."""
-		from mission_control.continuous_controller import WorkerCompletion
+		from autodev.continuous_controller import WorkerCompletion
 
 		controller = self._make_controller(db_runtime)
 		mission = Mission(id="m-6", objective="test")

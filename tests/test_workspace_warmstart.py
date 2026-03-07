@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from mission_control.workspace import WorkspacePool, WorkspaceState
+from autodev.workspace import WorkspacePool, WorkspaceState
 
 
 def _git_env() -> dict[str, str]:
@@ -371,7 +371,7 @@ class TestReleaseWarmsState:
 		"""Release records green branch when configured."""
 		env = _git_env()
 		subprocess.run(
-			["git", "checkout", "-b", "mc/green"],
+			["git", "checkout", "-b", "autodev/green"],
 			cwd=str(source_repo), check=True, capture_output=True,
 		)
 		green_file = source_repo / "green.txt"
@@ -387,7 +387,7 @@ class TestReleaseWarmsState:
 		)
 
 		pool = WorkspacePool(
-			source_repo, pool_dir, max_clones=3, green_branch="mc/green",
+			source_repo, pool_dir, max_clones=3, green_branch="autodev/green",
 		)
 		await pool.initialize()
 
@@ -397,7 +397,7 @@ class TestReleaseWarmsState:
 
 		state = pool.get_workspace_state(ws)
 		assert state is not None
-		assert state.last_branch == "mc/green"
+		assert state.last_branch == "autodev/green"
 
 		await pool.cleanup()
 

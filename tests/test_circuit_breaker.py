@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from mission_control.circuit_breaker import (
+from autodev.circuit_breaker import (
 	CircuitBreaker,
 	CircuitBreakerManager,
 	CircuitBreakerState,

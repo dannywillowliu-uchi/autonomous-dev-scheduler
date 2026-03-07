@@ -5,9 +5,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from mission_control.config import MissionConfig, TargetConfig, VerificationConfig
-from mission_control.models import Epoch, Handoff, KnowledgeItem, Mission, SemanticMemory, WorkUnit
-from mission_control.planner_context import build_planner_context, update_mission_state
+from autodev.config import MissionConfig, TargetConfig, VerificationConfig
+from autodev.models import Epoch, Handoff, KnowledgeItem, Mission, SemanticMemory, WorkUnit
+from autodev.planner_context import build_planner_context, update_mission_state
 
 
 def _mock_db() -> MagicMock:
@@ -171,7 +171,7 @@ class TestBuildPlannerContext:
 				cost_usd=2.0, input_tokens=100, output_tokens=50,
 			),
 		]
-		from mission_control.models import UnitEvent
+		from autodev.models import UnitEvent
 		db.get_unit_events_for_mission.return_value = [
 			UnitEvent(
 				mission_id="m1", epoch_id="ep1", work_unit_id="wu1",

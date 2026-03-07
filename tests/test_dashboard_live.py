@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from starlette.testclient import TestClient
 
-from mission_control.dashboard.live import LiveDashboard, _serialize_event
-from mission_control.db import Database
-from mission_control.models import (
+from autodev.dashboard.live import LiveDashboard, _serialize_event
+from autodev.db import Database
+from autodev.models import (
 	Epoch,
 	Mission,
 	Plan,
@@ -366,7 +366,7 @@ class TestAgentDetailEndpoint:
 		async def _lifespan(app):
 			yield
 
-		dash.app = FastAPI(title="Mission Control Live", lifespan=_lifespan)
+		dash.app = FastAPI(title="Automatic Development Live", lifespan=_lifespan)
 		dash.app.add_middleware(
 			CORSMiddleware,
 			allow_origins=["*"],

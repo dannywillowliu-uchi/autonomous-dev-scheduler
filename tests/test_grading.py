@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from mission_control.grading import (
+from autodev.grading import (
 	compute_decomposition_grade,
 	format_decomposition_feedback,
 	get_epoch_grade_feedback,
 )
-from mission_control.models import Epoch, UnitReview, WorkUnit
+from autodev.models import Epoch, UnitReview, WorkUnit
 
 
 def _make_unit(
@@ -113,7 +113,7 @@ class TestComputeDecompositionGrade:
 
 class TestFormatDecompositionFeedback:
 	def test_formats_correctly(self) -> None:
-		from mission_control.models import DecompositionGrade
+		from autodev.models import DecompositionGrade
 		grade = DecompositionGrade(
 			avg_review_score=7.2, retry_rate=0.2,
 			overlap_rate=0.1, completion_rate=1.0,
@@ -125,7 +125,7 @@ class TestFormatDecompositionFeedback:
 		assert "Retry: 20%" in text
 
 	def test_identifies_weakest_area(self) -> None:
-		from mission_control.models import DecompositionGrade
+		from autodev.models import DecompositionGrade
 		grade = DecompositionGrade(
 			avg_review_score=9.0, retry_rate=0.8,
 			overlap_rate=0.0, completion_rate=1.0,

@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-from mission_control.config import (
+from autodev.config import (
 	MissionConfig,
 	TargetConfig,
 	VerificationConfig,
 	VerificationNodeConfig,
 )
-from mission_control.models import IncrementalVerificationResult, VerificationNodeKind
-from mission_control.state import _build_affected_tests, run_verification_nodes
+from autodev.models import IncrementalVerificationResult, VerificationNodeKind
+from autodev.state import _build_affected_tests, run_verification_nodes
 
 # -- Helpers --
 
@@ -58,10 +58,10 @@ def _pytest_result(passed: int = 5, failed: int = 0) -> dict:
 
 class TestBuildAffectedTests:
 	async def test_maps_source_to_test(self) -> None:
-		"""src/mission_control/state.py -> tests/test_state.py + tests/test_state_incremental.py."""
-		with patch("mission_control.state._run_command", new_callable=AsyncMock, return_value=_collect_result()):
+		"""src/autodev/state.py -> tests/test_state.py + tests/test_state_incremental.py."""
+		with patch("autodev.state._run_command", new_callable=AsyncMock, return_value=_collect_result()):
 			result = await _build_affected_tests(
-				["src/mission_control/state.py"], "/tmp/project",
+				["src/autodev/state.py"], "/tmp/project",
 			)
 
 		assert result is not None
@@ -71,9 +71,9 @@ class TestBuildAffectedTests:
 
 	async def test_multiple_changed_files(self) -> None:
 		"""Multiple changed source files aggregate their affected tests."""
-		with patch("mission_control.state._run_command", new_callable=AsyncMock, return_value=_collect_result()):
+		with patch("autodev.state._run_command", new_callable=AsyncMock, return_value=_collect_result()):
 			result = await _build_affected_tests(
-				["src/mission_control/state.py", "src/mission_control/worker.py"],
+				["src/autodev/state.py", "src/autodev/worker.py"],
 				"/tmp/project",
 			)
 
@@ -84,7 +84,7 @@ class TestBuildAffectedTests:
 
 	async def test_changed_test_file_included_directly(self) -> None:
 		"""A changed test file is included directly if it exists in collection."""
-		with patch("mission_control.state._run_command", new_callable=AsyncMock, return_value=_collect_result()):
+		with patch("autodev.state._run_command", new_callable=AsyncMock, return_value=_collect_result()):
 			result = await _build_affected_tests(
 				["tests/test_config.py"], "/tmp/project",
 			)
@@ -95,7 +95,7 @@ class TestBuildAffectedTests:
 
 	async def test_no_python_files_returns_none(self) -> None:
 		"""Non-Python changes should skip test selection entirely."""
-		with patch("mission_control.state._run_command", new_callable=AsyncMock) as mock_cmd:
+		with patch("autodev.state._run_command", new_callable=AsyncMock) as mock_cmd:
 			result = await _build_affected_tests(
 				["README.md", "Makefile", "config.toml"], "/tmp/project",
 			)
@@ -105,7 +105,7 @@ class TestBuildAffectedTests:
 
 	async def test_empty_changed_files_returns_none(self) -> None:
 		"""Empty list of changed files returns None."""
-		with patch("mission_control.state._run_command", new_callable=AsyncMock) as mock_cmd:
+		with patch("autodev.state._run_command", new_callable=AsyncMock) as mock_cmd:
 			result = await _build_affected_tests([], "/tmp/project")
 
 		assert result is None
@@ -114,27 +114,27 @@ class TestBuildAffectedTests:
 	async def test_collection_failure_returns_none(self) -> None:
 		"""Pytest collection failure returns None (fallback to full suite)."""
 		fail_result = {"output": "", "returncode": 1}
-		with patch("mission_control.state._run_command", new_callable=AsyncMock, return_value=fail_result):
+		with patch("autodev.state._run_command", new_callable=AsyncMock, return_value=fail_result):
 			result = await _build_affected_tests(
-				["src/mission_control/state.py"], "/tmp/project",
+				["src/autodev/state.py"], "/tmp/project",
 			)
 
 		assert result is None
 
 	async def test_no_matching_tests_returns_none(self) -> None:
 		"""Changed file with no matching tests returns None."""
-		with patch("mission_control.state._run_command", new_callable=AsyncMock, return_value=_collect_result()):
+		with patch("autodev.state._run_command", new_callable=AsyncMock, return_value=_collect_result()):
 			result = await _build_affected_tests(
-				["src/mission_control/totally_new_module.py"], "/tmp/project",
+				["src/autodev/totally_new_module.py"], "/tmp/project",
 			)
 
 		assert result is None
 
 	async def test_result_is_sorted(self) -> None:
 		"""Returned test files should be sorted for deterministic ordering."""
-		with patch("mission_control.state._run_command", new_callable=AsyncMock, return_value=_collect_result()):
+		with patch("autodev.state._run_command", new_callable=AsyncMock, return_value=_collect_result()):
 			result = await _build_affected_tests(
-				["src/mission_control/state.py"], "/tmp/project",
+				["src/autodev/state.py"], "/tmp/project",
 			)
 
 		assert result is not None
@@ -142,9 +142,9 @@ class TestBuildAffectedTests:
 
 	async def test_mixed_python_and_non_python(self) -> None:
 		"""Non-Python files are filtered out, Python files are processed."""
-		with patch("mission_control.state._run_command", new_callable=AsyncMock, return_value=_collect_result()):
+		with patch("autodev.state._run_command", new_callable=AsyncMock, return_value=_collect_result()):
 			result = await _build_affected_tests(
-				["README.md", "src/mission_control/config.py", "Dockerfile"],
+				["README.md", "src/autodev/config.py", "Dockerfile"],
 				"/tmp/project",
 			)
 
@@ -155,12 +155,12 @@ class TestBuildAffectedTests:
 		"""Handle pytest --collect-only output that lists bare file paths."""
 		collect = "tests/test_state.py\ntests/test_worker.py\n"
 		with patch(
-			"mission_control.state._run_command",
+			"autodev.state._run_command",
 			new_callable=AsyncMock,
 			return_value={"output": collect, "returncode": 0},
 		):
 			result = await _build_affected_tests(
-				["src/mission_control/state.py"], "/tmp/project",
+				["src/autodev/state.py"], "/tmp/project",
 			)
 
 		assert result is not None
@@ -178,7 +178,7 @@ class TestIncrementalVerificationSingleCommand:
 		config = _make_config()
 		mock_result = _pytest_result(passed=10)
 
-		with patch("mission_control.state._run_command", new_callable=AsyncMock, return_value=mock_result):
+		with patch("autodev.state._run_command", new_callable=AsyncMock, return_value=mock_result):
 			incremental = await run_verification_nodes(config, "/tmp")
 
 		assert isinstance(incremental, IncrementalVerificationResult)
@@ -191,7 +191,7 @@ class TestIncrementalVerificationSingleCommand:
 		config = _make_config()
 		mock_result = _pytest_result(passed=10)
 
-		with patch("mission_control.state._run_command", new_callable=AsyncMock, return_value=mock_result):
+		with patch("autodev.state._run_command", new_callable=AsyncMock, return_value=mock_result):
 			incremental = await run_verification_nodes(config, "/tmp", changed_files=None)
 
 		assert incremental.selection_method == "full"
@@ -208,9 +208,9 @@ class TestIncrementalVerificationSingleCommand:
 				return _collect_result()
 			return _pytest_result(passed=2)
 
-		with patch("mission_control.state._run_command", side_effect=mock_run):
+		with patch("autodev.state._run_command", side_effect=mock_run):
 			incremental = await run_verification_nodes(
-				config, "/tmp", changed_files=["src/mission_control/state.py"],
+				config, "/tmp", changed_files=["src/autodev/state.py"],
 			)
 
 		assert incremental.selection_method == "heuristic"
@@ -227,9 +227,9 @@ class TestIncrementalVerificationSingleCommand:
 				return _collect_result()
 			return _pytest_result(passed=10)
 
-		with patch("mission_control.state._run_command", side_effect=mock_run):
+		with patch("autodev.state._run_command", side_effect=mock_run):
 			incremental = await run_verification_nodes(
-				config, "/tmp", changed_files=["src/mission_control/unknown_module.py"],
+				config, "/tmp", changed_files=["src/autodev/unknown_module.py"],
 			)
 
 		assert incremental.selection_method == "full"
@@ -239,7 +239,7 @@ class TestIncrementalVerificationSingleCommand:
 		config = _make_config()
 		mock_result = _pytest_result(passed=10)
 
-		with patch("mission_control.state._run_command", new_callable=AsyncMock, return_value=mock_result):
+		with patch("autodev.state._run_command", new_callable=AsyncMock, return_value=mock_result):
 			incremental = await run_verification_nodes(
 				config, "/tmp", changed_files=["README.md", "Makefile"],
 			)
@@ -255,7 +255,7 @@ class TestIncrementalVerificationSingleCommand:
 				return _collect_result()
 			return _pytest_result(passed=10)
 
-		with patch("mission_control.state._run_command", side_effect=mock_run):
+		with patch("autodev.state._run_command", side_effect=mock_run):
 			incremental = await run_verification_nodes(
 				config, "/tmp", changed_files=[],
 			)
@@ -285,9 +285,9 @@ class TestIncrementalVerificationMultiNode:
 				return _pytest_result(passed=2)
 			return {"output": "All checks passed", "returncode": 0}
 
-		with patch("mission_control.state._run_command", side_effect=mock_run):
+		with patch("autodev.state._run_command", side_effect=mock_run):
 			incremental = await run_verification_nodes(
-				config, "/tmp", changed_files=["src/mission_control/state.py"],
+				config, "/tmp", changed_files=["src/autodev/state.py"],
 			)
 
 		assert incremental.selection_method == "heuristic"
@@ -312,9 +312,9 @@ class TestIncrementalVerificationMultiNode:
 				return _collect_result()
 			return {"output": "All checks passed", "returncode": 0}
 
-		with patch("mission_control.state._run_command", side_effect=mock_run):
+		with patch("autodev.state._run_command", side_effect=mock_run):
 			await run_verification_nodes(
-				config, "/tmp", changed_files=["src/mission_control/state.py"],
+				config, "/tmp", changed_files=["src/autodev/state.py"],
 			)
 
 		# Even with changed_files, ruff/mypy commands stay the same
@@ -336,9 +336,9 @@ class TestIncrementalVerificationMultiNode:
 				return _collect_result()
 			return _pytest_result(passed=50)
 
-		with patch("mission_control.state._run_command", side_effect=mock_run):
+		with patch("autodev.state._run_command", side_effect=mock_run):
 			incremental = await run_verification_nodes(
-				config, "/tmp", changed_files=["src/mission_control/brand_new.py"],
+				config, "/tmp", changed_files=["src/autodev/brand_new.py"],
 			)
 
 		assert incremental.selection_method == "full"
@@ -369,7 +369,7 @@ class TestIncrementalVerificationResultDataclass:
 
 	def test_report_access(self) -> None:
 		"""The underlying report is accessible through .report."""
-		from mission_control.models import VerificationReport, VerificationResult
+		from autodev.models import VerificationReport, VerificationResult
 
 		report = VerificationReport(results=[
 			VerificationResult(kind=VerificationNodeKind.PYTEST, passed=True, required=True),

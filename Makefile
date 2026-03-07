@@ -11,10 +11,10 @@ traces:
 	docker compose up -d jaeger
 
 dashboard:
-	.venv/bin/python -m mission_control.cli live --port 8080
+	.venv/bin/python -m autodev.cli live --port 8080
 
 run:
-	.venv/bin/python -m mission_control.cli mission --config mission-control.toml --workers 2
+	.venv/bin/python -m autodev.cli mission --config autodev.toml --workers 2
 
 clean:
 	docker compose down

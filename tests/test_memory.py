@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from mission_control.config import EpisodicMemoryConfig, MissionConfig, TargetConfig, load_config
-from mission_control.db import Database
-from mission_control.memory import (
+from autodev.config import EpisodicMemoryConfig, MissionConfig, TargetConfig, load_config
+from autodev.db import Database
+from autodev.memory import (
 	CONTEXT_BUDGET,
 	MemoryManager,
 	_format_session_history,
@@ -21,7 +21,7 @@ from mission_control.memory import (
 	load_context_for_mission_worker,
 	load_context_for_work_unit,
 )
-from mission_control.models import (
+from autodev.models import (
 	ContextItem,
 	ContextScope,
 	Decision,
@@ -34,7 +34,7 @@ from mission_control.models import (
 	Session,
 	WorkUnit,
 )
-from mission_control.planner_context import build_planner_context
+from autodev.planner_context import build_planner_context
 
 
 @pytest.fixture
@@ -423,12 +423,12 @@ class TestInjectContextItems:
 	def test_integration_with_load_context_for_mission_worker(self, db, config):
 		db.insert_context_item(ContextItem(
 			id="ctx-a", scope="src/worker.py", item_type="convention",
-			content="Workers must emit MC_RESULT", confidence=0.95,
+			content="Workers must emit AD_RESULT", confidence=0.95,
 		))
 		unit = WorkUnit(files_hint="src/worker.py", title="update worker")
 		result = load_context_for_mission_worker(unit, config, db=db)
 		assert "### Context from Prior Workers" in result
-		assert "Workers must emit MC_RESULT" in result
+		assert "Workers must emit AD_RESULT" in result
 
 	def test_mission_worker_without_db_still_works(self, config, tmp_path):
 		(tmp_path / "CLAUDE.md").write_text("# Docs")
@@ -790,7 +790,7 @@ def test_episodic_memory_config_defaults() -> None:
 
 
 def test_episodic_memory_config_toml_parsing(tmp_path: Path) -> None:
-	p = tmp_path / "mission-control.toml"
+	p = tmp_path / "autodev.toml"
 	p.write_text("""\
 [target]
 name = "test"
@@ -815,7 +815,7 @@ max_semantic_per_query = 10
 
 
 def test_episodic_memory_absent_in_toml(tmp_path: Path) -> None:
-	p = tmp_path / "mission-control.toml"
+	p = tmp_path / "autodev.toml"
 	p.write_text('[target]\nname = "test"\npath = "."\n')
 	config = load_config(p)
 	assert config.episodic_memory.enabled is False
@@ -1223,12 +1223,12 @@ class TestAutoStoreFromCompletion:
 		assert db.get_all_episodic_memories() == []
 
 	def test_scope_tokens_include_filename_and_path(self, manager: MemoryManager) -> None:
-		unit = WorkUnit(files_hint="src/mission_control/memory.py", title="enhance memory")
+		unit = WorkUnit(files_hint="src/autodev/memory.py", title="enhance memory")
 		handoff = Handoff(status="completed", summary="Enhanced", discoveries=["Found pattern"])
 		result = manager.auto_store_from_completion(unit, handoff, "completed")
 		assert len(result) == 1
 		tokens = result[0].scope_tokens
-		assert "src/mission_control/memory.py" in tokens
+		assert "src/autodev/memory.py" in tokens
 		assert "memory.py" in tokens
 		assert "enhance memory" in tokens
 

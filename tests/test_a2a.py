@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from mission_control.a2a import (
+from autodev.a2a import (
 	A2AClient,
 	A2AServer,
 	A2ATaskCreate,
@@ -17,8 +17,8 @@ from mission_control.a2a import (
 	AgentCard,
 	_wu_status_to_a2a,
 )
-from mission_control.config import A2AConfig, load_config
-from mission_control.db import Database
+from autodev.config import A2AConfig, load_config
+from autodev.db import Database
 
 
 @pytest.fixture()
@@ -76,7 +76,7 @@ def test_agent_card_serialization() -> None:
 
 def test_agent_card_required_fields() -> None:
 	card = AgentCard(name="x", version="0.1")
-	assert card.description == "mission-control autonomous development agent"
+	assert card.description == "autodev autonomous development agent"
 	assert card.capabilities == []
 	assert card.auth == {}
 
@@ -238,14 +238,14 @@ def test_a2a_config_defaults() -> None:
 	assert cfg.enabled is False
 	assert cfg.host == "0.0.0.0"
 	assert cfg.port == 8420
-	assert cfg.agent_name == "mission-control"
+	assert cfg.agent_name == "autodev"
 	assert cfg.agent_version == "0.1.0"
 	assert "code_edit" in cfg.agent_capabilities
 
 
 def test_a2a_config_toml_parsing(tmp_path: object) -> None:
 	from pathlib import Path
-	p = Path(str(tmp_path)) / "mission-control.toml"
+	p = Path(str(tmp_path)) / "autodev.toml"
 	p.write_text("""\
 [target]
 name = "test"

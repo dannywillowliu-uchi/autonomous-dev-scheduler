@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from mission_control.config import PromptEvolutionConfig, load_config
-from mission_control.db import Database
-from mission_control.models import PromptOutcome, PromptVariant
-from mission_control.prompt_evolution import PromptEvolutionEngine
+from autodev.config import PromptEvolutionConfig, load_config
+from autodev.db import Database
+from autodev.models import PromptOutcome, PromptVariant
+from autodev.prompt_evolution import PromptEvolutionEngine
 
 # -- Model tests --
 
@@ -71,7 +71,7 @@ def test_prompt_evolution_config_defaults() -> None:
 
 
 def test_prompt_evolution_config_toml_parsing(tmp_path: Path) -> None:
-	p = tmp_path / "mission-control.toml"
+	p = tmp_path / "autodev.toml"
 	p.write_text("""\
 [target]
 name = "test"
@@ -91,7 +91,7 @@ min_samples_before_mutation = 10
 
 
 def test_prompt_evolution_absent_in_toml(tmp_path: Path) -> None:
-	p = tmp_path / "mission-control.toml"
+	p = tmp_path / "autodev.toml"
 	p.write_text('[target]\nname = "test"\npath = "."\n')
 	config = load_config(p)
 	assert config.prompt_evolution.enabled is False

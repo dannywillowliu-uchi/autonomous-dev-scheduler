@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from mission_control.config import MCPRegistryConfig, load_config
-from mission_control.db import Database
-from mission_control.mcp_registry import MCPToolEntry, MCPToolRegistry
-from mission_control.tool_synthesis import ToolEntry, promote_to_mcp_registry
+from autodev.config import MCPRegistryConfig, load_config
+from autodev.db import Database
+from autodev.mcp_registry import MCPToolEntry, MCPToolRegistry
+from autodev.tool_synthesis import ToolEntry, promote_to_mcp_registry
 
 
 @pytest.fixture()
@@ -211,7 +211,7 @@ def test_mcp_registry_config_defaults() -> None:
 
 
 def test_mcp_registry_config_toml_parsing(tmp_path: Path) -> None:
-	p = tmp_path / "mission-control.toml"
+	p = tmp_path / "autodev.toml"
 	p.write_text("""\
 [target]
 name = "test"

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from mission_control.models import (
+from autodev.models import (
 	SnapshotDelta,
 	WorkUnit,
 	_new_id,

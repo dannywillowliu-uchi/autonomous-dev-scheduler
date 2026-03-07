@@ -6,7 +6,7 @@ import ast
 from pathlib import Path
 from textwrap import dedent
 
-from mission_control.snapshot import (
+from autodev.snapshot import (
 	_extract_signatures,
 	_format_params,
 	build_project_snapshot,

@@ -6,7 +6,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 
-from mission_control.token_parser import (
+from autodev.token_parser import (
 	StreamingTokenParser,
 	TokenEvent,
 	compute_token_cost_incremental,
@@ -235,7 +235,7 @@ class TestComputeTokenCostIncremental:
 		assert cost == 0.0
 
 	def test_with_pricing(self) -> None:
-		from mission_control.config import PricingConfig
+		from autodev.config import PricingConfig
 
 		events = [TokenEvent(input_tokens=500_000, output_tokens=100_000)]
 		pricing = PricingConfig(input_per_million=6.0, output_per_million=30.0)

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from mission_control.cli import (
+from autodev.cli import (
 	build_parser,
 	cmd_diagnose,
 	cmd_init,
@@ -16,8 +16,8 @@ from mission_control.cli import (
 	cmd_trace,
 	main,
 )
-from mission_control.db import Database
-from mission_control.models import Epoch, Mission, Plan, WorkUnit
+from autodev.db import Database
+from autodev.models import Epoch, Mission, Plan, WorkUnit
 
 
 class TestArgParsing:
@@ -56,13 +56,13 @@ class TestCmdInit:
 		args = parser.parse_args(["init", str(tmp_path)])
 		result = cmd_init(args)
 		assert result == 0
-		config_file = tmp_path / "mission-control.toml"
+		config_file = tmp_path / "autodev.toml"
 		assert config_file.exists()
 		content = config_file.read_text()
 		assert tmp_path.name in content
 
 	def test_refuses_overwrite(self, tmp_path: Path) -> None:
-		(tmp_path / "mission-control.toml").write_text("existing")
+		(tmp_path / "autodev.toml").write_text("existing")
 		parser = build_parser()
 		args = parser.parse_args(["init", str(tmp_path)])
 		result = cmd_init(args)
@@ -72,9 +72,9 @@ class TestCmdInit:
 class TestCmdSummary:
 	def _setup_db(self, tmp_path: Path) -> tuple[Path, Path]:
 		"""Create config and DB with test data. Returns (config_path, db_path)."""
-		config_file = tmp_path / "mission-control.toml"
+		config_file = tmp_path / "autodev.toml"
 		config_file.write_text('[target]\nname = "test"\npath = "/tmp/test"\n')
-		db_path = tmp_path / "mission-control.db"
+		db_path = tmp_path / "autodev.db"
 		db = Database(db_path)
 		mission = Mission(id="m1", objective="Build API", status="completed", total_cost_usd=12.50)
 		db.insert_mission(mission)
@@ -95,7 +95,7 @@ class TestCmdSummary:
 		assert result == 0
 
 	def test_summary_no_db(self, tmp_path: Path) -> None:
-		config_file = tmp_path / "mission-control.toml"
+		config_file = tmp_path / "autodev.toml"
 		config_file.write_text('[target]\nname = "test"\npath = "/tmp/test"\n')
 		parser = build_parser()
 		args = parser.parse_args(["summary", "--config", str(config_file)])
@@ -128,7 +128,7 @@ class _FakeResult:
 	final_verification_passed: bool | None = None
 
 
-@patch("mission_control.cli._start_dashboard_background", return_value=(None, None))
+@patch("autodev.cli._start_dashboard_background", return_value=(None, None))
 class TestMissionChainLoop:
 	"""Tests that the chaining loop in cmd_mission respects max depth and deliberative planner."""
 
@@ -153,8 +153,8 @@ class TestMissionChainLoop:
 		mock_controller_cls.side_effect = make_controller
 		return mock_controller_cls, call_log
 
-	@patch("mission_control.cli.Database")
-	@patch("mission_control.cli.load_config")
+	@patch("autodev.cli.Database")
+	@patch("autodev.cli.load_config")
 	def test_no_chain_runs_once(
 		self, mock_load_config: MagicMock, mock_db_cls: MagicMock, _mock_dashboard: MagicMock,
 	) -> None:
@@ -167,7 +167,7 @@ class TestMissionChainLoop:
 		results = [_FakeResult(mission_id="m1")]
 		mock_ctrl, call_log = self._mock_mission_run(results)
 
-		with patch("mission_control.continuous_controller.ContinuousController", mock_ctrl):
+		with patch("autodev.continuous_controller.ContinuousController", mock_ctrl):
 			parser = build_parser()
 			args = parser.parse_args(["mission", "--config", "fake.toml"])
 			result = cmd_mission(args)
@@ -175,8 +175,8 @@ class TestMissionChainLoop:
 		assert result == 0
 		assert len(call_log) == 1
 
-	@patch("mission_control.cli.Database")
-	@patch("mission_control.cli.load_config")
+	@patch("autodev.cli.Database")
+	@patch("autodev.cli.load_config")
 	def test_chain_proposes_next_objective(
 		self, mock_load_config: MagicMock, mock_db_cls: MagicMock, _mock_dashboard: MagicMock,
 	) -> None:
@@ -197,9 +197,9 @@ class TestMissionChainLoop:
 		)
 
 		with (
-			patch("mission_control.continuous_controller.ContinuousController", mock_ctrl),
-			patch("mission_control.deliberative_planner.DeliberativePlanner", mock_delib),
-			patch("mission_control.cli.asyncio.run", side_effect=[results[0], ("", "")]),
+			patch("autodev.continuous_controller.ContinuousController", mock_ctrl),
+			patch("autodev.deliberative_planner.DeliberativePlanner", mock_delib),
+			patch("autodev.cli.asyncio.run", side_effect=[results[0], ("", "")]),
 		):
 			parser = build_parser()
 			args = parser.parse_args(["mission", "--chain", "--config", "fake.toml"])
@@ -212,9 +212,9 @@ class TestMissionChainLoop:
 class TestCmdLive:
 	def test_creates_db_when_missing(self, tmp_path: Path) -> None:
 		"""cmd_live creates DB if it doesn't exist instead of returning error."""
-		config_file = tmp_path / "mission-control.toml"
+		config_file = tmp_path / "autodev.toml"
 		config_file.write_text('[target]\nname = "test"\npath = "/tmp/test"\n')
-		db_path = tmp_path / "mission-control.db"
+		db_path = tmp_path / "autodev.db"
 		assert not db_path.exists()
 
 		parser = build_parser()
@@ -226,7 +226,7 @@ class TestCmdLive:
 		mock_uvicorn = MagicMock()
 
 		with patch.dict("sys.modules", {
-			"mission_control.dashboard.live": MagicMock(LiveDashboard=mock_dash_cls),
+			"autodev.dashboard.live": MagicMock(LiveDashboard=mock_dash_cls),
 			"uvicorn": mock_uvicorn,
 		}):
 			result = cmd_live(args)
@@ -332,9 +332,9 @@ _DIAG_TOML = '[target]\nname = "test"\npath = "/tmp/test"\n\n[target.verificatio
 class TestCmdDiagnose:
 	def _setup_healthy(self, tmp_path: Path) -> Path:
 		"""Create a config + DB with a completed mission and no problems."""
-		config_file = tmp_path / "mission-control.toml"
+		config_file = tmp_path / "autodev.toml"
 		config_file.write_text(_DIAG_TOML)
-		db_path = tmp_path / "mission-control.db"
+		db_path = tmp_path / "autodev.db"
 		db = Database(db_path)
 		mission = Mission(id="m1", objective="Test", status="completed", total_cost_usd=3.50)
 		db.insert_mission(mission)
@@ -357,7 +357,7 @@ class TestCmdDiagnose:
 		"""Stale WAL file triggers WARN."""
 		config_file = self._setup_healthy(tmp_path)
 		# Create a non-empty WAL file to simulate stale state
-		wal_file = tmp_path / "mission-control.db-wal"
+		wal_file = tmp_path / "autodev.db-wal"
 		wal_file.write_bytes(b"\x00" * 100)
 		parser = build_parser()
 		args = parser.parse_args(["diagnose", "--config", str(config_file)])
@@ -369,9 +369,9 @@ class TestCmdDiagnose:
 
 	def test_orphaned_running_units(self, tmp_path: Path, capsys: object) -> None:
 		"""Orphaned running work units trigger WARN."""
-		config_file = tmp_path / "mission-control.toml"
+		config_file = tmp_path / "autodev.toml"
 		config_file.write_text(_DIAG_TOML)
-		db_path = tmp_path / "mission-control.db"
+		db_path = tmp_path / "autodev.db"
 		db = Database(db_path)
 		mission = Mission(id="m1", objective="Test", status="completed")
 		db.insert_mission(mission)
@@ -404,9 +404,9 @@ class TestCmdDiagnose:
 
 	def test_cost_summary_formatting(self, tmp_path: Path, capsys: object) -> None:
 		"""Cost summary shows mission count and total cost."""
-		config_file = tmp_path / "mission-control.toml"
+		config_file = tmp_path / "autodev.toml"
 		config_file.write_text(_DIAG_TOML)
-		db_path = tmp_path / "mission-control.db"
+		db_path = tmp_path / "autodev.db"
 		db = Database(db_path)
 		db.insert_mission(Mission(id="m1", objective="A", status="completed", total_cost_usd=5.25))
 		db.insert_mission(Mission(id="m2", objective="B", status="completed", total_cost_usd=3.75))
@@ -439,7 +439,7 @@ class TestCmdDiagnose:
 
 	def test_no_db_still_reports(self, tmp_path: Path, capsys: object) -> None:
 		"""When DB doesn't exist, diagnose still runs and reports WARN for DB."""
-		config_file = tmp_path / "mission-control.toml"
+		config_file = tmp_path / "autodev.toml"
 		config_file.write_text(_DIAG_TOML)
 		parser = build_parser()
 		args = parser.parse_args(["diagnose", "--config", str(config_file)])

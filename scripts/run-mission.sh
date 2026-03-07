@@ -17,12 +17,12 @@ echo "=== Mission starting at $(date) ===" >> "$LOG_FILE"
 echo "Objective: web research capabilities for frontier lab research" >> "$LOG_FILE"
 
 # Run the mission, logging stdout+stderr
-"$PROJECT_DIR/.venv/bin/python" -m mission_control.cli mission \
-	--config "$PROJECT_DIR/mission-control.toml" \
+"$PROJECT_DIR/.venv/bin/python" -m autodev.cli mission \
+	--config "$PROJECT_DIR/autodev.toml" \
 	>> "$LOG_FILE" 2>&1
 
 echo "=== Mission finished at $(date) ===" >> "$LOG_FILE"
 
 # Self-cleanup: unload the LaunchAgent after run (one-shot)
-launchctl bootout "gui/$(id -u)/com.dannyliu.mc-mission-ads" 2>/dev/null || true
-rm -f "$HOME/Library/LaunchAgents/com.dannyliu.mc-mission-ads.plist"
+launchctl bootout "gui/$(id -u)/com.dannyliu.autodev-mission" 2>/dev/null || true
+rm -f "$HOME/Library/LaunchAgents/com.dannyliu.autodev-mission.plist"

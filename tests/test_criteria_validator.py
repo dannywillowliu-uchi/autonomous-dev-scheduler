@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from mission_control.criteria_validator import (
+from autodev.criteria_validator import (
 	Severity,
 	ValidationIssue,
 	is_criteria_valid,

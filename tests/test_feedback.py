@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from mission_control.db import Database
-from mission_control.feedback import (
+from autodev.db import Database
+from autodev.feedback import (
 	_extract_keywords,
 	diagnose_failure,
 	get_worker_context,
 )
-from mission_control.models import (
+from autodev.models import (
 	Experience,
 	Mission,
 	Plan,
@@ -106,8 +106,8 @@ class TestExtractKeywords:
 
 	def test_file_paths_preserved(self) -> None:
 		"""File paths like 'src/foo/bar.py' are preserved as whole keywords."""
-		keywords = _extract_keywords("fix src/mission_control/worker.py")
-		assert "src/mission_control/worker.py" in keywords
+		keywords = _extract_keywords("fix src/autodev/worker.py")
+		assert "src/autodev/worker.py" in keywords
 
 	def test_multiple_paths(self) -> None:
 		keywords = _extract_keywords("edit src/foo/bar.py and tests/test_bar.py")
@@ -116,8 +116,8 @@ class TestExtractKeywords:
 
 	def test_tokens_still_extracted_alongside_paths(self) -> None:
 		"""Existing token extraction still works for non-path text."""
-		keywords = _extract_keywords("fix src/mission_control/worker.py session handling")
-		assert "src/mission_control/worker.py" in keywords
+		keywords = _extract_keywords("fix src/autodev/worker.py session handling")
+		assert "src/autodev/worker.py" in keywords
 		assert "session" in keywords
 		assert "handling" in keywords
 
@@ -301,17 +301,17 @@ class TestDiagnoseFailure:
 		output = (
 			"Traceback (most recent call last):\n"
 			'  File "src/main.py", line 1, in <module>\n'
-			"    from mission_control.nonexistent import Foo\n"
-			"ModuleNotFoundError: No module named 'mission_control.nonexistent'\n"
+			"    from autodev.nonexistent import Foo\n"
+			"ModuleNotFoundError: No module named 'autodev.nonexistent'\n"
 		)
 		result = diagnose_failure(output)
 		assert "[Import error]" in result
-		assert "mission_control.nonexistent" in result
+		assert "autodev.nonexistent" in result
 		assert "pip install" in result.lower()
 
 	def test_import_error_relative(self) -> None:
 		output = (
-			"ImportError: cannot import name 'BadClass' from 'mission_control.models'\n"
+			"ImportError: cannot import name 'BadClass' from 'autodev.models'\n"
 		)
 		result = diagnose_failure(output)
 		assert "[Import error]" in result
@@ -359,8 +359,8 @@ class TestDiagnoseFailure:
 
 	def test_ruff_errors(self) -> None:
 		output = (
-			"src/mission_control/worker.py:10:1: F401 `os` imported but unused\n"
-			"src/mission_control/worker.py:25:80: E501 Line too long (130 > 120)\n"
+			"src/autodev/worker.py:10:1: F401 `os` imported but unused\n"
+			"src/autodev/worker.py:25:80: E501 Line too long (130 > 120)\n"
 			"Found 2 errors.\n"
 		)
 		result = diagnose_failure(output)

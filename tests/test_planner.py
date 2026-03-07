@@ -9,13 +9,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mission_control.config import ContinuousConfig, MissionConfig, PlannerConfig, SchedulerConfig, TargetConfig
-from mission_control.continuous_planner import ContinuousPlanner
-from mission_control.db import Database
-from mission_control.models import Epoch, Handoff, Mission, Plan, WorkUnit
-from mission_control.overlap import resolve_file_overlaps, topological_layers
-from mission_control.planner_context import build_planner_context, update_mission_state
-from mission_control.recursive_planner import (
+from autodev.config import ContinuousConfig, MissionConfig, PlannerConfig, SchedulerConfig, TargetConfig
+from autodev.continuous_planner import ContinuousPlanner
+from autodev.db import Database
+from autodev.models import Epoch, Handoff, Mission, Plan, WorkUnit
+from autodev.overlap import resolve_file_overlaps, topological_layers
+from autodev.planner_context import build_planner_context, update_mission_state
+from autodev.recursive_planner import (
 	PlannerResult,
 	RecursivePlanner,
 	_is_parse_fallback,
@@ -228,7 +228,7 @@ class TestInvokePlannerLlm:
 		mock_proc.returncode = 1
 		mock_proc.communicate.return_value = (b"", b"Error occurred")
 
-		with patch("mission_control.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc):
+		with patch("autodev.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc):
 			result = await planner._invoke_planner_llm("Test objective")
 
 		assert result.type == "leaves"
@@ -248,7 +248,7 @@ class TestInvokePlannerLlm:
 		mock_proc.returncode = 0
 		mock_proc.communicate.return_value = (response.encode(), b"")
 
-		with patch("mission_control.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc):
+		with patch("autodev.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc):
 			result = await planner._invoke_planner_llm("Test objective")
 
 		assert result.type == "leaves"
@@ -265,7 +265,7 @@ class TestInvokePlannerLlm:
 		mock_proc.kill = MagicMock()
 		mock_proc.wait = AsyncMock()
 
-		with patch("mission_control.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc):
+		with patch("autodev.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc):
 			result = await planner._invoke_planner_llm("Test objective")
 
 		assert result.type == "leaves"
@@ -288,7 +288,7 @@ class TestInvokePlannerLlm:
 		mock_proc.communicate.return_value = (response.encode(), b"")
 
 		with patch(
-			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
+			"autodev.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		) as mock_exec:
 			result = await planner._invoke_planner_llm("obj with $() backticks")
@@ -327,7 +327,7 @@ class TestPlannerRetry:
 		mock_proc2.communicate.return_value = (valid_json.encode(), b"")
 
 		with patch(
-			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
+			"autodev.recursive_planner.asyncio.create_subprocess_exec",
 			side_effect=[mock_proc1, mock_proc2],
 		) as mock_exec:
 			result = await planner._invoke_planner_llm("Test objective")
@@ -350,7 +350,7 @@ class TestPlannerRetry:
 		mock_proc2.communicate.return_value = (b"garbage output 2", b"")
 
 		with patch(
-			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
+			"autodev.recursive_planner.asyncio.create_subprocess_exec",
 			side_effect=[mock_proc1, mock_proc2],
 		) as mock_exec:
 			result = await planner._invoke_planner_llm("Test objective")
@@ -370,7 +370,7 @@ class TestPlannerRetry:
 		mock_proc.communicate.return_value = (b"", b"Error occurred")
 
 		with patch(
-			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
+			"autodev.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		) as mock_exec:
 			result = await planner._invoke_planner_llm("Test objective")
@@ -391,7 +391,7 @@ class TestPlannerRetry:
 		mock_proc.wait = AsyncMock()
 
 		with patch(
-			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
+			"autodev.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		) as mock_exec:
 			result = await planner._invoke_planner_llm("Test objective")
@@ -608,7 +608,7 @@ class TestSubprocessCwdAssertion:
 		mock_proc.communicate.return_value = (response.encode(), b"")
 
 		with patch(
-			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
+			"autodev.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		) as mock_exec:
 			await planner._run_planner_subprocess("test prompt")
@@ -871,7 +871,7 @@ class TestCausalContextAndSnapshot:
 		mock_proc.returncode = 0
 		mock_proc.communicate.return_value = (response.encode(), b"")
 
-		with patch("mission_control.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc):
+		with patch("autodev.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc):
 			await planner._invoke_planner_llm("obj")
 
 		prompt = mock_proc.communicate.call_args[1]["input"].decode()
@@ -891,7 +891,7 @@ class TestCausalContextAndSnapshot:
 		mock_proc.returncode = 0
 		mock_proc.communicate.return_value = (response.encode(), b"")
 
-		with patch("mission_control.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc):
+		with patch("autodev.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc):
 			await planner._invoke_planner_llm("obj")
 
 		prompt = mock_proc.communicate.call_args[1]["input"].decode()
@@ -913,7 +913,7 @@ class TestCausalContextAndSnapshot:
 		mock_proc.returncode = 0
 		mock_proc.communicate.return_value = (response.encode(), b"")
 
-		with patch("mission_control.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc):
+		with patch("autodev.recursive_planner.asyncio.create_subprocess_exec", return_value=mock_proc):
 			await planner._invoke_planner_llm("Build auth system")
 
 		prompt = mock_proc.communicate.call_args[1]["input"].decode()
@@ -937,7 +937,7 @@ class TestCausalContextAndSnapshot:
 		mock_proc.communicate.return_value = (response.encode(), b"")
 
 		with patch(
-			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
+			"autodev.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		) as mock_exec:
 			await planner._run_planner_subprocess("test prompt")
@@ -971,7 +971,7 @@ class TestPerComponentModelUsage:
 		mock_proc.communicate.return_value = (response.encode(), b"")
 
 		with patch(
-			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
+			"autodev.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		) as mock_exec:
 			await planner._run_planner_subprocess("test prompt")
@@ -998,7 +998,7 @@ class TestPerComponentModelUsage:
 		mock_proc.communicate.return_value = (response.encode(), b"")
 
 		with patch(
-			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
+			"autodev.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		) as mock_exec:
 			await planner._run_planner_subprocess("test prompt")
@@ -1025,7 +1025,7 @@ class TestPerComponentModelUsage:
 		mock_proc.communicate.return_value = (response.encode(), b"")
 
 		with patch(
-			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
+			"autodev.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		) as mock_exec:
 			await planner._run_planner_subprocess("test prompt")
@@ -1052,7 +1052,7 @@ class TestPerComponentModelUsage:
 		mock_proc.communicate.return_value = (response.encode(), b"")
 
 		with patch(
-			"mission_control.recursive_planner.asyncio.create_subprocess_exec",
+			"autodev.recursive_planner.asyncio.create_subprocess_exec",
 			return_value=mock_proc,
 		) as mock_exec:
 			await planner._run_planner_subprocess("test prompt")

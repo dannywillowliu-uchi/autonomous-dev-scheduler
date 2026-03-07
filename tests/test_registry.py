@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from mission_control.registry import ProjectRegistry
+from autodev.registry import ProjectRegistry
 
 
 @pytest.fixture
@@ -20,7 +20,7 @@ def registry(tmp_path):
 @pytest.fixture
 def sample_config(tmp_path):
 	"""Create a minimal config file."""
-	config = tmp_path / "mission-control.toml"
+	config = tmp_path / "autodev.toml"
 	config.write_text(
 		'[target]\nname = "test"\npath = "."\nbranch = "main"\nobjective = ""\n'
 		'[target.verification]\ncommand = "echo ok"\ntimeout = 60\n'
@@ -30,7 +30,7 @@ def sample_config(tmp_path):
 		"[scheduler.parallel]\nnum_workers = 2\n"
 		"[rounds]\nmax_rounds = 5\nstall_threshold = 3\n"
 		"[planner]\n"
-		"[green_branch]\nworking_branch = \"mc/working\"\ngreen_branch = \"mc/green\"\n"
+		"[green_branch]\nworking_branch = \"autodev/working\"\ngreen_branch = \"autodev/green\"\n"
 		'[backend]\ntype = "local"\n'
 	)
 	return config
@@ -49,7 +49,7 @@ class TestProjectRegistry:
 
 	def test_register_derives_db_path(self, registry, sample_config):
 		project = registry.register(name="test", config_path=str(sample_config))
-		assert project.db_path.endswith("mission-control.db")
+		assert project.db_path.endswith("autodev.db")
 
 	def test_register_duplicate_name_fails(self, registry, sample_config):
 		registry.register(name="test", config_path=str(sample_config))
@@ -124,10 +124,10 @@ class TestProjectRegistry:
 
 	def test_get_project_status_with_mission(self, registry, sample_config, tmp_path):
 		# Create a project DB with a mission
-		from mission_control.db import Database
-		from mission_control.models import Mission
+		from autodev.db import Database
+		from autodev.models import Mission
 
-		db_path = tmp_path / "mission-control.db"
+		db_path = tmp_path / "autodev.db"
 		db = Database(db_path)
 		mission = Mission(objective="build stuff", status="running", total_rounds=3, final_score=0.7)
 		db.insert_mission(mission)

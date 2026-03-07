@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-from mission_control.config import MissionConfig, TargetConfig, VerificationConfig, VerificationNodeConfig
-from mission_control.models import VerificationNodeKind, VerificationReport, VerificationResult
-from mission_control.state import run_verification_nodes, snapshot_project_health
+from autodev.config import MissionConfig, TargetConfig, VerificationConfig, VerificationNodeConfig
+from autodev.models import VerificationNodeKind, VerificationReport, VerificationResult
+from autodev.state import run_verification_nodes, snapshot_project_health
 
 
 class TestVerificationResult:
@@ -92,7 +92,7 @@ class TestRunVerificationNodes:
 		)
 
 		mock_result = {"output": "10 passed in 0.1s", "returncode": 0}
-		with patch("mission_control.state._run_command", new_callable=AsyncMock, return_value=mock_result):
+		with patch("autodev.state._run_command", new_callable=AsyncMock, return_value=mock_result):
 			incremental = await run_verification_nodes(config, "/tmp")
 
 		report = incremental.report
@@ -120,7 +120,7 @@ class TestRunVerificationNodes:
 			else:
 				return {"output": "All checks passed", "returncode": 0}
 
-		with patch("mission_control.state._run_command", side_effect=mock_run):
+		with patch("autodev.state._run_command", side_effect=mock_run):
 			incremental = await run_verification_nodes(config, "/tmp")
 
 		report = incremental.report
@@ -147,7 +147,7 @@ class TestRunVerificationNodes:
 			else:
 				return {"output": ">> Issue: something bad", "returncode": 1}
 
-		with patch("mission_control.state._run_command", side_effect=mock_run):
+		with patch("autodev.state._run_command", side_effect=mock_run):
 			incremental = await run_verification_nodes(config, "/tmp")
 
 		report = incremental.report
@@ -169,7 +169,7 @@ class TestBackwardCompat:
 			"output": "10 passed, 1 failed in 0.5s\nsrc/foo.py:1:1: E501 Line too long",
 			"returncode": 1,
 		}
-		with patch("mission_control.state._run_command", new_callable=AsyncMock, return_value=mock_result):
+		with patch("autodev.state._run_command", new_callable=AsyncMock, return_value=mock_result):
 			snapshot = await snapshot_project_health(config, "/tmp")
 
 		assert snapshot.test_total == 11

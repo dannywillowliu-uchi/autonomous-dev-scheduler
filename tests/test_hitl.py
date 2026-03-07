@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mission_control.config import MissionConfig
-from mission_control.green_branch import GreenBranchManager
-from mission_control.hitl import ApprovalGate, ApprovalRequest
+from autodev.config import MissionConfig
+from autodev.green_branch import GreenBranchManager
+from autodev.hitl import ApprovalGate, ApprovalRequest
 
 
 def _make_config(tmp_path: Path, push_enabled: bool = False, merge_enabled: bool = False) -> MissionConfig:
@@ -137,7 +137,7 @@ class TestTelegramPolling:
 			}],
 		}
 
-		with patch("mission_control.hitl.httpx.AsyncClient") as mock_client_cls:
+		with patch("autodev.hitl.httpx.AsyncClient") as mock_client_cls:
 			mock_client = AsyncMock()
 			mock_client.get.return_value = mock_response
 			mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -176,7 +176,7 @@ class TestTelegramPolling:
 			}],
 		}
 
-		with patch("mission_control.hitl.httpx.AsyncClient") as mock_client_cls:
+		with patch("autodev.hitl.httpx.AsyncClient") as mock_client_cls:
 			mock_client = AsyncMock()
 			mock_client.get.return_value = mock_response
 			mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -237,7 +237,7 @@ class TestConcurrentApproval:
 			# Subsequent polls: empty (both should have resolved by now)
 			return make_response([])
 
-		with patch("mission_control.hitl.httpx.AsyncClient") as mock_client_cls:
+		with patch("autodev.hitl.httpx.AsyncClient") as mock_client_cls:
 			mock_client = AsyncMock()
 			mock_client.get = AsyncMock(side_effect=fake_get)
 			mock_client.__aenter__ = AsyncMock(return_value=mock_client)

@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mission_control.config import PricingConfig, load_config
-from mission_control.token_parser import TokenUsage, compute_token_cost, parse_stream_json
+from autodev.config import PricingConfig, load_config
+from autodev.token_parser import TokenUsage, compute_token_cost, parse_stream_json
 
 
 class TestParseStreamJson:
@@ -70,7 +70,7 @@ class TestParseStreamJson:
 			"content": [
 				{
 					"type": "text",
-					"text": 'Done.\nMC_RESULT:{"status":"completed","summary":"all good","commits":["abc123"]}',
+					"text": 'Done.\nAD_RESULT:{"status":"completed","summary":"all good","commits":["abc123"]}',
 				},
 			],
 		}
@@ -141,7 +141,7 @@ class TestComputeTokenCost:
 
 class TestPricingConfig:
 	def test_toml_parsing(self, tmp_path: Path) -> None:
-		toml = tmp_path / "mission-control.toml"
+		toml = tmp_path / "autodev.toml"
 		toml.write_text("""\
 [target]
 name = "test"
@@ -163,8 +163,8 @@ cache_read_per_million = 0.6
 class TestTokenColumnMigration:
 	def test_insert_and_read_tokens(self) -> None:
 		"""Token fields survive insert/read round-trip."""
-		from mission_control.db import Database
-		from mission_control.models import Plan, WorkUnit
+		from autodev.db import Database
+		from autodev.models import Plan, WorkUnit
 		db = Database(":memory:")
 		plan = Plan(objective="test")
 		db.insert_plan(plan)
@@ -179,8 +179,8 @@ class TestTokenColumnMigration:
 
 	def test_update_tokens(self) -> None:
 		"""Token fields are updated correctly."""
-		from mission_control.db import Database
-		from mission_control.models import Plan, WorkUnit
+		from autodev.db import Database
+		from autodev.models import Plan, WorkUnit
 		db = Database(":memory:")
 		plan = Plan(objective="test")
 		db.insert_plan(plan)
@@ -199,8 +199,8 @@ class TestTokenColumnMigration:
 
 	def test_unit_event_tokens_round_trip(self) -> None:
 		"""UnitEvent token fields survive insert/read."""
-		from mission_control.db import Database
-		from mission_control.models import Epoch, Mission, Plan, UnitEvent, WorkUnit
+		from autodev.db import Database
+		from autodev.models import Epoch, Mission, Plan, UnitEvent, WorkUnit
 		db = Database(":memory:")
 		mission = Mission(objective="test")
 		db.insert_mission(mission)
@@ -228,15 +228,15 @@ class TestTokenColumnMigration:
 
 class TestTokenUsageByEpoch:
 	def test_aggregation(self) -> None:
-		from mission_control.db import Database
-		from mission_control.models import Epoch, Mission, WorkUnit
+		from autodev.db import Database
+		from autodev.models import Epoch, Mission, WorkUnit
 		db = Database(":memory:")
 		mission = Mission(objective="test")
 		db.insert_mission(mission)
 		epoch = Epoch(mission_id=mission.id, number=1)
 		db.insert_epoch(epoch)
 		# Insert work units with tokens linked to epoch
-		from mission_control.models import Plan
+		from autodev.models import Plan
 		plan = Plan(objective="test")
 		db.insert_plan(plan)
 		wu1 = WorkUnit(plan_id=plan.id, epoch_id=epoch.id, input_tokens=1000, output_tokens=500)
