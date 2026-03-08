@@ -1,6 +1,6 @@
 # autodev -- Claude Code Project Instructions
 
-Long-running autonomous development framework. Spawns Claude Code sessions as subprocesses, manages state in SQLite, discovers work by running code, reviews output algorithmically.
+Autonomous development framework. Spawns a driving planner that continuously dispatches parallel Claude Code agents, learns from outcomes, and loops until the objective is met. Default mode is swarm (real-time driving planner). Legacy mission mode (epoch-based) is still supported.
 
 ## Verification
 
@@ -19,7 +19,18 @@ Before ANY commit, run:
 - `workspace.py` -- Workspace management and directory setup
 - `path_security.py` -- Path validation and directory traversal prevention
 
-### Mission Mode (Continuous) -- the primary execution mode
+### Swarm Mode (default)
+- `swarm/controller.py` -- Agent lifecycle, task pool, team inbox messaging, subprocess spawning
+- `swarm/planner.py` -- Driving planner: async LLM loop (observe -> reason -> decide -> execute)
+- `swarm/models.py` -- Swarm data models (AgentRole, AgentStatus, TaskStatus, DecisionType, SwarmState)
+- `swarm/prompts.py` -- Planner system prompt, cycle prompt, initial planning prompt
+- `swarm/worker_prompt.py` -- Worker prompt builder with inbox reporting instructions
+- `swarm/context.py` -- Context synthesizer: builds SwarmState, renders for planner, reads team inboxes
+- `swarm/stagnation.py` -- Stagnation detection (flat tests, rising cost, high failure rate) and pivot suggestions
+- `swarm/learnings.py` -- Persistent cross-run learnings in `.autodev-swarm-learnings.md`
+- `swarm/tui.py` -- Rich-based TUI dashboard (agents, tasks, activity feed, sparklines)
+
+### Mission Mode (legacy)
 - `continuous_controller.py` -- Event-driven loop: dispatch + completion processor via asyncio.Queue
 - `deliberative_planner.py` -- Ambitious planner + supplementary critic: planner proposes (with web search + project context), critic does feasibility review, iterates until approved
 - `recursive_planner.py` -- Flat LLM-based planner: single-call decomposition into work units via <!-- PLAN --> block (fallback when deliberation disabled)
@@ -72,17 +83,6 @@ Before ANY commit, run:
 - `heartbeat.py` -- Time-based progress monitor (checks merge activity, sends Telegram alerts)
 - `notifier.py` -- Telegram notifications (mission start/end, merge conflicts, heartbeat)
 
-### Swarm Mode
-- `swarm/controller.py` -- Agent lifecycle, task pool, team inbox messaging, subprocess spawning
-- `swarm/planner.py` -- Driving planner: async LLM loop (observe -> reason -> decide -> execute)
-- `swarm/models.py` -- Swarm data models (AgentRole, AgentStatus, TaskStatus, DecisionType, SwarmState)
-- `swarm/prompts.py` -- Planner system prompt, cycle prompt, initial planning prompt
-- `swarm/worker_prompt.py` -- Worker prompt builder with inbox reporting instructions
-- `swarm/context.py` -- Context synthesizer: builds SwarmState, renders for planner, reads team inboxes
-- `swarm/stagnation.py` -- Stagnation detection (flat tests, rising cost, high failure rate) and pivot suggestions
-- `swarm/learnings.py` -- Persistent cross-run learnings in `.autodev-swarm-learnings.md`
-- `swarm/tui.py` -- Rich-based TUI dashboard (agents, tasks, activity feed, sparklines)
-
 ### Infrastructure
 - `dashboard/` -- TUI (textual) and web (FastAPI+HTMX) dashboards
 - `launcher.py` -- Mission subprocess launcher
@@ -93,7 +93,20 @@ Before ANY commit, run:
 
 ## Execution Flow
 
-### Mission mode
+### Swarm mode (default)
+1. Controller initializes team directory (~/.claude/teams/{team_name}/), creates inboxes
+2. DrivingPlanner runs initial planning: decompose objective, create tasks, spawn agents
+3. Main loop: monitor_agents() -> record_learnings() -> requeue_failed() -> build_state() -> plan_cycle() -> execute_decisions()
+4. Agents are Claude Code subprocesses with `--permission-mode auto` and `--max-turns 200`
+5. Agents report progress via team inbox files (JSON messages to team-lead.json)
+6. Planner reads inboxes each cycle for visibility into working agents
+7. Stagnation detection: flat test count -> research pivot, rising cost -> reduce agents, high failure -> diagnostic agent
+8. Learnings accumulate in `.autodev-swarm-learnings.md` (persists across runs)
+9. State written to `.autodev-swarm-state.json` each cycle for TUI dashboard
+10. Stopping: all tasks completed/failed and no active agents
+11. Kill guard: agents must be 5+ minutes old before planner can kill them (unless force=True)
+
+### Mission mode (legacy)
 1. Controller creates mission, initializes backend + green branch + deliberative planner
 2. Deliberation: planner proposes ambitious plan (with web search + project context) -> critic checks feasibility -> planner refines if needed (up to N rounds)
 3. batch_analyzer signals (hotspots, clusters) from the previous batch feed into the NEXT planning pass
@@ -106,19 +119,6 @@ Before ANY commit, run:
 10. Stopping: planner returns empty plan (objective met), heartbeat stall, wall time, or signal
 11. Final verification runs on autodev/green at mission end
 12. Chaining (--chain): critic proposes next objective, approval prompt, new mission starts
-
-### Swarm mode
-1. Controller initializes team directory (~/.claude/teams/{team_name}/), creates inboxes
-2. DrivingPlanner runs initial planning: decompose objective, create tasks, spawn agents
-3. Main loop: monitor_agents() -> record_learnings() -> requeue_failed() -> build_state() -> plan_cycle() -> execute_decisions()
-4. Agents are Claude Code subprocesses with `--permission-mode auto` and `--max-turns 200`
-5. Agents report progress via team inbox files (JSON messages to team-lead.json)
-6. Planner reads inboxes each cycle for visibility into working agents
-7. Stagnation detection: flat test count -> research pivot, rising cost -> reduce agents, high failure -> diagnostic agent
-8. Learnings accumulate in `.autodev-swarm-learnings.md` (persists across runs)
-9. State written to `.autodev-swarm-state.json` each cycle for TUI dashboard
-10. Stopping: all tasks completed/failed and no active agents
-11. Kill guard: agents must be 5+ minutes old before planner can kill them (unless force=True)
 
 ## Gotchas
 
