@@ -81,6 +81,11 @@ def build_parser() -> argparse.ArgumentParser:
 	swarm_tui = sub.add_parser("swarm-tui", help="Live TUI dashboard for swarm monitoring")
 	swarm_tui.add_argument("path", nargs="?", default=".", help="Project path (default: cwd)")
 
+	# autodev swarm-inject
+	swarm_inject = sub.add_parser("swarm-inject", help="Send a directive to a running swarm planner")
+	swarm_inject.add_argument("message", help="Directive message for the planner")
+	swarm_inject.add_argument("--config", default=DEFAULT_CONFIG, help="Config file path")
+
 	# autodev init
 	init_cmd = sub.add_parser("init", help="Initialize a autodev config")
 	init_cmd.add_argument("path", nargs="?", default=".")
@@ -1096,6 +1101,62 @@ def cmd_swarm(args: argparse.Namespace) -> int:
 	return 0
 
 
+def cmd_swarm_inject(args: argparse.Namespace) -> int:
+	"""Send a directive to a running swarm planner via the team-lead inbox."""
+	import fcntl
+	import json
+	import tempfile
+	from datetime import datetime, timezone
+
+	config = load_config(args.config)
+	team_name = f"swarm-{config.target.name}"
+	inbox_path = Path.home() / ".claude" / "teams" / team_name / "inboxes" / "team-lead.json"
+
+	if not inbox_path.parent.exists():
+		print(f"Error: no swarm inbox found at {inbox_path.parent}")
+		print("Is the swarm running?")
+		return 1
+
+	message = {
+		"type": "directive",
+		"from": "human",
+		"text": args.message,
+		"timestamp": datetime.now(timezone.utc).isoformat(),
+	}
+
+	lock_path = inbox_path.with_suffix(".lock")
+	try:
+		with open(lock_path, "w") as lock_file:
+			fcntl.flock(lock_file, fcntl.LOCK_EX)
+			try:
+				messages = json.loads(inbox_path.read_text()) if inbox_path.exists() else []
+				if not isinstance(messages, list):
+					messages = []
+			except (json.JSONDecodeError, OSError):
+				messages = []
+			messages.append(message)
+			tmp_fd, tmp_path = tempfile.mkstemp(dir=str(inbox_path.parent), suffix=".tmp")
+			try:
+				import os
+				os.write(tmp_fd, json.dumps(messages, indent=2).encode())
+				os.close(tmp_fd)
+				tmp_fd = None
+				os.rename(tmp_path, str(inbox_path))
+			except BaseException:
+				if tmp_fd is not None:
+					os.close(tmp_fd)
+				if Path(tmp_path).exists():
+					os.unlink(tmp_path)
+				raise
+	except OSError as e:
+		print(f"Error writing to inbox: {e}")
+		return 1
+
+	print(f"Directive sent to swarm planner: \"{args.message}\"")
+	print("The planner will see this on its next cycle.")
+	return 0
+
+
 def cmd_swarm_tui(args: argparse.Namespace) -> int:
 	"""Launch the swarm TUI dashboard."""
 	from autodev.swarm.tui import main as tui_main
@@ -1108,6 +1169,7 @@ COMMANDS = {
 	"history": cmd_history,
 	"mission": cmd_mission,
 	"swarm": cmd_swarm,
+	"swarm-inject": cmd_swarm_inject,
 	"swarm-tui": cmd_swarm_tui,
 	"init": cmd_init,
 	"dashboard": cmd_dashboard,

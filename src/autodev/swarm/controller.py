@@ -9,8 +9,11 @@ lives in the planner.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import logging
+import os
+import tempfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -53,6 +56,8 @@ class SwarmController:
 		config: MissionConfig,
 		swarm_config: SwarmConfig,
 		db: Database,
+		task_claim_timeout: float = 1800.0,
+		stalled_task_timeout: float = 600.0,
 	) -> None:
 		self._config = config
 		self._swarm_config = swarm_config
@@ -65,10 +70,18 @@ class SwarmController:
 		self._start_time = time.monotonic()
 		self._total_cost_usd = 0.0
 		self._running = False
+		self._dead_agent_history: list[SwarmAgent] = []
+		self._max_dead_history = 50
+		self._task_claim_timeout = task_claim_timeout
+		self._stalled_task_timeout = stalled_task_timeout
 
 	@property
 	def team_name(self) -> str:
 		return self._team_name
+
+	@property
+	def dead_agent_history(self) -> list[SwarmAgent]:
+		return list(self._dead_agent_history)
 
 	@property
 	def agents(self) -> list[SwarmAgent]:
@@ -113,6 +126,7 @@ class SwarmController:
 			core_test_results=core_test_results,
 			total_cost_usd=self._total_cost_usd,
 			wall_time_seconds=wall_time,
+			dead_agent_history=self.dead_agent_history,
 		)
 
 	def render_state(self, state: SwarmState) -> str:
@@ -120,16 +134,75 @@ class SwarmController:
 		return self._context.render_for_planner(state)
 
 	async def execute_decisions(self, decisions: list[PlannerDecision]) -> list[dict[str, Any]]:
-		"""Execute a list of planner decisions. Returns results for each."""
+		"""Execute a list of planner decisions. Returns results for each.
+
+		Tracks tasks created during this batch so that spawn decisions
+		without a valid task_id can be auto-linked to the correct task.
+		"""
 		results = []
+		# Track task IDs created in this batch (in execution order) so
+		# spawns can reference tasks that didn't exist when the planner
+		# generated its response.
+		batch_created_task_ids: list[str] = []
+
 		for decision in sorted(decisions, key=lambda d: d.priority, reverse=True):
 			try:
+				# Auto-resolve spawn task_id from batch-created tasks
+				if decision.type == DecisionType.SPAWN:
+					self._resolve_spawn_task_id(decision.payload, batch_created_task_ids)
+
 				result = await self._execute_one(decision)
 				results.append({"decision": decision.type.value, "success": True, "result": result})
+
+				# Track tasks created in this batch
+				if decision.type == DecisionType.CREATE_TASK and results[-1]["success"]:
+					task_id = result.get("task_id")
+					if task_id:
+						batch_created_task_ids.append(task_id)
 			except Exception as e:
 				logger.error("Failed to execute decision %s: %s", decision.type, e)
 				results.append({"decision": decision.type.value, "success": False, "error": str(e)})
 		return results
+
+	def _resolve_spawn_task_id(
+		self, payload: dict[str, Any], batch_created_task_ids: list[str]
+	) -> None:
+		"""Auto-resolve a spawn's task_id when it doesn't match any task.
+
+		When the planner creates tasks and spawns agents in the same batch,
+		the auto-generated task IDs aren't known to the planner. This method
+		finds the right task by checking batch-created tasks first, then
+		falling back to unclaimed PENDING tasks in the pool.
+		"""
+		task_id = payload.get("task_id")
+		if task_id and task_id in self._tasks:
+			return  # Already valid
+
+		# Try unclaimed batch-created tasks (in order)
+		for tid in batch_created_task_ids:
+			task = self._tasks.get(tid)
+			if task and task.status == TaskStatus.PENDING and not task.claimed_by:
+				if task_id:
+					logger.info(
+						"Resolved spawn task_id %r -> %s (%s)",
+						task_id, tid, task.title,
+					)
+				payload["task_id"] = tid
+				return
+
+		# Fallback: find any unclaimed PENDING task in the pool.
+		# This triggers when task_id is empty OR when it's an invalid ID
+		# that doesn't match any real task (common when planners reference
+		# auto-generated IDs they don't know).
+		if not task_id or task_id not in self._tasks:
+			for task in self._tasks.values():
+				if task.status == TaskStatus.PENDING and not task.claimed_by:
+					logger.info(
+						"Auto-assigned spawn %r to unclaimed task %s (%s)",
+						payload.get("name", "?"), task.id, task.title,
+					)
+					payload["task_id"] = task.id
+					return
 
 	async def _execute_one(self, decision: PlannerDecision) -> dict[str, Any]:
 		"""Execute a single planner decision."""
@@ -173,6 +246,14 @@ class SwarmController:
 		if task_id and task_id in self._tasks:
 			self._tasks[task_id].status = TaskStatus.CLAIMED
 			self._tasks[task_id].claimed_by = agent.id
+			self._tasks[task_id].claimed_at = _now_iso()
+		elif task_id:
+			logger.warning(
+				"Agent %s spawned with invalid task_id %r (not in task pool). "
+				"Task will NOT be linked -- agent work won't update any task status.",
+				name, task_id,
+			)
+			agent.current_task_id = None
 
 		worker_prompt = self._build_worker_prompt(agent, prompt)
 		proc = await self._spawn_claude_session(agent, worker_prompt)
@@ -182,6 +263,7 @@ class SwarmController:
 			logger.info("Spawned agent %s (%s) for task %s", agent.name, role.value, task_id)
 		else:
 			agent.status = AgentStatus.DEAD
+			agent.death_time = time.monotonic()
 			logger.error("Failed to spawn agent %s", agent.name)
 
 		return {"agent_id": agent.id, "name": agent.name, "status": agent.status.value}
@@ -226,6 +308,7 @@ class SwarmController:
 				proc.kill()
 
 		agent.status = AgentStatus.DEAD
+		agent.death_time = time.monotonic()
 		if agent.current_task_id and agent.current_task_id in self._tasks:
 			task = self._tasks[agent.current_task_id]
 			if task.status in (TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS):
@@ -340,18 +423,40 @@ class SwarmController:
 	# -- Inbox I/O --
 
 	def _write_to_inbox(self, agent_name: str, message: dict[str, Any]) -> None:
-		"""Write a message to an agent's inbox."""
+		"""Write a message to an agent's inbox using atomic file operations."""
 		inbox_path = Path.home() / ".claude" / "teams" / self._team_name / "inboxes" / f"{agent_name}.json"
+		inbox_path.parent.mkdir(parents=True, exist_ok=True)
+		lock_path = inbox_path.with_suffix(".lock")
+		tmp_fd = None
+		tmp_path = None
 		try:
-			inbox_path.parent.mkdir(parents=True, exist_ok=True)
-			messages = json.loads(inbox_path.read_text()) if inbox_path.exists() else []
-		except (json.JSONDecodeError, OSError):
-			messages = []
-		try:
-			messages.append({**message, "timestamp": _now_iso()})
-			inbox_path.write_text(json.dumps(messages, indent=2))
+			with open(lock_path, "w") as lock_file:
+				fcntl.flock(lock_file, fcntl.LOCK_EX)
+				try:
+					messages = json.loads(inbox_path.read_text()) if inbox_path.exists() else []
+					if not isinstance(messages, list):
+						messages = []
+				except (json.JSONDecodeError, OSError):
+					messages = []
+				messages.append({**message, "timestamp": _now_iso()})
+				tmp_fd, tmp_path = tempfile.mkstemp(
+					dir=str(inbox_path.parent), suffix=".tmp"
+				)
+				os.write(tmp_fd, json.dumps(messages, indent=2).encode())
+				os.close(tmp_fd)
+				tmp_fd = None
+				os.rename(tmp_path, str(inbox_path))
+				tmp_path = None
 		except OSError as e:
 			logger.warning("Could not write to inbox %s: %s", agent_name, e)
+		finally:
+			if tmp_fd is not None:
+				os.close(tmp_fd)
+			if tmp_path is not None:
+				try:
+					os.unlink(tmp_path)
+				except OSError:
+					pass
 
 	def read_leader_inbox(self) -> list[dict[str, Any]]:
 		"""Read messages sent to the team leader."""
@@ -419,24 +524,39 @@ class SwarmController:
 				continue
 
 			if proc.returncode is not None:
-				stdout_bytes = await proc.stdout.read() if proc.stdout else b""
-				output = stdout_bytes.decode(errors="replace")
+				try:
+					stdout_bytes = await proc.stdout.read() if proc.stdout else b""
+					output = stdout_bytes.decode(errors="replace")
+				except Exception:
+					output = ""
 
 				result = self._parse_ad_result(output)
-				status = result.get("status", "failed") if result else "failed"
+				if result:
+					status = result.get("status", "failed")
+				else:
+					status = "failed"
+					result = {
+						"status": "failed",
+						"summary": f"Process exited (code {proc.returncode}) without emitting AD_RESULT",
+						"commits": [],
+						"files_changed": [],
+					}
 
 				agent.status = AgentStatus.DEAD
+				agent.death_time = time.monotonic()
 				if status == "completed":
 					agent.tasks_completed += 1
 				else:
 					agent.tasks_failed += 1
 
-				if agent.current_task_id and agent.current_task_id in self._tasks:
-					task = self._tasks[agent.current_task_id]
+				task = self._resolve_agent_task(agent)
+				if task:
 					task.status = TaskStatus.COMPLETED if status == "completed" else TaskStatus.FAILED
-					task.result_summary = result.get("summary", "") if result else output[-500:]
+					task.result_summary = result.get("summary", "")
 					task.completed_at = _now_iso()
 					task.attempt_count += 1
+					if task.status == TaskStatus.FAILED:
+						task.claimed_by = None
 
 				events.append({
 					"type": "agent_completed",
@@ -447,31 +567,237 @@ class SwarmController:
 				})
 				del self._processes[agent_id]
 
+		self._recover_orphaned_tasks(events)
+		self._check_claim_timeouts(events)
+		self._cleanup_dead_agents()
 		return events
 
-	def _parse_ad_result(self, output: str) -> dict[str, Any] | None:
-		"""Parse AD_RESULT JSON from worker stdout."""
+	def _resolve_agent_task(self, agent: SwarmAgent) -> SwarmTask | None:
+		"""Find the task associated with an agent.
+
+		Primary: use agent.current_task_id for direct lookup.
+		Fallback: search for a task with claimed_by == agent.id.
+
+		This fallback handles cases where:
+		- current_task_id was set to a placeholder that didn't match
+		- current_task_id is None but the task was claimed through another path
+		"""
+		if agent.current_task_id and agent.current_task_id in self._tasks:
+			return self._tasks[agent.current_task_id]
+
+		# Fallback: search by claimed_by
+		for task in self._tasks.values():
+			if task.claimed_by == agent.id and task.status in (
+				TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS
+			):
+				logger.info(
+					"Resolved task for agent %s via claimed_by fallback: %s (%s)",
+					agent.name, task.id, task.title,
+				)
+				return task
+
+		if agent.current_task_id:
+			logger.warning(
+				"Agent %s has current_task_id %s but no matching task found",
+				agent.name, agent.current_task_id,
+			)
+		return None
+
+	def _recover_orphaned_tasks(self, events: list[dict[str, Any]]) -> None:
+		"""Reset CLAIMED tasks to PENDING when their agent is dead or missing.
+
+		A task is considered orphaned when:
+		- It's in CLAIMED or IN_PROGRESS status
+		- Its claiming agent is dead, missing from the agent pool, or has no process
+		- It has been claimed for longer than _stalled_task_timeout
+		"""
+		from datetime import datetime, timezone
+
+		now = datetime.now(timezone.utc)
+		for task in self._tasks.values():
+			if task.status not in (TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS):
+				continue
+			if not task.claimed_by:
+				# No agent claim -- reset immediately
+				task.status = TaskStatus.PENDING
+				continue
+			if not task.claimed_at:
+				continue
+
+			agent = self._agents.get(task.claimed_by)
+			agent_alive = agent is not None and agent.status not in (AgentStatus.DEAD, AgentStatus.SHUTTING_DOWN)
+			if agent_alive:
+				continue
+
+			# Agent is dead or missing -- check if enough time has passed
+			try:
+				claimed = datetime.fromisoformat(task.claimed_at)
+				elapsed = (now - claimed).total_seconds()
+			except (ValueError, TypeError):
+				continue
+
+			if elapsed < self._stalled_task_timeout:
+				continue
+
+			old_status = task.status
+			task.status = TaskStatus.PENDING
+			task.claimed_by = None
+			task.claimed_at = None
+
+			events.append({
+				"type": "orphaned_task_recovered",
+				"task_id": task.id,
+				"task_title": task.title,
+				"agent_id": agent.id if agent else None,
+				"elapsed_seconds": elapsed,
+				"previous_status": old_status.value,
+			})
+			logger.warning(
+				"Recovered orphaned task %s (%s): agent dead/missing after %.0fs",
+				task.id, task.title, elapsed,
+			)
+
+	def _check_claim_timeouts(self, events: list[dict[str, Any]]) -> None:
+		"""Mark tasks as FAILED if they've been CLAIMED beyond the timeout."""
+		from datetime import datetime, timezone
+
+		now = datetime.now(timezone.utc)
+		for task in self._tasks.values():
+			if task.status not in (TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS):
+				continue
+			if not task.claimed_at:
+				continue
+			try:
+				claimed = datetime.fromisoformat(task.claimed_at)
+				elapsed = (now - claimed).total_seconds()
+			except (ValueError, TypeError):
+				continue
+			if elapsed <= self._task_claim_timeout:
+				continue
+
+			agent_id = task.claimed_by
+			task.status = TaskStatus.FAILED
+			task.result_summary = f"Claim timeout after {elapsed:.0f}s (limit {self._task_claim_timeout:.0f}s)"
+			task.completed_at = _now_iso()
+			task.attempt_count += 1
+			task.claimed_by = None
+
+			if agent_id and agent_id in self._agents:
+				self._agents[agent_id].status = AgentStatus.DEAD
+				self._agents[agent_id].tasks_failed += 1
+			if agent_id and agent_id in self._processes:
+				proc = self._processes[agent_id]
+				if proc.returncode is None:
+					proc.kill()
+
+			events.append({
+				"type": "claim_timeout",
+				"task_id": task.id,
+				"task_title": task.title,
+				"agent_id": agent_id,
+				"elapsed_seconds": elapsed,
+			})
+			logger.warning(
+				"Task %s (%s) claim timed out after %.0fs",
+				task.id, task.title, elapsed,
+			)
+
+	def _cleanup_dead_agents(self, dead_threshold_seconds: float = 300.0) -> None:
+		"""Remove agents that have been DEAD for longer than the threshold.
+
+		Moves cleaned-up agents to a bounded history list for context rendering.
+		"""
+		now = time.monotonic()
+		to_remove: list[str] = []
+
+		for agent_id, agent in self._agents.items():
+			if agent.status != AgentStatus.DEAD:
+				continue
+			if agent.death_time is None:
+				# Legacy agent without death_time -- set it now
+				agent.death_time = now
+				continue
+			if now - agent.death_time >= dead_threshold_seconds:
+				to_remove.append(agent_id)
+
+		for agent_id in to_remove:
+			agent = self._agents.pop(agent_id)
+			self._processes.pop(agent_id, None)
+			self._dead_agent_history.append(agent)
+			logger.debug("Cleaned up dead agent %s (%s)", agent.name, agent_id)
+
+		# Keep history bounded
+		if len(self._dead_agent_history) > self._max_dead_history:
+			self._dead_agent_history = self._dead_agent_history[-self._max_dead_history:]
+
+	# 10 MB default cap on stdout read to prevent memory exhaustion
+	MAX_OUTPUT_SIZE = 10 * 1024 * 1024
+
+	def _parse_ad_result(self, output: str, *, max_output_size: int = 0) -> dict[str, Any] | None:
+		"""Parse AD_RESULT JSON from worker stdout.
+
+		Uses the *last* AD_RESULT marker (earlier ones may be from retries).
+		Validates that the parsed object contains a 'status' field and defaults
+		'summary' to "" when absent.
+		"""
+		limit = max_output_size or self.MAX_OUTPUT_SIZE
+		if len(output) > limit:
+			output = output[-limit:]
+
 		marker = "AD_RESULT:"
 		idx = output.rfind(marker)
 		if idx == -1:
 			return None
+
 		json_str = output[idx + len(marker):].strip()
+
+		# Find the end of the top-level JSON object via brace counting.
+		# Characters inside strings (including escaped quotes) are tracked
+		# so nested braces in string values don't confuse the counter.
+		brace_count = 0
+		end = 0
+		in_string = False
+		escape_next = False
+		for i, c in enumerate(json_str):
+			if escape_next:
+				escape_next = False
+				continue
+			if c == "\\" and in_string:
+				escape_next = True
+				continue
+			if c == '"' and not escape_next:
+				in_string = not in_string
+				continue
+			if in_string:
+				continue
+			if c == "{":
+				brace_count += 1
+			elif c == "}":
+				brace_count -= 1
+				if brace_count == 0:
+					end = i + 1
+					break
+
+		if end == 0:
+			logger.warning("AD_RESULT marker found but no valid JSON object follows")
+			return None
+
 		try:
-			brace_count = 0
-			end = 0
-			for i, c in enumerate(json_str):
-				if c == "{":
-					brace_count += 1
-				elif c == "}":
-					brace_count -= 1
-					if brace_count == 0:
-						end = i + 1
-						break
-			if end > 0:
-				return json.loads(json_str[:end])
-		except json.JSONDecodeError:
-			pass
-		return None
+			data = json.loads(json_str[:end])
+		except json.JSONDecodeError as exc:
+			logger.warning("AD_RESULT JSON parse failed: %s", exc)
+			return None
+
+		if not isinstance(data, dict):
+			logger.warning("AD_RESULT is not a JSON object")
+			return None
+
+		if "status" not in data:
+			logger.warning("AD_RESULT missing required 'status' field")
+			return None
+
+		data.setdefault("summary", "")
+		return data
 
 	def requeue_failed_tasks(self) -> list[str]:
 		"""Re-queue failed tasks that haven't exhausted their retry budget."""

@@ -94,6 +94,13 @@ Apply these when reasoning:
 - The default action should be WAIT, not kill+respawn. Patience is a virtue.
 - When in doubt, emit a single "wait" decision with duration 60-120 seconds.
 
+**Agent Death Interpretation:**
+- An agent with completed=1 that dies is a SUCCESS, not a failure. The agent finished its task and exited normally.
+- An agent with completed=0 and failed=1 that dies is a task failure -- consider retrying or researching.
+- An agent with completed=0 and failed=0 that dies was likely killed externally or crashed -- check for systemic issues.
+- Do NOT respawn agents to redo work that was already completed by a dead agent.
+- Check the "Completed Work Summary" section to see what dead agents accomplished before deciding next steps.
+
 **Stagnation Response:**
 - Same test count for 3+ cycles = wrong approach, not wrong execution
 - Same error across multiple agents = systemic issue, needs research not more implementation
