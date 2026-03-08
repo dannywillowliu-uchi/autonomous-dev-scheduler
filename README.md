@@ -1,8 +1,8 @@
 # autonomous-development
 
-Autonomous dev daemon that continuously improves a codebase toward a defined objective. Spawns parallel Claude Code workers, manages state in SQLite, and learns from its own outcomes across missions.
+Autonomous dev framework that continuously improves a codebase toward a defined objective. Two execution modes: **mission mode** (epoch-based orchestration with green branch merging) and **swarm mode** (real-time driving planner with parallel agents). Both spawn parallel Claude Code workers, manage state, and learn from outcomes.
 
-Point it at a repo with an objective and a verification command. It plans, executes, merges, verifies, and pushes -- in a loop -- until the objective is met or it stalls.
+Point it at a repo with an objective and a verification command. It plans, executes, verifies, and loops until the objective is met or it stalls.
 
 ## How it works
 
@@ -146,8 +146,12 @@ See [`autodev.toml.example`](autodev.toml.example) for the full annotated config
 > If installed via pip, use `mc` directly. If running from source, use `uv run mc`.
 
 ```bash
-# Run a mission
+# Run a mission (epoch-based orchestration)
 mc mission --config autodev.toml [--workers N] [--chain] [--approve-all]
+
+# Run a swarm (real-time driving planner + parallel agents)
+mc swarm --config autodev.toml
+mc swarm-tui --config autodev.toml    # Launch swarm with live TUI dashboard
 
 # Status and history
 mc status --config autodev.toml
@@ -156,7 +160,7 @@ mc history --config autodev.toml
 
 # Dashboards
 mc live --config autodev.toml [--port 8080]    # Web (FastAPI + HTMX)
-mc dashboard --config autodev.toml              # TUI
+mc dashboard --config autodev.toml              # TUI (mission mode)
 
 # Setup and diagnostics
 mc init --config autodev.toml
@@ -253,12 +257,22 @@ src/autodev/
 |   +-- sources.py            # HN, GitHub, arXiv feeds
 +-- dashboard/
 |   +-- live.py               # FastAPI + HTMX web dashboard
-|   +-- tui.py                # Terminal UI
+|   +-- tui.py                # Terminal UI (mission mode)
 |   +-- provider.py           # Dashboard data provider
 +-- backends/
 |   +-- local.py              # Local subprocess backend with workspace pool
 |   +-- ssh.py                # Remote SSH backend
 |   +-- container.py          # Container backend
++-- swarm/
+|   +-- controller.py         # Swarm controller: agent lifecycle, task pool, team messaging
+|   +-- planner.py            # Driving planner: observe -> reason -> decide -> execute loop
+|   +-- models.py             # Swarm data models (agents, tasks, decisions)
+|   +-- prompts.py            # Planner system/cycle prompts
+|   +-- worker_prompt.py      # Worker agent prompt builder with inbox instructions
+|   +-- context.py            # Context synthesizer: reads team inbox messages
+|   +-- stagnation.py         # Stagnation detection and pivot suggestions
+|   +-- learnings.py          # Persistent cross-run learnings (.autodev-swarm-learnings.md)
+|   +-- tui.py                # Swarm TUI dashboard with activity feed
 ```
 
 ## Key concepts
@@ -278,6 +292,42 @@ src/autodev/
 **Graceful degradation**: Circuit breakers track failure rates per component. When tripped, the system falls back to simpler strategies instead of failing outright. Adaptive concurrency adjusts worker count based on success rates.
 
 **Mission chaining**: With `--chain`, after a mission completes, a new objective is proposed and a new mission starts automatically.
+
+## Swarm mode
+
+Swarm mode (`mc swarm`) is a lighter-weight alternative to mission mode. Instead of epoch-based planning with green branch merging, it uses a real-time driving planner that continuously observes, reasons, and dispatches agents.
+
+```
+             Driving Planner
+                  |
+    observe state -> reason -> decide
+                  |
+    +-------------+-------------+
+    |             |             |
+ [Agent 1]   [Agent 2]   [Agent 3]
+  (worker)    (researcher)  (worker)
+    |             |             |
+    +--- team inbox messages ---+
+    |                           |
+    +---> planner reads <-------+
+```
+
+Key differences from mission mode:
+- **Real-time replanning**: Planner runs every 60s+ (not per-epoch), reacting to agent completions, failures, and stagnation signals
+- **Team messaging**: Agents report progress via file-based inboxes; planner reads these each cycle
+- **Stagnation detection**: Tracks test pass rates, completion counts, failure counts, and cost over time. Suggests pivots when metrics plateau
+- **Persistent learnings**: Accumulates discoveries, successful approaches, and failed approaches in `.autodev-swarm-learnings.md`. The planner reads this each cycle to avoid repeating mistakes across runs
+- **TUI dashboard**: `mc swarm-tui` shows agents, tasks, activity feed, and metrics in real time
+
+```toml
+# Swarm-specific config in autodev.toml
+[swarm]
+max_agents = 4
+min_agents = 1
+planner_cooldown = 30
+planner_model = "opus"
+stagnation_threshold = 5
+```
 
 ## Setting up a new project
 
@@ -354,6 +404,17 @@ uv run ruff check src/ tests/                             # Lint
 uv run mypy src/autodev --ignore-missing-imports  # Types
 ```
 
-## Example: C compiler (ongoing)
+## Example: C compiler
 
-We're using autodev to build a [C compiler](https://github.com/dannywillowliu-uchi/C_compiler_orchestrated) from scratch -- zero human-written code. With the core test feedback loop running against 225 real GCC torture tests, the planner autonomously identifies the highest-leverage compiler bugs each epoch and plans targeted fixes. Current status: 70/225 GCC torture tests passing, 2,800+ unit tests, growing each mission run.
+We used autodev to build a [C compiler](https://github.com/dannywillowliu-uchi/C_compiler_orchestrated) from scratch. Zero human-written compiler code. The core test feedback loop ran against GCC torture tests, and the planner autonomously identified the highest-leverage compiler bugs each epoch.
+
+| Metric | Value |
+|--------|-------|
+| Wall time | ~5 hours |
+| API cost | ~$55 |
+| Workers | 4 parallel |
+| Tests passing | 1,788 unit tests |
+| GCC torture tests | 221/221 (100%) |
+| Human-written compiler code | 0 lines |
+
+The final push from 216/221 to 221/221 was done using swarm mode, which autonomously diagnosed and fixed the remaining 5 torture test failures in a single run.
