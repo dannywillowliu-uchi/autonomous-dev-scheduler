@@ -90,14 +90,39 @@ You can communicate with the planner and peers via the team inbox system.
 
 To send a message to the planner:
 1. Read the current contents of `team-lead.json`
-2. Append your message object: {{"from": "{agent.name}", "type": "report|question|discovery|blocked", "text": "..."}}
+2. Append your message object (see format below)
 3. Write the updated array back
 
-Message types:
-- **report**: Status update on your work
-- **question**: Ask the planner for guidance
-- **discovery**: Share findings other agents should know
-- **blocked**: Signal you're stuck and need help
+### Structured Progress Reports
+
+When reporting progress, use this structured format so the planner can parse your status:
+
+```json
+{{
+  "from": "{agent.name}",
+  "type": "report",
+  "status": "working|blocked|completed",
+  "progress": "Brief description of current work",
+  "files_changed": ["src/foo.py", "tests/test_foo.py"],
+  "tests_passing": 42,
+  "error": "Only set when status is blocked -- describe the blocker",
+  "text": "Human-readable summary (always include this)"
+}}
+```
+
+**Required fields**: `from`, `type`, `text`
+**Structured fields** (include when applicable):
+- `status`: One of `working`, `blocked`, or `completed`
+- `progress`: Brief description of what you're doing right now
+- `files_changed`: List of files you've modified so far
+- `tests_passing`: Number of tests passing (if you've run tests)
+- `error`: Description of what's blocking you (when status is `blocked`)
+
+### Other Message Types
+
+- `"type": "question"` -- Ask the planner for guidance
+- `"type": "discovery"` -- Share findings other agents should know
+- `"type": "blocked"` -- Signal you're stuck and need help (include `error` field)
 
 **IMPORTANT: You MUST report progress to the planner.** The planner cannot see your \
 work until you finish. Send a "report" message to `team-lead.json` at these points:

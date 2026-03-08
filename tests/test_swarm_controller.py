@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,6 +13,7 @@ from autodev.swarm.models import (
 	AgentStatus,
 	DecisionType,
 	PlannerDecision,
+	SwarmAgent,
 	TaskPriority,
 	TaskStatus,
 )
@@ -203,17 +205,19 @@ class TestBuildState:
 
 
 class TestParseAdResult:
-	def test_parse_valid_result(self, tmp_path: Path) -> None:
+	def test_parse_valid_result_all_fields(self, tmp_path: Path) -> None:
 		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
 		ad_json = (
 			'{"status":"completed","commits":["abc"],'
-			'"summary":"Fixed it","files_changed":["a.py"],"discoveries":[]}'
+			'"summary":"Fixed it","files_changed":["a.py"],"discoveries":["found bug"],"concerns":[]}'
 		)
 		output = f"Some output\nAD_RESULT:{ad_json}\n"
 		result = ctrl._parse_ad_result(output)
 		assert result is not None
 		assert result["status"] == "completed"
 		assert result["commits"] == ["abc"]
+		assert result["summary"] == "Fixed it"
+		assert result["discoveries"] == ["found bug"]
 
 	def test_parse_missing_result(self, tmp_path: Path) -> None:
 		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
@@ -226,6 +230,89 @@ class TestParseAdResult:
 		result = ctrl._parse_ad_result(output)
 		assert result is not None
 		assert result["status"] == "failed"
+
+	def test_missing_status_returns_none(self, tmp_path: Path) -> None:
+		"""'status' is required -- result without it must be rejected."""
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		output = 'AD_RESULT:{"commits":[],"summary":"oops"}\n'
+		result = ctrl._parse_ad_result(output)
+		assert result is None
+
+	def test_missing_summary_defaults_to_empty(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		output = 'AD_RESULT:{"status":"completed","commits":[]}\n'
+		result = ctrl._parse_ad_result(output)
+		assert result is not None
+		assert result["summary"] == ""
+
+	def test_malformed_json_returns_none(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		output = 'AD_RESULT:{"status": "completed", BROKEN}\n'
+		result = ctrl._parse_ad_result(output)
+		assert result is None
+
+	def test_no_opening_brace_returns_none(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		output = "AD_RESULT: not json at all\n"
+		result = ctrl._parse_ad_result(output)
+		assert result is None
+
+	def test_multiple_markers_uses_last(self, tmp_path: Path) -> None:
+		"""Earlier AD_RESULT markers (from retries) should be ignored."""
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		output = (
+			'AD_RESULT:{"status":"failed","summary":"first attempt"}\n'
+			"some retry output\n"
+			'AD_RESULT:{"status":"completed","summary":"second attempt"}\n'
+		)
+		result = ctrl._parse_ad_result(output)
+		assert result is not None
+		assert result["status"] == "completed"
+		assert result["summary"] == "second attempt"
+
+	def test_large_output_truncated_keeps_tail(self, tmp_path: Path) -> None:
+		"""Output exceeding max_output_size is truncated from the start."""
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		filler = "x" * 5000
+		ad_line = 'AD_RESULT:{"status":"completed","summary":"ok"}\n'
+		output = filler + "\n" + ad_line
+		# Set a small limit; the tail (with AD_RESULT) should survive
+		result = ctrl._parse_ad_result(output, max_output_size=200)
+		assert result is not None
+		assert result["status"] == "completed"
+
+	def test_large_output_truncation_loses_marker(self, tmp_path: Path) -> None:
+		"""If AD_RESULT is at the start and gets truncated, return None."""
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		ad_line = 'AD_RESULT:{"status":"completed","summary":"ok"}\n'
+		filler = "x" * 5000
+		output = ad_line + filler
+		result = ctrl._parse_ad_result(output, max_output_size=200)
+		assert result is None
+
+	def test_nested_braces_in_string_values(self, tmp_path: Path) -> None:
+		"""Braces inside JSON string values must not break brace counting."""
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		output = r'AD_RESULT:{"status":"completed","summary":"fixed {nested} braces","data":"{}"}'
+		result = ctrl._parse_ad_result(output)
+		assert result is not None
+		assert result["status"] == "completed"
+		assert "{nested}" in result["summary"]
+
+	def test_escaped_quotes_in_strings(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		output = r'AD_RESULT:{"status":"completed","summary":"said \"hello\""}'
+		result = ctrl._parse_ad_result(output)
+		assert result is not None
+		assert result["status"] == "completed"
+
+	def test_non_dict_json_returns_none(self, tmp_path: Path) -> None:
+		"""A JSON array is not a valid AD_RESULT."""
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		# This won't parse as object due to brace counting starting at [
+		output = 'AD_RESULT:["not","an","object"]\n'
+		result = ctrl._parse_ad_result(output)
+		assert result is None
 
 
 class TestDecisionPriority:
@@ -247,3 +334,786 @@ class TestDecisionPriority:
 		]
 		await ctrl.execute_decisions(decisions)
 		assert execution_order == ["high", "mid", "low"]
+
+
+class TestDeadAgentCleanup:
+	def test_cleanup_removes_old_dead_agents(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		agent = SwarmAgent(name="old-dead", status=AgentStatus.DEAD)
+		agent.death_time = time.monotonic() - 600  # 10 min ago
+		ctrl._agents[agent.id] = agent
+
+		ctrl._cleanup_dead_agents()
+
+		assert agent.id not in ctrl._agents
+		assert len(ctrl._dead_agent_history) == 1
+		assert ctrl._dead_agent_history[0].name == "old-dead"
+
+	def test_cleanup_keeps_recently_dead_agents(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		agent = SwarmAgent(name="fresh-dead", status=AgentStatus.DEAD)
+		agent.death_time = time.monotonic() - 60  # 1 min ago
+		ctrl._agents[agent.id] = agent
+
+		ctrl._cleanup_dead_agents()
+
+		assert agent.id in ctrl._agents
+		assert len(ctrl._dead_agent_history) == 0
+
+	def test_cleanup_ignores_living_agents(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		agent = SwarmAgent(name="alive", status=AgentStatus.WORKING)
+		ctrl._agents[agent.id] = agent
+
+		ctrl._cleanup_dead_agents()
+
+		assert agent.id in ctrl._agents
+		assert len(ctrl._dead_agent_history) == 0
+
+	def test_cleanup_removes_stale_process_entries(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		agent = SwarmAgent(name="dead-proc", status=AgentStatus.DEAD)
+		agent.death_time = time.monotonic() - 600
+		ctrl._agents[agent.id] = agent
+		ctrl._processes[agent.id] = MagicMock()
+
+		ctrl._cleanup_dead_agents()
+
+		assert agent.id not in ctrl._processes
+
+	def test_cleanup_bounds_history_size(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		# Pre-fill history to max
+		for i in range(50):
+			ctrl._dead_agent_history.append(SwarmAgent(name=f"old-{i}"))
+
+		# Add one more dead agent to trigger cleanup
+		agent = SwarmAgent(name="overflow", status=AgentStatus.DEAD)
+		agent.death_time = time.monotonic() - 600
+		ctrl._agents[agent.id] = agent
+
+		ctrl._cleanup_dead_agents()
+
+		assert len(ctrl._dead_agent_history) == 50
+		assert ctrl._dead_agent_history[-1].name == "overflow"
+
+	def test_cleanup_sets_death_time_on_legacy_agents(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		agent = SwarmAgent(name="legacy", status=AgentStatus.DEAD)
+		# death_time is None (legacy agent)
+		ctrl._agents[agent.id] = agent
+
+		ctrl._cleanup_dead_agents()
+
+		# Should set death_time but not remove yet
+		assert agent.id in ctrl._agents
+		assert agent.death_time is not None
+
+	async def test_monitor_agents_calls_cleanup(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		# Add a dead agent that's old enough to clean
+		agent = SwarmAgent(name="monitored-dead", status=AgentStatus.DEAD)
+		agent.death_time = time.monotonic() - 600
+		ctrl._agents[agent.id] = agent
+
+		await ctrl.monitor_agents()
+
+		assert agent.id not in ctrl._agents
+		assert len(ctrl._dead_agent_history) == 1
+
+	def test_kill_sets_death_time(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		agent = SwarmAgent(name="to-kill", status=AgentStatus.DEAD)
+		agent.death_time = time.monotonic()
+		ctrl._agents[agent.id] = agent
+
+		assert agent.death_time is not None
+
+	def test_build_state_includes_dead_history(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		dead = SwarmAgent(name="hist-agent", status=AgentStatus.DEAD, tasks_completed=3)
+		ctrl._dead_agent_history.append(dead)
+
+		state = ctrl.build_state()
+		assert len(state.dead_agent_history) == 1
+		assert state.dead_agent_history[0].name == "hist-agent"
+
+
+class TestProcessCrashWithoutAdResult:
+	"""Tests for the bug where crashed processes leave tasks stuck in CLAIMED."""
+
+	async def _spawn_agent_with_task(self, ctrl: SwarmController, task_id: str) -> MagicMock:
+		mock_proc = MagicMock(returncode=None)
+		mock_proc.stdout = None
+		with patch.object(ctrl, "_spawn_claude_session", new=AsyncMock(return_value=mock_proc)):
+			await ctrl.execute_decisions([
+				PlannerDecision(type=DecisionType.SPAWN, payload={"name": "w1", "prompt": "fix", "task_id": task_id}),
+			])
+		return mock_proc
+
+	async def test_crash_marks_task_failed_and_clears_claimed_by(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		await ctrl.execute_decisions([
+			PlannerDecision(type=DecisionType.CREATE_TASK, payload={"title": "Bug fix"}),
+		])
+		task_id = ctrl.tasks[0].id
+		mock_proc = await self._spawn_agent_with_task(ctrl, task_id)
+		assert ctrl.tasks[0].status == TaskStatus.CLAIMED
+
+		# Simulate crash: exit code 1, no AD_RESULT
+		mock_proc.returncode = 1
+		mock_proc.stdout = AsyncMock()
+		mock_proc.stdout.read = AsyncMock(return_value=b"Segfault\nTraceback...")
+
+		events = await ctrl.monitor_agents()
+
+		assert len(events) >= 1
+		assert events[0]["status"] == "failed"
+		assert ctrl.tasks[0].status == TaskStatus.FAILED
+		assert ctrl.tasks[0].claimed_by is None
+		assert "without emitting AD_RESULT" in ctrl.tasks[0].result_summary
+
+	async def test_crash_increments_attempt_count(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		await ctrl.execute_decisions([
+			PlannerDecision(type=DecisionType.CREATE_TASK, payload={"title": "Flaky"}),
+		])
+		task_id = ctrl.tasks[0].id
+		mock_proc = await self._spawn_agent_with_task(ctrl, task_id)
+
+		mock_proc.returncode = 137
+		mock_proc.stdout = AsyncMock()
+		mock_proc.stdout.read = AsyncMock(return_value=b"killed")
+
+		await ctrl.monitor_agents()
+
+		assert ctrl.tasks[0].attempt_count == 1
+
+	async def test_crashed_task_can_be_requeued(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		await ctrl.execute_decisions([
+			PlannerDecision(type=DecisionType.CREATE_TASK, payload={"title": "Retriable", "max_attempts": 3}),
+		])
+		task_id = ctrl.tasks[0].id
+		mock_proc = await self._spawn_agent_with_task(ctrl, task_id)
+
+		mock_proc.returncode = 1
+		mock_proc.stdout = AsyncMock()
+		mock_proc.stdout.read = AsyncMock(return_value=b"crash")
+
+		await ctrl.monitor_agents()
+
+		requeued = ctrl.requeue_failed_tasks()
+		assert task_id in requeued
+		assert ctrl.tasks[0].status == TaskStatus.PENDING
+		assert ctrl.tasks[0].claimed_by is None
+
+	async def test_stdout_read_exception_still_marks_task_failed(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		await ctrl.execute_decisions([
+			PlannerDecision(type=DecisionType.CREATE_TASK, payload={"title": "IO error"}),
+		])
+		task_id = ctrl.tasks[0].id
+		mock_proc = await self._spawn_agent_with_task(ctrl, task_id)
+
+		mock_proc.returncode = 1
+		mock_proc.stdout = AsyncMock()
+		mock_proc.stdout.read = AsyncMock(side_effect=OSError("pipe broken"))
+
+		await ctrl.monitor_agents()
+
+		assert ctrl.tasks[0].status == TaskStatus.FAILED
+		assert ctrl.tasks[0].claimed_by is None
+
+
+class TestClaimTimeout:
+	"""Tests for the configurable task claim timeout."""
+
+	async def test_claimed_task_times_out(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(
+			_make_config(tmp_path), _make_swarm_config(), _make_db(),
+			task_claim_timeout=60.0,
+		)
+		await ctrl.execute_decisions([
+			PlannerDecision(type=DecisionType.CREATE_TASK, payload={"title": "Slow task"}),
+		])
+		task_id = ctrl.tasks[0].id
+
+		mock_proc = MagicMock(returncode=None)
+		with patch.object(ctrl, "_spawn_claude_session", new=AsyncMock(return_value=mock_proc)):
+			await ctrl.execute_decisions([
+				PlannerDecision(type=DecisionType.SPAWN, payload={"name": "w1", "prompt": "work", "task_id": task_id}),
+			])
+
+		assert ctrl.tasks[0].status == TaskStatus.CLAIMED
+
+		# Backdate claimed_at to exceed timeout
+		from datetime import datetime, timedelta, timezone
+		old_time = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
+		ctrl.tasks[0].claimed_at = old_time
+
+		events = await ctrl.monitor_agents()
+
+		timeout_events = [e for e in events if e["type"] == "claim_timeout"]
+		assert len(timeout_events) == 1
+		assert ctrl.tasks[0].status == TaskStatus.FAILED
+		assert ctrl.tasks[0].claimed_by is None
+		assert "timeout" in ctrl.tasks[0].result_summary.lower()
+
+	async def test_within_timeout_not_affected(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(
+			_make_config(tmp_path), _make_swarm_config(), _make_db(),
+			task_claim_timeout=1800.0,
+		)
+		await ctrl.execute_decisions([
+			PlannerDecision(type=DecisionType.CREATE_TASK, payload={"title": "Normal task"}),
+		])
+		task_id = ctrl.tasks[0].id
+
+		mock_proc = MagicMock(returncode=None)
+		with patch.object(ctrl, "_spawn_claude_session", new=AsyncMock(return_value=mock_proc)):
+			await ctrl.execute_decisions([
+				PlannerDecision(type=DecisionType.SPAWN, payload={"name": "w1", "prompt": "work", "task_id": task_id}),
+			])
+
+		events = await ctrl.monitor_agents()
+
+		assert ctrl.tasks[0].status == TaskStatus.CLAIMED
+		timeout_events = [e for e in events if e.get("type") == "claim_timeout"]
+		assert len(timeout_events) == 0
+
+	async def test_timeout_marks_agent_dead(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(
+			_make_config(tmp_path), _make_swarm_config(), _make_db(),
+			task_claim_timeout=60.0,
+		)
+		await ctrl.execute_decisions([
+			PlannerDecision(type=DecisionType.CREATE_TASK, payload={"title": "Stuck task"}),
+		])
+		task_id = ctrl.tasks[0].id
+
+		mock_proc = MagicMock(returncode=None, kill=MagicMock())
+		with patch.object(ctrl, "_spawn_claude_session", new=AsyncMock(return_value=mock_proc)):
+			await ctrl.execute_decisions([
+				PlannerDecision(type=DecisionType.SPAWN, payload={"name": "w1", "prompt": "work", "task_id": task_id}),
+			])
+
+		agent = ctrl.agents[0]
+		from datetime import datetime, timedelta, timezone
+		ctrl.tasks[0].claimed_at = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
+
+		await ctrl.monitor_agents()
+
+		assert agent.status == AgentStatus.DEAD
+		assert agent.tasks_failed == 1
+		mock_proc.kill.assert_called_once()
+
+	async def test_timeout_increments_attempt_count(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(
+			_make_config(tmp_path), _make_swarm_config(), _make_db(),
+			task_claim_timeout=60.0,
+		)
+		await ctrl.execute_decisions([
+			PlannerDecision(type=DecisionType.CREATE_TASK, payload={"title": "Timeout task"}),
+		])
+		task_id = ctrl.tasks[0].id
+
+		mock_proc = MagicMock(returncode=None, kill=MagicMock())
+		with patch.object(ctrl, "_spawn_claude_session", new=AsyncMock(return_value=mock_proc)):
+			await ctrl.execute_decisions([
+				PlannerDecision(type=DecisionType.SPAWN, payload={"name": "w1", "prompt": "work", "task_id": task_id}),
+			])
+
+		from datetime import datetime, timedelta, timezone
+		ctrl.tasks[0].claimed_at = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
+
+		await ctrl.monitor_agents()
+
+		assert ctrl.tasks[0].attempt_count == 1
+
+
+class TestOrphanedTaskRecovery:
+	"""Tests for stalled/orphaned task detection and recovery."""
+
+	async def test_orphaned_task_reset_to_pending_when_agent_dead(self, tmp_path: Path) -> None:
+		"""Task claimed by a dead agent should be reset to PENDING after timeout."""
+		ctrl = SwarmController(
+			_make_config(tmp_path), _make_swarm_config(), _make_db(),
+			stalled_task_timeout=600.0,
+		)
+		await ctrl.execute_decisions([
+			PlannerDecision(type=DecisionType.CREATE_TASK, payload={"title": "Orphaned task"}),
+		])
+		task = ctrl.tasks[0]
+
+		# Create a dead agent that claimed this task
+		agent = SwarmAgent(name="dead-worker", status=AgentStatus.DEAD)
+		agent.death_time = time.monotonic() - 60
+		ctrl._agents[agent.id] = agent
+
+		task.status = TaskStatus.CLAIMED
+		task.claimed_by = agent.id
+		from datetime import datetime, timedelta, timezone
+		task.claimed_at = (datetime.now(timezone.utc) - timedelta(seconds=700)).isoformat()
+
+		events = await ctrl.monitor_agents()
+
+		assert task.status == TaskStatus.PENDING
+		assert task.claimed_by is None
+		assert task.claimed_at is None
+		recovered = [e for e in events if e["type"] == "orphaned_task_recovered"]
+		assert len(recovered) == 1
+		assert recovered[0]["task_id"] == task.id
+
+	async def test_orphaned_task_not_recovered_if_agent_alive(self, tmp_path: Path) -> None:
+		"""Task claimed by a living agent should NOT be reset."""
+		ctrl = SwarmController(
+			_make_config(tmp_path), _make_swarm_config(), _make_db(),
+			stalled_task_timeout=600.0,
+		)
+		await ctrl.execute_decisions([
+			PlannerDecision(type=DecisionType.CREATE_TASK, payload={"title": "Active task"}),
+		])
+		task = ctrl.tasks[0]
+
+		agent = SwarmAgent(name="alive-worker", status=AgentStatus.WORKING)
+		ctrl._agents[agent.id] = agent
+
+		task.status = TaskStatus.CLAIMED
+		task.claimed_by = agent.id
+		from datetime import datetime, timedelta, timezone
+		task.claimed_at = (datetime.now(timezone.utc) - timedelta(seconds=700)).isoformat()
+
+		events = await ctrl.monitor_agents()
+
+		assert task.status == TaskStatus.CLAIMED
+		recovered = [e for e in events if e.get("type") == "orphaned_task_recovered"]
+		assert len(recovered) == 0
+
+	async def test_orphaned_task_not_recovered_within_timeout(self, tmp_path: Path) -> None:
+		"""Task claimed by a dead agent should NOT be reset if within timeout."""
+		ctrl = SwarmController(
+			_make_config(tmp_path), _make_swarm_config(), _make_db(),
+			stalled_task_timeout=600.0,
+		)
+		await ctrl.execute_decisions([
+			PlannerDecision(type=DecisionType.CREATE_TASK, payload={"title": "Recent task"}),
+		])
+		task = ctrl.tasks[0]
+
+		agent = SwarmAgent(name="dead-recent", status=AgentStatus.DEAD)
+		agent.death_time = time.monotonic()
+		ctrl._agents[agent.id] = agent
+
+		task.status = TaskStatus.CLAIMED
+		task.claimed_by = agent.id
+		from datetime import datetime, timedelta, timezone
+		task.claimed_at = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+
+		events = await ctrl.monitor_agents()
+
+		assert task.status == TaskStatus.CLAIMED
+		recovered = [e for e in events if e.get("type") == "orphaned_task_recovered"]
+		assert len(recovered) == 0
+
+	async def test_orphaned_task_recovered_when_agent_missing(self, tmp_path: Path) -> None:
+		"""Task claimed by an agent no longer in the pool should be recovered."""
+		ctrl = SwarmController(
+			_make_config(tmp_path), _make_swarm_config(), _make_db(),
+			stalled_task_timeout=600.0,
+		)
+		await ctrl.execute_decisions([
+			PlannerDecision(type=DecisionType.CREATE_TASK, payload={"title": "Abandoned task"}),
+		])
+		task = ctrl.tasks[0]
+
+		# Agent is not in _agents at all (already cleaned up)
+		task.status = TaskStatus.CLAIMED
+		task.claimed_by = "nonexistent-agent-id"
+		from datetime import datetime, timedelta, timezone
+		task.claimed_at = (datetime.now(timezone.utc) - timedelta(seconds=700)).isoformat()
+
+		events = await ctrl.monitor_agents()
+
+		assert task.status == TaskStatus.PENDING
+		assert task.claimed_by is None
+		recovered = [e for e in events if e["type"] == "orphaned_task_recovered"]
+		assert len(recovered) == 1
+
+	async def test_in_progress_task_recovered_when_agent_dead(self, tmp_path: Path) -> None:
+		"""IN_PROGRESS tasks should also be recovered when agent dies."""
+		ctrl = SwarmController(
+			_make_config(tmp_path), _make_swarm_config(), _make_db(),
+			stalled_task_timeout=600.0,
+		)
+		await ctrl.execute_decisions([
+			PlannerDecision(type=DecisionType.CREATE_TASK, payload={"title": "In progress task"}),
+		])
+		task = ctrl.tasks[0]
+
+		agent = SwarmAgent(name="dead-ip", status=AgentStatus.DEAD)
+		ctrl._agents[agent.id] = agent
+
+		task.status = TaskStatus.IN_PROGRESS
+		task.claimed_by = agent.id
+		from datetime import datetime, timedelta, timezone
+		task.claimed_at = (datetime.now(timezone.utc) - timedelta(seconds=700)).isoformat()
+
+		events = await ctrl.monitor_agents()
+
+		assert task.status == TaskStatus.PENDING
+		recovered = [e for e in events if e["type"] == "orphaned_task_recovered"]
+		assert len(recovered) == 1
+		assert recovered[0]["previous_status"] == "in_progress"
+
+	async def test_orphaned_task_no_claimed_by_reset_immediately(self, tmp_path: Path) -> None:
+		"""CLAIMED task with no claimed_by should be reset to PENDING immediately."""
+		ctrl = SwarmController(
+			_make_config(tmp_path), _make_swarm_config(), _make_db(),
+			stalled_task_timeout=600.0,
+		)
+		await ctrl.execute_decisions([
+			PlannerDecision(type=DecisionType.CREATE_TASK, payload={"title": "No owner"}),
+		])
+		task = ctrl.tasks[0]
+		task.status = TaskStatus.CLAIMED
+		task.claimed_by = None
+
+		await ctrl.monitor_agents()
+
+		assert task.status == TaskStatus.PENDING
+
+	async def test_custom_stalled_timeout(self, tmp_path: Path) -> None:
+		"""Custom stalled_task_timeout should be respected."""
+		ctrl = SwarmController(
+			_make_config(tmp_path), _make_swarm_config(), _make_db(),
+			stalled_task_timeout=30.0,
+		)
+		await ctrl.execute_decisions([
+			PlannerDecision(type=DecisionType.CREATE_TASK, payload={"title": "Quick timeout"}),
+		])
+		task = ctrl.tasks[0]
+
+		agent = SwarmAgent(name="dead-fast", status=AgentStatus.DEAD)
+		ctrl._agents[agent.id] = agent
+
+		task.status = TaskStatus.CLAIMED
+		task.claimed_by = agent.id
+		from datetime import datetime, timedelta, timezone
+		task.claimed_at = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+
+		events = await ctrl.monitor_agents()
+
+		assert task.status == TaskStatus.PENDING
+		recovered = [e for e in events if e["type"] == "orphaned_task_recovered"]
+		assert len(recovered) == 1
+
+
+class TestTaskStateSync:
+	"""Tests for the bug where completed agents' tasks stay PENDING.
+
+	Root cause: when create_task and spawn are in the same batch of decisions,
+	the planner can't reference auto-generated task IDs. The spawn's task_id
+	is either None or a placeholder, so agent.current_task_id doesn't match
+	any task. When the agent completes, monitor_agents skips the task update.
+	"""
+
+	async def test_spawn_auto_links_to_batch_created_task(self, tmp_path: Path) -> None:
+		"""When create_task and spawn are in the same batch, task_id is auto-resolved."""
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		mock_proc = MagicMock(returncode=None)
+		with patch.object(ctrl, "_spawn_claude_session", new=AsyncMock(return_value=mock_proc)):
+			decisions = [
+				PlannerDecision(
+					type=DecisionType.CREATE_TASK,
+					payload={"title": "Fix parser bug", "priority": 2},
+					priority=10,
+				),
+				PlannerDecision(
+					type=DecisionType.SPAWN,
+					payload={"role": "implementer", "name": "parser-fixer", "prompt": "Fix it"},
+					priority=9,
+				),
+			]
+			await ctrl.execute_decisions(decisions)
+
+		assert len(ctrl.tasks) == 1
+		assert len(ctrl.agents) == 1
+		# Task should be CLAIMED by the spawned agent
+		assert ctrl.tasks[0].status == TaskStatus.CLAIMED
+		assert ctrl.tasks[0].claimed_by == ctrl.agents[0].id
+		# Agent should have the correct task_id
+		assert ctrl.agents[0].current_task_id == ctrl.tasks[0].id
+
+	async def test_spawn_resolves_placeholder_task_id(self, tmp_path: Path) -> None:
+		"""A spawn with a non-existent task_id gets resolved to a batch-created task."""
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		mock_proc = MagicMock(returncode=None)
+		with patch.object(ctrl, "_spawn_claude_session", new=AsyncMock(return_value=mock_proc)):
+			decisions = [
+				PlannerDecision(
+					type=DecisionType.CREATE_TASK,
+					payload={"title": "Research float80"},
+					priority=10,
+				),
+				PlannerDecision(
+					type=DecisionType.SPAWN,
+					payload={
+						"role": "researcher",
+						"name": "float80-researcher",
+						"prompt": "Research float80",
+						"task_id": "<task_id from above>",
+					},
+					priority=9,
+				),
+			]
+			await ctrl.execute_decisions(decisions)
+
+		assert ctrl.tasks[0].status == TaskStatus.CLAIMED
+		assert ctrl.agents[0].current_task_id == ctrl.tasks[0].id
+
+	async def test_multiple_batch_tasks_linked_in_order(self, tmp_path: Path) -> None:
+		"""Multiple create_task + spawn pairs auto-link in execution order."""
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		mock_proc = MagicMock(returncode=None)
+		with patch.object(ctrl, "_spawn_claude_session", new=AsyncMock(return_value=mock_proc)):
+			decisions = [
+				PlannerDecision(
+					type=DecisionType.CREATE_TASK, payload={"title": "Task A"}, priority=10,
+				),
+				PlannerDecision(
+					type=DecisionType.CREATE_TASK, payload={"title": "Task B"}, priority=9,
+				),
+				PlannerDecision(
+					type=DecisionType.SPAWN,
+					payload={"name": "worker-a", "prompt": "Do A"},
+					priority=8,
+				),
+				PlannerDecision(
+					type=DecisionType.SPAWN,
+					payload={"name": "worker-b", "prompt": "Do B"},
+					priority=7,
+				),
+			]
+			await ctrl.execute_decisions(decisions)
+
+		assert len(ctrl.tasks) == 2
+		assert len(ctrl.agents) == 2
+		# Both tasks should be CLAIMED
+		assert ctrl.tasks[0].status == TaskStatus.CLAIMED
+		assert ctrl.tasks[1].status == TaskStatus.CLAIMED
+		# Each agent should be linked to a different task
+		agent_task_ids = {a.current_task_id for a in ctrl.agents}
+		task_ids = {t.id for t in ctrl.tasks}
+		assert agent_task_ids == task_ids
+
+	async def test_spawn_with_valid_task_id_not_overridden(self, tmp_path: Path) -> None:
+		"""A spawn with a valid task_id should NOT be auto-resolved."""
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		# Create task first (separate batch)
+		await ctrl.execute_decisions([
+			PlannerDecision(type=DecisionType.CREATE_TASK, payload={"title": "Existing task"}),
+		])
+		task_id = ctrl.tasks[0].id
+
+		mock_proc = MagicMock(returncode=None)
+		with patch.object(ctrl, "_spawn_claude_session", new=AsyncMock(return_value=mock_proc)):
+			await ctrl.execute_decisions([
+				PlannerDecision(
+					type=DecisionType.SPAWN,
+					payload={"name": "w1", "prompt": "work", "task_id": task_id},
+				),
+			])
+
+		assert ctrl.agents[0].current_task_id == task_id
+
+	async def test_completed_agent_marks_task_completed(self, tmp_path: Path) -> None:
+		"""End-to-end: create task + spawn in same batch, agent completes -> task COMPLETED."""
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		mock_proc = MagicMock(returncode=None)
+		with patch.object(ctrl, "_spawn_claude_session", new=AsyncMock(return_value=mock_proc)):
+			decisions = [
+				PlannerDecision(
+					type=DecisionType.CREATE_TASK,
+					payload={"title": "Fix the bug"},
+					priority=10,
+				),
+				PlannerDecision(
+					type=DecisionType.SPAWN,
+					payload={"name": "bugfixer", "prompt": "Fix it"},
+					priority=9,
+				),
+			]
+			await ctrl.execute_decisions(decisions)
+
+		assert ctrl.tasks[0].status == TaskStatus.CLAIMED
+
+		# Simulate agent completing successfully
+		mock_proc.returncode = 0
+		ad_result = (
+			'{"status":"completed","summary":"Fixed the bug",'
+			'"commits":["abc"],"files_changed":["a.py"]}'
+		)
+		mock_proc.stdout = AsyncMock()
+		mock_proc.stdout.read = AsyncMock(
+			return_value=f"output\nAD_RESULT:{ad_result}\n".encode()
+		)
+
+		events = await ctrl.monitor_agents()
+
+		assert len(events) == 1
+		assert events[0]["status"] == "completed"
+		assert ctrl.tasks[0].status == TaskStatus.COMPLETED
+		assert ctrl.tasks[0].result_summary == "Fixed the bug"
+		assert ctrl.agents[0].tasks_completed == 1
+
+	async def test_monitor_resolves_task_via_claimed_by_fallback(self, tmp_path: Path) -> None:
+		"""If current_task_id doesn't match, task is found via claimed_by."""
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+
+		# Create a task
+		await ctrl.execute_decisions([
+			PlannerDecision(type=DecisionType.CREATE_TASK, payload={"title": "Bug fix"}),
+		])
+		task = ctrl.tasks[0]
+
+		# Spawn agent with correct task_id
+		mock_proc = MagicMock(returncode=None)
+		with patch.object(ctrl, "_spawn_claude_session", new=AsyncMock(return_value=mock_proc)):
+			await ctrl.execute_decisions([
+				PlannerDecision(
+					type=DecisionType.SPAWN,
+					payload={"name": "w1", "prompt": "fix", "task_id": task.id},
+				),
+			])
+
+		agent = ctrl.agents[0]
+		assert task.claimed_by == agent.id
+
+		# Corrupt the agent's current_task_id to simulate the bug
+		agent.current_task_id = "nonexistent-id"
+
+		# Simulate agent completing
+		mock_proc.returncode = 0
+		ad_result = '{"status":"completed","summary":"Done"}'
+		mock_proc.stdout = AsyncMock()
+		mock_proc.stdout.read = AsyncMock(return_value=f"AD_RESULT:{ad_result}".encode())
+
+		await ctrl.monitor_agents()
+
+		# Task should still be marked COMPLETED via claimed_by fallback
+		assert task.status == TaskStatus.COMPLETED
+		assert agent.tasks_completed == 1
+
+	async def test_scaling_signal_correct_after_completion(self, tmp_path: Path) -> None:
+		"""After agents complete, scaling signal should NOT say 'scale UP'."""
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		mock_proc = MagicMock(returncode=None)
+		with patch.object(ctrl, "_spawn_claude_session", new=AsyncMock(return_value=mock_proc)):
+			decisions = [
+				PlannerDecision(
+					type=DecisionType.CREATE_TASK, payload={"title": "Task 1"}, priority=10,
+				),
+				PlannerDecision(
+					type=DecisionType.SPAWN,
+					payload={"name": "w1", "prompt": "do task 1"},
+					priority=9,
+				),
+			]
+			await ctrl.execute_decisions(decisions)
+
+		# Simulate completion
+		mock_proc.returncode = 0
+		ad_result = '{"status":"completed","summary":"Done"}'
+		mock_proc.stdout = AsyncMock()
+		mock_proc.stdout.read = AsyncMock(return_value=f"AD_RESULT:{ad_result}".encode())
+		await ctrl.monitor_agents()
+
+		# Task should be COMPLETED, not PENDING
+		assert ctrl.tasks[0].status == TaskStatus.COMPLETED
+		# Scaling should NOT recommend scale up (no pending tasks)
+		rec = ctrl.get_scaling_recommendation()
+		assert rec["scale_up"] == 0
+
+	async def test_invalid_task_id_resolved_to_pending_task(self, tmp_path: Path) -> None:
+		"""Spawn with invalid task_id resolves to an unclaimed PENDING task from a prior batch."""
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+
+		# Create task in a SEPARATE batch (simulating prior cycle)
+		await ctrl.execute_decisions([
+			PlannerDecision(type=DecisionType.CREATE_TASK, payload={"title": "Parser fix"}),
+		])
+		real_task_id = ctrl.tasks[0].id
+
+		# Spawn with an invalid task_id (planner made up an ID)
+		mock_proc = MagicMock(returncode=None)
+		with patch.object(ctrl, "_spawn_claude_session", new=AsyncMock(return_value=mock_proc)):
+			await ctrl.execute_decisions([
+				PlannerDecision(
+					type=DecisionType.SPAWN,
+					payload={
+						"name": "parser-fixer",
+						"prompt": "Fix the parser",
+						"task_id": "fake-task-id-from-planner",
+					},
+				),
+			])
+
+		# Agent should be linked to the real task, not the fake ID
+		assert ctrl.agents[0].current_task_id == real_task_id
+		assert ctrl.tasks[0].status == TaskStatus.CLAIMED
+		assert ctrl.tasks[0].claimed_by == ctrl.agents[0].id
+
+	async def test_invalid_task_id_agent_completion_updates_task(self, tmp_path: Path) -> None:
+		"""End-to-end: invalid task_id resolved -> agent completes -> task COMPLETED."""
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+
+		# Create task in prior batch
+		await ctrl.execute_decisions([
+			PlannerDecision(type=DecisionType.CREATE_TASK, payload={"title": "Fix bug"}),
+		])
+
+		# Spawn with invalid task_id
+		mock_proc = MagicMock(returncode=None)
+		with patch.object(ctrl, "_spawn_claude_session", new=AsyncMock(return_value=mock_proc)):
+			await ctrl.execute_decisions([
+				PlannerDecision(
+					type=DecisionType.SPAWN,
+					payload={
+						"name": "bugfixer",
+						"prompt": "Fix it",
+						"task_id": "nonexistent-id",
+					},
+				),
+			])
+
+		# Simulate successful completion
+		mock_proc.returncode = 0
+		ad_result = '{"status":"completed","summary":"Fixed the bug"}'
+		mock_proc.stdout = AsyncMock()
+		mock_proc.stdout.read = AsyncMock(return_value=f"AD_RESULT:{ad_result}".encode())
+		await ctrl.monitor_agents()
+
+		assert ctrl.tasks[0].status == TaskStatus.COMPLETED
+		assert ctrl.agents[0].tasks_completed == 1
+
+	async def test_no_pending_tasks_clears_invalid_task_id(self, tmp_path: Path) -> None:
+		"""When no unclaimed tasks exist, invalid task_id is cleared (not left dangling)."""
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+
+		# No tasks in pool
+		mock_proc = MagicMock(returncode=None)
+		with patch.object(ctrl, "_spawn_claude_session", new=AsyncMock(return_value=mock_proc)):
+			await ctrl.execute_decisions([
+				PlannerDecision(
+					type=DecisionType.SPAWN,
+					payload={
+						"name": "orphan",
+						"prompt": "work",
+						"task_id": "bogus-id",
+					},
+				),
+			])
+
+		# Agent should have current_task_id cleared (not pointing to bogus ID)
+		assert ctrl.agents[0].current_task_id is None

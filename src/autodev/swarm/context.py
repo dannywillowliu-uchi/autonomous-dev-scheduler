@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
+import os
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +25,133 @@ if TYPE_CHECKING:
 	from autodev.db import Database
 
 logger = logging.getLogger(__name__)
+
+# Structured report fields that workers can include in inbox messages
+STRUCTURED_REPORT_FIELDS = ("status", "progress", "files_changed", "tests_passing", "error")
+
+# Inbox rotation defaults
+DEFAULT_MAX_INBOX_BYTES = 500 * 1024  # 500 KB
+DEFAULT_MAX_INBOX_MESSAGES = 500
+DEFAULT_KEEP_MESSAGES = 200  # messages to keep after rotation
+
+
+def rotate_inbox(
+	inbox_path: Path,
+	*,
+	max_bytes: int = DEFAULT_MAX_INBOX_BYTES,
+	max_messages: int = DEFAULT_MAX_INBOX_MESSAGES,
+	keep_messages: int = DEFAULT_KEEP_MESSAGES,
+) -> bool:
+	"""Rotate an inbox file if it exceeds size or message count limits.
+
+	Keeps the most recent `keep_messages` messages. Uses the same atomic
+	write pattern (fcntl.flock + tempfile.mkstemp + os.rename) as the
+	controller's _write_to_inbox to avoid data corruption.
+
+	Returns True if rotation occurred.
+	"""
+	if not inbox_path.exists():
+		return False
+
+	# Quick size check before acquiring lock
+	try:
+		file_size = inbox_path.stat().st_size
+	except OSError:
+		return False
+
+	if file_size <= max_bytes:
+		# Still need to check message count, but skip if file is tiny
+		if file_size < 1024:
+			return False
+
+	lock_path = inbox_path.with_suffix(".lock")
+	tmp_fd = None
+	tmp_path = None
+	try:
+		with open(lock_path, "w") as lock_file:
+			fcntl.flock(lock_file, fcntl.LOCK_EX)
+
+			try:
+				raw = inbox_path.read_text()
+				messages = json.loads(raw)
+			except (json.JSONDecodeError, OSError):
+				return False
+
+			if not isinstance(messages, list):
+				return False
+
+			needs_rotation = len(raw.encode()) > max_bytes or len(messages) > max_messages
+			if not needs_rotation:
+				return False
+
+			truncated = messages[-keep_messages:]
+			new_data = json.dumps(truncated, indent=2).encode()
+
+			tmp_fd, tmp_path = tempfile.mkstemp(
+				dir=str(inbox_path.parent), suffix=".tmp"
+			)
+			os.write(tmp_fd, new_data)
+			os.close(tmp_fd)
+			tmp_fd = None
+			os.rename(tmp_path, str(inbox_path))
+			tmp_path = None
+
+			logger.info(
+				"Rotated inbox %s: %d -> %d messages",
+				inbox_path.name, len(messages), len(truncated),
+			)
+			return True
+	except OSError as e:
+		logger.warning("Could not rotate inbox %s: %s", inbox_path.name, e)
+		return False
+	finally:
+		if tmp_fd is not None:
+			os.close(tmp_fd)
+		if tmp_path is not None:
+			try:
+				os.unlink(tmp_path)
+			except OSError:
+				pass
+
+
+def parse_structured_report(msg: dict[str, Any]) -> dict[str, Any]:
+	"""Extract structured fields from an inbox message.
+
+	Returns a dict with the standard fields (from, type, text) plus any
+	structured report fields (status, progress, files_changed, tests_passing,
+	error) that are present and valid. Unstructured messages return only
+	the base fields.
+	"""
+	result: dict[str, Any] = {
+		"from": msg.get("from", "unknown"),
+		"type": msg.get("type", ""),
+		"text": msg.get("text", ""),
+	}
+
+	status = msg.get("status")
+	if isinstance(status, str) and status in ("working", "blocked", "completed"):
+		result["status"] = status
+
+	progress = msg.get("progress")
+	if isinstance(progress, str) and progress:
+		result["progress"] = progress
+
+	files_changed = msg.get("files_changed")
+	if isinstance(files_changed, list) and all(isinstance(f, str) for f in files_changed):
+		result["files_changed"] = files_changed
+
+	tests_passing = msg.get("tests_passing")
+	if isinstance(tests_passing, (int, float)) and tests_passing >= 0:
+		result["tests_passing"] = int(tests_passing)
+
+	error = msg.get("error")
+	if isinstance(error, str) and error:
+		result["error"] = error
+
+	if "timestamp" in msg:
+		result["timestamp"] = msg["timestamp"]
+
+	return result
 
 
 class ContextSynthesizer:
@@ -50,6 +181,7 @@ class ContextSynthesizer:
 		core_test_results: dict[str, Any] | None = None,
 		total_cost_usd: float = 0.0,
 		wall_time_seconds: float = 0.0,
+		dead_agent_history: list[SwarmAgent] | None = None,
 	) -> SwarmState:
 		"""Build a complete SwarmState snapshot for the planner."""
 		self._cycle_number += 1
@@ -59,7 +191,7 @@ class ContextSynthesizer:
 		discoveries = self._get_recent_discoveries(tasks)
 		skills = self._discover_skills()
 		tools = self._discover_tools()
-		stagnation = self._detect_stagnation(tasks, core_test_results)
+		stagnation = self._detect_stagnation(tasks, core_test_results, dead_agent_history)
 		files_in_flight = self._get_files_in_flight(agents, tasks)
 
 		return SwarmState(
@@ -77,7 +209,42 @@ class ContextSynthesizer:
 			total_cost_usd=total_cost_usd,
 			wall_time_seconds=wall_time_seconds,
 			files_in_flight=files_in_flight,
+			dead_agent_history=dead_agent_history or [],
 		)
+
+	def get_agent_reports(self) -> dict[str, dict[str, Any]]:
+		"""Get the latest structured report from each agent.
+
+		Returns a dict mapping agent name -> their most recent structured report
+		(parsed via parse_structured_report). Only includes messages with a
+		"status" field. Useful for the planner to get a quick snapshot of
+		what each agent is doing.
+		"""
+		reports: dict[str, dict[str, Any]] = {}
+		inbox_dir = Path.home() / ".claude" / "teams" / self._team_name / "inboxes"
+		if not inbox_dir.exists():
+			return reports
+
+		for inbox_file in inbox_dir.glob("*.json"):
+			try:
+				messages = json.loads(inbox_file.read_text())
+			except (json.JSONDecodeError, OSError):
+				continue
+			if not isinstance(messages, list):
+				continue
+
+			# Walk backwards to find the latest structured report from each sender
+			for msg in reversed(messages):
+				if not isinstance(msg, dict):
+					continue
+				sender = msg.get("from", inbox_file.stem)
+				if sender in reports:
+					continue
+				parsed = parse_structured_report(msg)
+				if "status" in parsed:
+					reports[sender] = parsed
+
+		return reports
 
 	def render_for_planner(self, state: SwarmState) -> str:
 		"""Render SwarmState as a structured text block for the planner prompt."""
@@ -86,47 +253,124 @@ class ContextSynthesizer:
 		# Mission
 		sections.append(f"## Mission\n{state.mission_objective}")
 
-		# Agents
+		# Human directives (highest priority -- show before everything else)
+		directives = self._get_human_directives()
+		if directives:
+			dir_lines = [f"- {d}" for d in directives]
+			sections.append(
+				"## HUMAN DIRECTIVES (PRIORITY)\n"
+				"The human operator has injected the following directives. "
+				"Treat these as highest priority and act on them immediately.\n"
+				+ "\n".join(dir_lines)
+			)
+
+		# Task progress summary
+		task_counts = self._count_task_statuses(state.tasks)
+		total = len(state.tasks)
+		if total > 0:
+			sections.append(
+				f"## Task Progress\n"
+				f"{task_counts['completed']}/{total} completed | "
+				f"{task_counts['in_progress']} in progress | "
+				f"{task_counts['pending']} pending | "
+				f"{task_counts['blocked']} blocked | "
+				f"{task_counts['failed']} failed"
+			)
+
+		# Build lookup maps for dependency resolution and agent-task cross-referencing
+		task_by_id = {t.id: t for t in state.tasks}
+		agent_task_map = self._build_agent_task_map(state.agents, state.dead_agent_history, task_by_id)
+
+		# Agents (with elapsed time)
 		agent_lines = []
+		now = datetime.now(timezone.utc)
 		for a in state.agents:
-			task_info = f" (task: {a.current_task_id})" if a.current_task_id else ""
+			task_title = ""
+			if a.current_task_id and a.current_task_id in task_by_id:
+				task_title = f" task: \"{task_by_id[a.current_task_id].title}\""
+			elif a.current_task_id:
+				task_title = f" task: {a.current_task_id}"
+			elapsed = self._format_elapsed(a.spawned_at, now)
 			agent_lines.append(
-				f"- {a.name} [{a.role.value}] status={a.status.value}{task_info} "
-				f"completed={a.tasks_completed} failed={a.tasks_failed}"
+				f"- {a.name} [{a.role.value}] status={a.status.value}{task_title} "
+				f"elapsed={elapsed} completed={a.tasks_completed} failed={a.tasks_failed}"
 			)
 		if agent_lines:
 			sections.append("## Active Agents\n" + "\n".join(agent_lines))
 		else:
 			sections.append("## Active Agents\nNone currently active.")
 
-		# Task pool
+		# Agent progress reports (structured inbox data)
+		agent_reports = self.get_agent_reports()
+		if agent_reports:
+			report_lines = []
+			for name, report in agent_reports.items():
+				parts = [f"- **{name}**: status={report['status']}"]
+				if report.get("progress"):
+					parts.append(f"progress=\"{report['progress']}\"")
+				if report.get("tests_passing") is not None:
+					parts.append(f"tests_passing={report['tests_passing']}")
+				if report.get("files_changed"):
+					parts.append(f"files=[{', '.join(report['files_changed'][:5])}]")
+				if report.get("error"):
+					parts.append(f"error=\"{report['error'][:100]}\"")
+				report_lines.append(" ".join(parts))
+			sections.append("## Agent Progress Reports\n" + "\n".join(report_lines))
+
+		# Task pool -- all non-completed tasks with dependency status
 		pending = [t for t in state.tasks if t.status == TaskStatus.PENDING]
+		blocked = [t for t in state.tasks if t.status == TaskStatus.BLOCKED]
 		in_progress = [t for t in state.tasks if t.status in (TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS)]
-		if pending or in_progress:
+		if pending or in_progress or blocked:
 			task_lines = []
 			for t in in_progress:
-				task_lines.append(f"- [IN PROGRESS] {t.title} (claimed by: {t.claimed_by}, attempt {t.attempt_count})")
+				claimer = self._resolve_claimer_name(t.claimed_by, state.agents)
+				task_lines.append(
+					f"- [IN PROGRESS] {t.title} (id: {t.id}, agent: {claimer}, attempt {t.attempt_count})"
+				)
+			for t in blocked:
+				dep_info = self._render_dependency_status(t.depends_on, task_by_id)
+				task_lines.append(f"- [BLOCKED] {t.title} (id: {t.id}){dep_info}")
 			for t in pending:
-				deps = f" (blocked by: {', '.join(t.depends_on)})" if t.depends_on else ""
-				task_lines.append(f"- [PENDING] {t.title}{deps}")
+				dep_info = self._render_dependency_status(t.depends_on, task_by_id)
+				blocked_flag = " **BLOCKED**" if self._has_unmet_deps(t.depends_on, task_by_id) else ""
+				task_lines.append(f"- [PENDING] {t.title} (id: {t.id}){dep_info}{blocked_flag}")
 			sections.append("## Task Pool\n" + "\n".join(task_lines))
 
-		# Recent completions
-		if state.recent_completions:
-			comp_lines = [f"- {c.get('title', '?')}: {c.get('summary', '')}" for c in state.recent_completions[:5]]
-			sections.append("## Recent Completions\n" + "\n".join(comp_lines))
+		# Completed tasks (brief)
+		completed = [t for t in state.tasks if t.status == TaskStatus.COMPLETED]
+		if completed:
+			comp_lines = []
+			for t in completed:
+				summary = t.result_summary[:120] if t.result_summary else "no summary"
+				comp_lines.append(f"- {t.title}: {summary}")
+			sections.append("## Completed Tasks\n" + "\n".join(comp_lines[:10]))
 
-		# Recent failures
-		if state.recent_failures:
-			fail_lines = [
-				f"- {f.get('title', '?')} (attempt {f.get('attempt', '?')}): {f.get('error', '')}"
-				for f in state.recent_failures[:5]
-			]
-			sections.append("## Recent Failures\n" + "\n".join(fail_lines))
+		# Failed tasks (with retry info)
+		failed = [t for t in state.tasks if t.status == TaskStatus.FAILED]
+		if failed:
+			fail_lines = []
+			for t in failed:
+				retries_left = t.max_attempts - t.attempt_count
+				error = t.result_summary[:120] if t.result_summary else "no details"
+				retry_info = f", {retries_left} retries left" if retries_left > 0 else ", NO retries left"
+				fail_lines.append(f"- {t.title} (attempt {t.attempt_count}{retry_info}): {error}")
+			sections.append("## Failed Tasks\n" + "\n".join(fail_lines[:10]))
 
-		# Discoveries
+		# Discoveries (grouped by source, capped at 10 total)
 		if state.recent_discoveries:
-			disc_lines = [f"- {d}" for d in state.recent_discoveries[:10]]
+			grouped = self._group_discoveries(state.recent_discoveries)
+			disc_lines: list[str] = []
+			total = 0
+			for source, items in grouped.items():
+				if total >= 10:
+					break
+				disc_lines.append(f"**{source}**")
+				for item in items:
+					if total >= 10:
+						break
+					disc_lines.append(f"  - {item}")
+					total += 1
 			sections.append("## Recent Discoveries\n" + "\n".join(disc_lines))
 
 		# Core test results
@@ -158,6 +402,28 @@ class ContextSynthesizer:
 		if state.files_in_flight:
 			sections.append("## Files Currently Being Modified\n" + "\n".join(f"- {f}" for f in state.files_in_flight))
 
+		# Dead agents with accomplishment summaries
+		if state.dead_agent_history:
+			recent_dead = state.dead_agent_history[-10:]
+			dead_lines = []
+			for a in recent_dead:
+				summary = agent_task_map.get(a.id, "")
+				summary_text = f" -- {summary}" if summary else ""
+				dead_lines.append(
+					f"- {a.name} [{a.role.value}] completed={a.tasks_completed} "
+					f"failed={a.tasks_failed}{summary_text}"
+				)
+			sections.append("## Recently Cleaned Up Agents\n" + "\n".join(dead_lines))
+
+		# Completed work summary from dead agents with successful completions
+		completed_agents = [a for a in state.dead_agent_history if a.tasks_completed > 0]
+		if completed_agents:
+			work_lines = self._build_completed_work_summary(
+				completed_agents, agent_task_map, state.recent_discoveries,
+			)
+			if work_lines:
+				sections.append("## Completed Work Summary\n" + "\n".join(work_lines))
+
 		# Meta
 		sections.append(
 			f"## Meta\n"
@@ -166,6 +432,139 @@ class ContextSynthesizer:
 		)
 
 		return "\n\n".join(sections)
+
+	@staticmethod
+	def _count_task_statuses(tasks: list[SwarmTask]) -> dict[str, int]:
+		"""Count tasks by status category."""
+		counts = {"completed": 0, "in_progress": 0, "pending": 0, "blocked": 0, "failed": 0}
+		for t in tasks:
+			if t.status == TaskStatus.COMPLETED:
+				counts["completed"] += 1
+			elif t.status in (TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS):
+				counts["in_progress"] += 1
+			elif t.status == TaskStatus.BLOCKED:
+				counts["blocked"] += 1
+			elif t.status == TaskStatus.FAILED:
+				counts["failed"] += 1
+			elif t.status == TaskStatus.PENDING:
+				# Check if effectively blocked by unmet dependencies
+				if t.depends_on:
+					counts["blocked"] += 1
+				else:
+					counts["pending"] += 1
+		return counts
+
+	@staticmethod
+	def _format_elapsed(spawned_at: str, now: datetime) -> str:
+		"""Format elapsed time since agent spawn as a human-readable string."""
+		try:
+			spawned = datetime.fromisoformat(spawned_at)
+			delta = (now - spawned).total_seconds()
+			if delta < 60:
+				return f"{int(delta)}s"
+			if delta < 3600:
+				return f"{int(delta // 60)}m{int(delta % 60)}s"
+			return f"{int(delta // 3600)}h{int((delta % 3600) // 60)}m"
+		except (ValueError, TypeError):
+			return "?"
+
+	@staticmethod
+	def _render_dependency_status(depends_on: list[str], task_by_id: dict[str, SwarmTask]) -> str:
+		"""Render dependency info with resolution status for each dep."""
+		if not depends_on:
+			return ""
+		parts = []
+		for dep_id in depends_on:
+			dep_task = task_by_id.get(dep_id)
+			if dep_task:
+				parts.append(f"{dep_task.title} [{dep_task.status.value}]")
+			else:
+				parts.append(f"{dep_id} [unknown]")
+		return f" (waiting on: {', '.join(parts)})"
+
+	@staticmethod
+	def _has_unmet_deps(depends_on: list[str], task_by_id: dict[str, SwarmTask]) -> bool:
+		"""Check if any dependency is not yet completed."""
+		for dep_id in depends_on:
+			dep_task = task_by_id.get(dep_id)
+			if not dep_task or dep_task.status != TaskStatus.COMPLETED:
+				return True
+		return False
+
+	@staticmethod
+	def _resolve_claimer_name(claimed_by: str | None, agents: list[SwarmAgent]) -> str:
+		"""Resolve agent ID to name for display."""
+		if not claimed_by:
+			return "?"
+		for a in agents:
+			if a.id == claimed_by:
+				return a.name
+		return claimed_by[:8]
+
+	@staticmethod
+	def _build_agent_task_map(
+		agents: list[SwarmAgent],
+		dead_agents: list[SwarmAgent],
+		task_by_id: dict[str, SwarmTask],
+	) -> dict[str, str]:
+		"""Build a map of agent_id -> brief accomplishment summary from their tasks."""
+		result: dict[str, str] = {}
+		for a in list(agents) + list(dead_agents):
+			if not a.current_task_id:
+				continue
+			task = task_by_id.get(a.current_task_id)
+			if not task:
+				continue
+			summary = task.result_summary[:100] if task.result_summary else ""
+			if task.status == TaskStatus.COMPLETED:
+				result[a.id] = f"completed \"{task.title}\": {summary}" if summary else f"completed \"{task.title}\""
+			elif task.status == TaskStatus.FAILED:
+				result[a.id] = f"failed \"{task.title}\": {summary}" if summary else f"failed \"{task.title}\""
+		return result
+
+	@staticmethod
+	def _group_discoveries(discoveries: list[str]) -> dict[str, list[str]]:
+		"""Group discoveries by source (extracted from [source] prefix)."""
+		from collections import OrderedDict
+		grouped: OrderedDict[str, list[str]] = OrderedDict()
+		for d in discoveries[-20:]:
+			if d.startswith("[") and "] " in d:
+				bracket_end = d.index("] ")
+				source = d[1:bracket_end]
+				text = d[bracket_end + 2:]
+				# Strip message type prefix like "(discovery) "
+				if text.startswith("(") and ") " in text:
+					paren_end = text.index(") ")
+					text = text[paren_end + 2:]
+			else:
+				source = "general"
+				text = d
+			grouped.setdefault(source, []).append(text)
+		return grouped
+
+	@staticmethod
+	def _build_completed_work_summary(
+		completed_agents: list[SwarmAgent],
+		agent_task_map: dict[str, str],
+		discoveries: list[str],
+	) -> list[str]:
+		"""Build a summary of what each successfully-completed dead agent accomplished."""
+		lines: list[str] = []
+		for a in completed_agents[-10:]:
+			task_summary = agent_task_map.get(a.id, "")
+			agent_discoveries = [
+				d for d in discoveries
+				if f"[{a.name}]" in d
+			]
+			parts = [f"**{a.name}** ({a.tasks_completed} task(s) completed)"]
+			if task_summary:
+				parts.append(f"  Result: {task_summary}")
+			for d in agent_discoveries[:3]:
+				# Strip the [sender] prefix for cleaner display
+				text = d.split("] ", 1)[-1] if "] " in d else d
+				parts.append(f"  Discovery: {text}")
+			lines.append("\n".join(parts))
+		return lines
 
 	def _get_recent_completions(self, tasks: list[SwarmTask]) -> list[dict[str, Any]]:
 		"""Get tasks completed since last cycle."""
@@ -197,13 +596,15 @@ class ContextSynthesizer:
 		inbox_dir = Path.home() / ".claude" / "teams" / self._team_name / "inboxes"
 		if inbox_dir.exists():
 			for inbox_file in inbox_dir.glob("*.json"):
+				# Lazy rotation: trim oversized inboxes during reads
+				rotate_inbox(inbox_file)
 				try:
 					messages = json.loads(inbox_file.read_text())
 					for msg in messages[-20:]:
 						msg_type = msg.get("type", "")
 						text = msg.get("text", "")
 						sender = msg.get("from", inbox_file.stem)
-						if msg_type in ("discovery", "blocked", "question", "report"):
+						if msg_type in ("discovery", "blocked", "question", "report", "directive"):
 							discoveries.append(f"[{sender}] ({msg_type}) {text}")
 						elif "discovery:" in text.lower() or "found:" in text.lower():
 							discoveries.append(f"[{sender}] {text}")
@@ -232,6 +633,23 @@ class ContextSynthesizer:
 
 		return discoveries
 
+	def _get_human_directives(self) -> list[str]:
+		"""Get human directives from the team-lead inbox."""
+		directives: list[str] = []
+		inbox_dir = Path.home() / ".claude" / "teams" / self._team_name / "inboxes"
+		leader_inbox = inbox_dir / "team-lead.json"
+		if leader_inbox.exists():
+			try:
+				messages = json.loads(leader_inbox.read_text())
+				for msg in messages[-20:]:
+					if msg.get("type") == "directive":
+						ts = msg.get("timestamp", "")
+						text = msg.get("text", "")
+						directives.append(f"[{ts}] {text}")
+			except (json.JSONDecodeError, OSError):
+				pass
+		return directives
+
 	def _discover_skills(self) -> list[str]:
 		"""Find available skills in .claude/skills/."""
 		skills: list[str] = []
@@ -258,6 +676,7 @@ class ContextSynthesizer:
 		self,
 		tasks: list[SwarmTask],
 		core_test_results: dict[str, Any] | None,
+		dead_agent_history: list[SwarmAgent] | None = None,
 	) -> list[StagnationSignal]:
 		"""Detect stagnation across multiple metrics."""
 		signals: list[StagnationSignal] = []
@@ -273,7 +692,7 @@ class ContextSynthesizer:
 			if stag:
 				signals.append(stag)
 
-		# Track completion rate
+		# Track completion rate (suppress if agents recently died with completions)
 		completed = sum(1 for t in tasks if t.status == TaskStatus.COMPLETED)
 		self._track_metric("completed_tasks", float(completed))
 		stag = self._check_metric_stagnation(
@@ -281,7 +700,13 @@ class ContextSynthesizer:
 			"Reduce parallelism. Focus agents on fewer, higher-impact tasks.",
 		)
 		if stag:
-			signals.append(stag)
+			# Don't signal stagnation if dead agents recently completed work --
+			# the task pool status may lag behind actual completions
+			recent_dead_completions = sum(
+				a.tasks_completed for a in (dead_agent_history or [])
+			)
+			if recent_dead_completions == 0:
+				signals.append(stag)
 
 		# Track failure rate
 		failed = sum(1 for t in tasks if t.status == TaskStatus.FAILED)

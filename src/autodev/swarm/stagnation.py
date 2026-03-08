@@ -7,9 +7,21 @@ pivots when the swarm is not making progress.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class StagnationConfig:
+	"""Configurable thresholds for stagnation detection."""
+
+	window: int = 3  # cycles to look back for flat metrics
+	cost_rise_ratio: float = 1.2  # cost must exceed start * this to trigger
+	failure_rate_threshold: float = 0.6  # fraction of failures to trigger
+	repeated_error_min_agents: int = 2  # min agents sharing same error
+	agent_churn_min_respawns: int = 2  # min respawns on same task to trigger
 
 
 @dataclass
@@ -29,16 +41,35 @@ def analyze_stagnation(
 	failure_history: list[int],
 	cost_history: list[float],
 	threshold: int = 3,
+	*,
+	config: StagnationConfig | None = None,
+	error_messages: list[str] | None = None,
+	task_agent_counts: dict[str, int] | None = None,
 ) -> list[PivotRecommendation]:
-	"""Analyze metric histories and recommend pivots if stagnating."""
+	"""Analyze metric histories and recommend pivots if stagnating.
+
+	Args:
+		cycle_number: Current planner cycle number.
+		test_history: Test pass counts per cycle.
+		completion_history: Task completions per cycle.
+		failure_history: Task failures per cycle.
+		cost_history: Cumulative cost per cycle.
+		threshold: Legacy parameter -- overridden by config.window if config is provided.
+		config: Configurable thresholds. Uses defaults if None.
+		error_messages: Error messages from recent agent failures (for repeated-error detection).
+		task_agent_counts: Map of task_id -> number of distinct agents that attempted it (for churn detection).
+	"""
+	cfg = config or StagnationConfig()
+	window = cfg.window if config else threshold
+
 	pivots: list[PivotRecommendation] = []
 
 	# Flat test count
-	if len(test_history) >= threshold:
-		recent = test_history[-threshold:]
+	if len(test_history) >= window:
+		recent = test_history[-window:]
 		if len(set(recent)) == 1 and recent[0] > 0:
 			pivots.append(PivotRecommendation(
-				trigger=f"Test pass count flat at {recent[0]} for {threshold} cycles",
+				trigger=f"Test pass count flat at {recent[0]} for {window} cycles",
 				strategy="research_before_implement",
 				severity="critical",
 				details=(
@@ -49,10 +80,10 @@ def analyze_stagnation(
 			))
 
 	# Rising cost with flat completions
-	if len(cost_history) >= threshold and len(completion_history) >= threshold:
-		recent_cost = cost_history[-threshold:]
-		recent_comp = completion_history[-threshold:]
-		cost_rising = recent_cost[-1] > recent_cost[0] * 1.2
+	if len(cost_history) >= window and len(completion_history) >= window:
+		recent_cost = cost_history[-window:]
+		recent_comp = completion_history[-window:]
+		cost_rising = recent_cost[-1] > recent_cost[0] * cfg.cost_rise_ratio
 		comp_flat = len(set(recent_comp)) <= 2
 		if cost_rising and comp_flat:
 			pivots.append(PivotRecommendation(
@@ -70,7 +101,7 @@ def analyze_stagnation(
 		recent_fail = sum(failure_history[-3:])
 		recent_comp = sum(completion_history[-3:])
 		total = recent_fail + recent_comp
-		if total > 0 and recent_fail / total > 0.6:
+		if total > 0 and recent_fail / total > cfg.failure_rate_threshold:
 			pivots.append(PivotRecommendation(
 				trigger=f"Failure rate {recent_fail}/{total} ({recent_fail/total:.0%})",
 				strategy="diagnose_systemic",
@@ -82,10 +113,65 @@ def analyze_stagnation(
 				),
 			))
 
-	# Repeated failures on same task
-	# (this would need task-level history, handled in context.py)
+	# Repeated error messages across agents = systemic issue
+	if error_messages:
+		_check_repeated_errors(error_messages, cfg, pivots)
+
+	# Agent churn: same task attempted by many agents = wrong approach
+	if task_agent_counts:
+		_check_agent_churn(task_agent_counts, cfg, pivots)
 
 	return pivots
+
+
+def _check_repeated_errors(
+	error_messages: list[str],
+	cfg: StagnationConfig,
+	pivots: list[PivotRecommendation],
+) -> None:
+	"""Detect the same error message repeated across multiple agents."""
+	counts = Counter(error_messages)
+	for msg, count in counts.most_common(3):
+		if count >= cfg.repeated_error_min_agents:
+			short_msg = msg[:120] + "..." if len(msg) > 120 else msg
+			pivots.append(PivotRecommendation(
+				trigger=f"Same error across {count} agents: {short_msg}",
+				strategy="research_systemic_error",
+				severity="critical",
+				details=(
+					f"The error \"{short_msg}\" appeared in {count} independent agents. "
+					"This is a systemic issue, not a per-agent bug. "
+					"Spawn a research agent to investigate the root cause. "
+					"Consider environment issues, missing dependencies, or incorrect assumptions."
+				),
+			))
+
+
+def _check_agent_churn(
+	task_agent_counts: dict[str, int],
+	cfg: StagnationConfig,
+	pivots: list[PivotRecommendation],
+) -> None:
+	"""Detect tasks where agents keep getting killed and respawned."""
+	churning = {
+		task_id: count
+		for task_id, count in task_agent_counts.items()
+		if count >= cfg.agent_churn_min_respawns
+	}
+	if churning:
+		worst_task = max(churning, key=churning.get)  # type: ignore[arg-type]
+		worst_count = churning[worst_task]
+		pivots.append(PivotRecommendation(
+			trigger=f"Agent churn: task {worst_task} attempted by {worst_count} agents",
+			strategy="rethink_approach",
+			severity="warning" if worst_count < 4 else "critical",
+			details=(
+				f"Task {worst_task} has been attempted by {worst_count} different agents. "
+				"Repeated agent turnover on the same task suggests the approach is wrong, "
+				"not the execution. Pause this task and spawn a research agent to "
+				"find an alternative approach before retrying."
+			),
+		))
 
 
 def pivots_to_decisions(pivots: list[PivotRecommendation]) -> list[dict]:
@@ -124,6 +210,28 @@ def pivots_to_decisions(pivots: list[PivotRecommendation]) -> list[dict]:
 				},
 				"reasoning": f"Pivot: {p.trigger}",
 				"priority": 10,
+			})
+		elif p.strategy == "research_systemic_error":
+			decisions.append({
+				"type": "create_task",
+				"payload": {
+					"title": f"Research systemic error: {p.trigger[:80]}",
+					"description": p.details,
+					"priority": 3,
+				},
+				"reasoning": f"Pivot: {p.trigger}",
+				"priority": 10,
+			})
+		elif p.strategy == "rethink_approach":
+			decisions.append({
+				"type": "create_task",
+				"payload": {
+					"title": f"Rethink approach: {p.trigger[:80]}",
+					"description": p.details,
+					"priority": 2,
+				},
+				"reasoning": f"Pivot: {p.trigger}. Current approach is failing repeatedly.",
+				"priority": 9,
 			})
 	return decisions
 

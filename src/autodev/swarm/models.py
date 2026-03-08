@@ -85,6 +85,7 @@ class SwarmAgent:
 	messages_received: int = 0
 	tasks_completed: int = 0
 	tasks_failed: int = 0
+	death_time: float | None = None
 
 
 # -- Task Pool --
@@ -121,6 +122,7 @@ class SwarmTask:
 	priority: TaskPriority = TaskPriority.NORMAL
 	status: TaskStatus = TaskStatus.PENDING
 	claimed_by: str | None = None
+	claimed_at: str | None = None
 	depends_on: list[str] = field(default_factory=list)
 	files_hint: list[str] = field(default_factory=list)
 	created_at: str = field(default_factory=_now_iso)
@@ -161,3 +163,4 @@ class SwarmState:
 	total_cost_usd: float = 0.0
 	wall_time_seconds: float = 0.0
 	files_in_flight: list[str] = field(default_factory=list)
+	dead_agent_history: list[SwarmAgent] = field(default_factory=list)

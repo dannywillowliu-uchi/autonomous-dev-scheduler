@@ -2,9 +2,19 @@
 name = "autonomous-development"
 path = "/Users/dannyliu/personal_projects/autonomous-development"
 branch = "main"
-objective = """Improve autonomous-development. Be ambitious and focus on high value changes or improvements.
+objective = """Fix bugs and improve autonomous-development. Focus on the swarm module (src/autodev/swarm/).
+
+Priorities:
+1. Find and fix any bugs in the swarm controller, planner, or worker prompt system
+2. Improve reliability of agent lifecycle management (spawning, monitoring, completion detection)
+3. Improve the driving planner's decision quality (better prompts, better state rendering)
+4. Improve stagnation detection and pivot strategies
+5. Security audit: review subprocess spawning, path validation, inbox I/O, and config parsing for injection, traversal, or privilege escalation risks. Run bandit on src/ and fix findings.
+6. Add missing test coverage for the swarm module
+7. Any other high-value improvements you discover
 
 Use .venv/bin/python for all Python commands.
+Run .venv/bin/python -m pytest tests/ -q to verify changes.
 """
 
 [target.verification]
@@ -67,6 +77,13 @@ idle_threshold = 5
 [deliberation]
 max_rounds = 1
 critic_model = "haiku"
+
+[swarm]
+planner_model = "opus"
+planner_cooldown = 30
+max_agents = 0
+min_agents = 2
+stagnation_threshold = 5
 
 [backend]
 type = "local"
