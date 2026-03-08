@@ -413,7 +413,10 @@ We used autodev to build a [C compiler](https://github.com/dannywillowliu-uchi/C
 | Wall time | ~5 hours |
 | API cost | ~$55 |
 | Workers | 4 parallel |
-| Tests passing | 1,788 unit tests |
+| Units merged | ~35 |
+| Source code | 8,106 lines (16 modules) |
+| Test code | 22,309 lines (42 test files) |
+| Tests passing | 1,788 |
 | GCC torture tests | 221/221 (100%) |
 | Human-written compiler code | 0 lines |
 
