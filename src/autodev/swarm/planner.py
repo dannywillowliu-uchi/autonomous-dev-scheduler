@@ -46,6 +46,9 @@ class DrivingPlanner:
 	5. Sleep until next trigger
 	"""
 
+	# After this many consecutive parse failures, escalate and stop
+	MAX_CONSECUTIVE_PARSE_FAILURES = 5
+
 	def __init__(
 		self,
 		controller: SwarmController,
@@ -61,6 +64,7 @@ class DrivingPlanner:
 		self._cost_history: list[float] = []
 		self._log_events: list[dict[str, Any]] = []
 		self._last_plan_time: float = 0
+		self._consecutive_parse_failures = 0
 
 		from pathlib import Path
 
@@ -185,9 +189,14 @@ class DrivingPlanner:
 		"""Decide whether to run a planning cycle."""
 		import time
 
-		# Enforce minimum 60s between planning cycles to avoid burning credits
+		# Enforce minimum interval between cycles, with exponential backoff
+		# on consecutive parse failures to avoid burning credits
 		elapsed = time.monotonic() - self._last_plan_time
 		min_interval = max(60, self._config.planner_cooldown)
+		if self._consecutive_parse_failures > 0:
+			# Double the interval for each consecutive failure: 120s, 240s, 480s, ...
+			backoff = min_interval * (2 ** self._consecutive_parse_failures)
+			min_interval = min(backoff, 600)  # cap at 10 minutes
 		if elapsed < min_interval:
 			return False
 
@@ -213,6 +222,15 @@ class DrivingPlanner:
 
 	def _should_stop(self, state: SwarmState) -> bool:
 		"""Check termination conditions."""
+		# Stop if planner LLM is consistently producing unparseable output
+		if self._consecutive_parse_failures >= self.MAX_CONSECUTIVE_PARSE_FAILURES:
+			logger.error(
+				"Stopping: %d consecutive planner parse failures. "
+				"LLM output is likely being truncated.",
+				self._consecutive_parse_failures,
+			)
+			return True
+
 		active = [
 			a for a in state.agents if a.status == AgentStatus.WORKING
 		]
@@ -330,12 +348,18 @@ class DrivingPlanner:
 			return "[]"
 
 	def _parse_decisions(self, response: str) -> list[PlannerDecision]:
-		"""Parse structured decisions from LLM response."""
+		"""Parse structured decisions from LLM response.
+
+		Tracks consecutive parse failures. If JSON is truncated (common when
+		LLM output hits max_tokens), attempts repair by closing open strings,
+		objects, and arrays.
+		"""
 		text = response.strip()
 
 		start = text.find("[")
 		if start == -1:
 			logger.warning("No JSON array found in planner response")
+			self._consecutive_parse_failures += 1
 			return []
 
 		depth = 0
@@ -349,11 +373,31 @@ class DrivingPlanner:
 					end = i + 1
 					break
 
+		json_text = text[start:end]
+		raw = None
 		try:
-			raw = json.loads(text[start:end])
-		except json.JSONDecodeError as e:
-			logger.warning("Failed to parse planner decisions: %s", e)
+			raw = json.loads(json_text)
+		except json.JSONDecodeError:
+			# Attempt to repair truncated JSON
+			repaired = self._repair_truncated_json(json_text)
+			if repaired is not None:
+				try:
+					raw = json.loads(repaired)
+					logger.info("Repaired truncated JSON from planner response")
+				except json.JSONDecodeError:
+					pass
+
+		if raw is None:
+			self._consecutive_parse_failures += 1
+			logger.warning(
+				"Failed to parse planner decisions (consecutive failures: %d/%d)",
+				self._consecutive_parse_failures,
+				self.MAX_CONSECUTIVE_PARSE_FAILURES,
+			)
 			return []
+
+		# Reset on successful parse
+		self._consecutive_parse_failures = 0
 
 		decisions: list[PlannerDecision] = []
 		for item in raw:
@@ -375,6 +419,49 @@ class DrivingPlanner:
 			len(decisions), self._cycle_count,
 		)
 		return decisions
+
+	@staticmethod
+	def _repair_truncated_json(text: str) -> str | None:
+		"""Attempt to repair truncated JSON by closing open structures.
+
+		Handles the common case where the LLM output was cut off mid-response,
+		producing unterminated strings, objects, or arrays.
+		"""
+		# Truncate to the last complete-looking object boundary
+		# Find the last complete }, then close the array
+		last_brace = text.rfind("}")
+		if last_brace == -1:
+			return None
+
+		# Take everything up to and including the last }
+		candidate = text[:last_brace + 1]
+
+		# Check if we're inside an unterminated string by counting unescaped quotes
+		in_string = False
+		for i, ch in enumerate(candidate):
+			if ch == '"' and (i == 0 or candidate[i - 1] != "\\"):
+				in_string = not in_string
+
+		# If we ended inside a string, back up to before the last unmatched quote
+		if in_string:
+			# Find the last unescaped quote and truncate before it
+			for i in range(len(candidate) - 1, -1, -1):
+				if candidate[i] == '"' and (i == 0 or candidate[i - 1] != "\\"):
+					candidate = candidate[:i]
+					break
+			# Now find the last } again
+			last_brace = candidate.rfind("}")
+			if last_brace == -1:
+				return None
+			candidate = candidate[:last_brace + 1]
+
+		# Close any remaining open brackets
+		open_brackets = candidate.count("[") - candidate.count("]")
+		open_braces = candidate.count("{") - candidate.count("}")
+		candidate += "}" * max(open_braces, 0)
+		candidate += "]" * max(open_brackets, 0)
+
+		return candidate
 
 	def _write_state_file(self, state: SwarmState) -> None:
 		"""Write swarm state to a JSON file for the TUI dashboard."""
