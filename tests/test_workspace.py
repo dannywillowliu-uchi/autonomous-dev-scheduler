@@ -113,7 +113,10 @@ class TestWorkspacePool:
 		}
 
 		# Create autodev/green branch with an extra file in source
-		subprocess.run(["git", "checkout", "-b", "autodev/green"], cwd=str(source_repo), check=True, capture_output=True)
+		subprocess.run(
+			["git", "checkout", "-b", "autodev/green"],
+			cwd=str(source_repo), check=True, capture_output=True,
+		)
 		green_file = source_repo / "green.txt"
 		green_file.write_text("from green branch")
 		subprocess.run(["git", "add", "."], cwd=str(source_repo), check=True, capture_output=True)

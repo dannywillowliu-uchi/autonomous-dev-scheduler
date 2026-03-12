@@ -8,7 +8,8 @@ this module defines the contract (JSON schema) and integration points.
 Expected results.json schema from the runner:
 {
   "summary": {"total": N, "passed": N, "failed": N, "skipped": N},
-  "tests": {"test_name": {"status": "PASS|FAIL|SKIP", "category": "...", "error_msg": "...", "diagnostic": "...", "exit_code": N}},
+  "tests": {"test_name": {"status": "PASS|FAIL|SKIP", "category": "...",
+    "error_msg": "...", "diagnostic": "...", "exit_code": N}},
   "deltas": {"newly_passing": [...], "newly_failing": [...], "newly_compiling": [...]},
   "skip_analysis": {"pattern": {"count": N, "examples": [...]}}
 }
@@ -193,7 +194,10 @@ def format_for_planner(results: CoreTestResults) -> str:
 	lines = []
 	lines.append("## Core Test Results")
 	lines.append("")
-	lines.append(f"**Score: PASS: {results.passed}/{results.total} | FAIL: {results.failed}/{results.total} | SKIP: {results.skipped}/{results.total}** ({results.pass_rate}% pass rate)")
+	lines.append(
+		f"**Score: PASS: {results.passed}/{results.total} | FAIL: {results.failed}/{results.total}"
+		f" | SKIP: {results.skipped}/{results.total}** ({results.pass_rate}% pass rate)"
+	)
 	lines.append("")
 
 	# Delta section
@@ -204,7 +208,10 @@ def format_for_planner(results: CoreTestResults) -> str:
 		if results.newly_failing:
 			lines.append(f"- **-{len(results.newly_failing)} REGRESSIONS**: {', '.join(results.newly_failing[:10])}")
 		if results.newly_compiling:
-			lines.append(f"- +{len(results.newly_compiling)} newly compiling: {', '.join(results.newly_compiling[:10])}")
+			lines.append(
+			f"- +{len(results.newly_compiling)} newly compiling: "
+			f"{', '.join(results.newly_compiling[:10])}"
+		)
 		lines.append("")
 
 	# Full failure diagnostics — the planner needs to understand WHY each test fails
@@ -236,12 +243,27 @@ def format_for_planner(results: CoreTestResults) -> str:
 
 	# Root-cause tracing instructions
 	lines.append("### How to Use These Results")
-	lines.append("1. **FAIL tests are the top priority.** Read each test's source file to understand what it exercises, then trace the failure back to the responsible component.")
-	lines.append("2. **Regressions are urgent.** If a previously-passing test now fails, the most recent changes likely caused it. Revert or fix immediately.")
-	lines.append("3. **Skip patterns show high-leverage features.** Implementing a missing feature that appears in many skip patterns unlocks those tests for validation.")
-	lines.append("4. **Do not add new features** that aren't related to fixing existing FAIL tests or unblocking high-count SKIP patterns.")
+	lines.append(
+		"1. **FAIL tests are the top priority.** Read each test's source file to understand"
+		" what it exercises, then trace the failure back to the responsible component."
+	)
+	lines.append(
+		"2. **Regressions are urgent.** If a previously-passing test now fails,"
+		" the most recent changes likely caused it. Revert or fix immediately."
+	)
+	lines.append(
+		"3. **Skip patterns show high-leverage features.** Implementing a missing feature"
+		" that appears in many skip patterns unlocks those tests for validation."
+	)
+	lines.append(
+		"4. **Do not add new features** that aren't related to fixing existing FAIL tests"
+		" or unblocking high-count SKIP patterns."
+	)
 	if results.newly_failing:
-		lines.append(f"**URGENT: {len(results.newly_failing)} regressions detected -- fix these before any other work.**")
+		lines.append(
+			f"**URGENT: {len(results.newly_failing)} regressions detected"
+			" -- fix these before any other work.**"
+		)
 	lines.append("")
 
 	return "\n".join(lines)

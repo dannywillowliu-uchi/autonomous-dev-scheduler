@@ -2913,7 +2913,12 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 			criteria_warnings: list[str] = []
 			if unit.acceptance_criteria:
 				# Use the actual project root for path validation, not the worker workspace
-				project_path = Path(self.config.target.path) if self.config.target.path else Path(workspace if "::" not in workspace else workspace.split("::")[0])
+				if self.config.target.path:
+					project_path = Path(self.config.target.path)
+				elif "::" not in workspace:
+					project_path = Path(workspace)
+				else:
+					project_path = Path(workspace.split("::")[0])
 				criteria_issues = validate_criteria(unit.acceptance_criteria, project_path)
 				errors = [i for i in criteria_issues if i.severity == Severity.error]
 				if errors:

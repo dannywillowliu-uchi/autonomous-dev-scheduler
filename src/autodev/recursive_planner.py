@@ -253,7 +253,8 @@ You MUST output EXACTLY one <!-- PLAN --> block containing valid JSON.
 Produce a flat list of concrete tasks:
 <!-- PLAN -->{{"type":"leaves","units":[
   {{"title":"task","description":"do X","files_hint":"f.py",
-    "priority":1,"acceptance_criteria":"shell command(s) that exit 0 when done (NO absolute paths like /tmp/)","specialist":"",
+    "priority":1,"specialist":"",
+    "acceptance_criteria":"shell command(s) that exit 0 when done (NO absolute paths like /tmp/)",
     "speculation_score":0.0}}
 ]}}<!-- /PLAN -->
 
