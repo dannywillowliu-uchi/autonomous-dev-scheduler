@@ -13,6 +13,7 @@ from autodev.swarm.models import AgentStatus, SwarmAgent, SwarmTask, TaskStatus
 
 if TYPE_CHECKING:
 	from autodev.config import MissionConfig, SwarmConfig
+	from autodev.swarm.capabilities import CapabilityManifest
 
 
 def build_worker_prompt(
@@ -23,6 +24,7 @@ def build_worker_prompt(
 	tasks: list[SwarmTask],
 	config: MissionConfig,
 	swarm_config: SwarmConfig,
+	capabilities: CapabilityManifest | None = None,
 ) -> str:
 	"""Build a full worker prompt with swarm communication context."""
 	sections = [task_prompt]
@@ -32,6 +34,7 @@ def build_worker_prompt(
 	sections.append(_inbox_section(agent, team_name))
 	sections.append(_file_conflict_section(agent, agents, tasks))
 	sections.append(_skills_section(config))
+	sections.append(_capabilities_section(capabilities))
 	sections.append(_skill_creation_section())
 	sections.append(_mcp_section(swarm_config))
 	sections.append(_result_protocol_section())
@@ -176,6 +179,35 @@ def _skills_section(config: MissionConfig) -> str:
 	for s in skills:
 		lines.append(f"- /{s}")
 	return "\n".join(lines)
+
+
+def _capabilities_section(capabilities: CapabilityManifest | None) -> str:
+	if not capabilities:
+		return ""
+
+	lines: list[str] = []
+	if capabilities.skills:
+		if not lines:
+			lines.append("## Available Capabilities\n")
+		lines.append("**Skills:**")
+		for s in capabilities.skills:
+			desc = f" -- {s.description}" if s.description else ""
+			lines.append(f"- `{s.invocation}`{desc}")
+	if capabilities.agents:
+		if not lines:
+			lines.append("## Available Capabilities\n")
+		lines.append("**Agent Definitions:**")
+		for a in capabilities.agents:
+			desc = f" -- {a.description}" if a.description else ""
+			lines.append(f"- {a.name}{desc}")
+	if capabilities.mcp_servers:
+		if not lines:
+			lines.append("## Available Capabilities\n")
+		lines.append("**MCP Servers:**")
+		for m in capabilities.mcp_servers:
+			lines.append(f"- {m.name} [{m.server_type}]")
+
+	return "\n".join(lines) if lines else ""
 
 
 def _skill_creation_section() -> str:

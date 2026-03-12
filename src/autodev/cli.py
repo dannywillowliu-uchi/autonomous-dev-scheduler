@@ -148,6 +148,13 @@ def build_parser() -> argparse.ArgumentParser:
 	intel.add_argument("--json", action="store_true", dest="json_output", help="Output as JSON")
 	intel.add_argument("--threshold", type=float, default=0.3, help="Relevance threshold for proposals (default: 0.3)")
 
+	# autodev auto-update
+	auto_update = sub.add_parser("auto-update", help="Scan for improvements and auto-apply")
+	auto_update.add_argument("--config", default=DEFAULT_CONFIG, help="Config file path")
+	auto_update.add_argument("--dry-run", action="store_true", help="Show proposals without launching")
+	auto_update.add_argument("--approve-all", action="store_true", help="Skip approval for high-risk")
+	auto_update.add_argument("--threshold", type=float, default=0.3, help="Relevance threshold (default: 0.3)")
+
 	return parser
 
 
@@ -1157,6 +1164,39 @@ def cmd_swarm_inject(args: argparse.Namespace) -> int:
 	return 0
 
 
+def cmd_auto_update(args: argparse.Namespace) -> int:
+	"""Scan for improvements and auto-apply via swarm missions."""
+	config = load_config(args.config)
+	db_path = _get_db_path(args.config)
+
+	with Database(db_path) as db:
+		from autodev.auto_update import AutoUpdatePipeline
+
+		pipeline = AutoUpdatePipeline(config, db)
+		results = asyncio.run(pipeline.run(
+			dry_run=args.dry_run,
+			approve_all=args.approve_all,
+			threshold=args.threshold,
+		))
+
+	if not results:
+		print("No new proposals to process.")
+		return 0
+
+	print(f"\n{'Action':<10} {'Risk':<6} {'Title'}")
+	print("-" * 72)
+	for r in results:
+		title = r.title[:50] + ".." if len(r.title) > 52 else r.title
+		print(f"{r.action:<10} {r.risk_level:<6} {title}")
+		if r.mission_id:
+			print(f"           Mission: {r.mission_id}")
+
+	launched = sum(1 for r in results if r.action in ("launched", "approved"))
+	skipped = sum(1 for r in results if r.action in ("rejected", "skipped"))
+	print(f"\nLaunched: {launched}, Skipped: {skipped}")
+	return 0
+
+
 def cmd_swarm_tui(args: argparse.Namespace) -> int:
 	"""Launch the swarm TUI dashboard."""
 	from autodev.swarm.tui import main as tui_main
@@ -1177,6 +1217,7 @@ COMMANDS = {
 	"summary": cmd_summary,
 	"trace": cmd_trace,
 	"intel": cmd_intel,
+	"auto-update": cmd_auto_update,
 	"diagnose": cmd_diagnose,
 
 	"register": cmd_register,

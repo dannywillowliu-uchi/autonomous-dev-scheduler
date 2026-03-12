@@ -114,12 +114,16 @@ class SwarmController:
 		if not leader_inbox.exists():
 			leader_inbox.write_text("[]")
 
+		from autodev.swarm.capabilities import scan_capabilities
+		self._capabilities = scan_capabilities(Path(self._config.target.resolved_path))
+
 		self._running = True
 		logger.info("Swarm controller initialized for team %s", self._team_name)
 
 	def build_state(self, core_test_results: dict[str, Any] | None = None) -> SwarmState:
 		"""Build current swarm state snapshot for the planner."""
 		wall_time = time.monotonic() - self._start_time
+		capabilities = getattr(self, "_capabilities", None)
 		return self._context.build_state(
 			agents=self.agents,
 			tasks=self.tasks,
@@ -127,6 +131,7 @@ class SwarmController:
 			total_cost_usd=self._total_cost_usd,
 			wall_time_seconds=wall_time,
 			dead_agent_history=self.dead_agent_history,
+			capabilities=capabilities,
 		)
 
 	def render_state(self, state: SwarmState) -> str:
@@ -215,6 +220,10 @@ class SwarmController:
 			DecisionType.WAIT: self._handle_wait,
 			DecisionType.ESCALATE: self._handle_escalate,
 			DecisionType.CREATE_SKILL: self._handle_create_skill,
+			DecisionType.CREATE_HOOK: self._handle_create_hook,
+			DecisionType.REGISTER_MCP: self._handle_register_mcp,
+			DecisionType.CREATE_AGENT_DEF: self._handle_create_agent_def,
+			DecisionType.USE_SKILL: self._handle_use_skill,
 		}
 		handler = handlers.get(decision.type)
 		if not handler:
@@ -368,9 +377,14 @@ class SwarmController:
 		reason = payload.get("reason", "Planner needs human input")
 		logger.warning("ESCALATION: %s", reason)
 		try:
-			from autodev.notifier import TelegramNotifier
-			notifier = TelegramNotifier(self._config.notification)
-			await notifier.send(f"[autodev swarm] ESCALATION: {reason}", level="error")
+			from autodev.notifier import NotificationPriority, TelegramNotifier
+			tg = self._config.notifications.telegram
+			if tg.bot_token and tg.chat_id:
+				notifier = TelegramNotifier(tg.bot_token, tg.chat_id)
+				await notifier.send(
+					f"[autodev swarm] ESCALATION: {reason}",
+					priority=NotificationPriority.HIGH,
+				)
 		except Exception:
 			pass
 		return {"escalated": True, "reason": reason}
@@ -403,6 +417,78 @@ class SwarmController:
 
 		logger.info("Created skill: %s at %s", name, skills_dir)
 		return {"skill_name": name, "path": str(skills_dir)}
+
+	async def _handle_create_hook(self, payload: dict[str, Any]) -> dict[str, Any]:
+		"""Install a hook into the project's .claude/settings.json."""
+		settings_path = Path(self._config.target.resolved_path) / ".claude" / "settings.json"
+		settings_path.parent.mkdir(parents=True, exist_ok=True)
+		settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+		hooks = settings.setdefault("hooks", {})
+		event_hooks = hooks.setdefault(payload["event"], [])
+		hook_entry: dict[str, Any] = {"matcher": payload.get("matcher", ""), "type": payload["type"]}
+		if payload["type"] == "command":
+			hook_entry["command"] = payload["command"]
+		else:
+			hook_entry["prompt"] = payload.get("prompt", "")
+		if payload.get("background"):
+			hook_entry["background"] = True
+		event_hooks.append(hook_entry)
+		settings_path.write_text(json.dumps(settings, indent=2))
+		return {"event": payload["event"], "hook_added": True, "path": str(settings_path)}
+
+	async def _handle_register_mcp(self, payload: dict[str, Any]) -> dict[str, Any]:
+		"""Add an MCP server to .mcp.json."""
+		if payload.get("scope") == "global":
+			mcp_path = Path.home() / ".claude.json"
+		else:
+			mcp_path = Path(self._config.target.resolved_path) / ".mcp.json"
+		config = json.loads(mcp_path.read_text()) if mcp_path.exists() else {}
+		servers = config.setdefault("mcpServers", {})
+		entry: dict[str, Any] = {"type": payload.get("type", "stdio")}
+		if entry["type"] == "stdio":
+			entry["command"] = payload["command"]
+			if payload.get("args"):
+				entry["args"] = payload["args"]
+		else:
+			entry["url"] = payload["url"]
+		if payload.get("env"):
+			entry["env"] = payload["env"]
+		servers[payload["name"]] = entry
+		mcp_path.write_text(json.dumps(config, indent=2))
+		return {"name": payload["name"], "registered": True, "path": str(mcp_path)}
+
+	async def _handle_create_agent_def(self, payload: dict[str, Any]) -> dict[str, Any]:
+		"""Write a .claude/agents/<name>.md file."""
+		agents_dir = Path(self._config.target.resolved_path) / ".claude" / "agents"
+		agents_dir.mkdir(parents=True, exist_ok=True)
+		lines = ["---"]
+		lines.append(f"name: {payload['name']}")
+		if payload.get("description"):
+			lines.append(f"description: {payload['description']}")
+		if payload.get("tools"):
+			lines.append(f"allowed-tools: {', '.join(payload['tools'])}")
+		if payload.get("disallowed_tools"):
+			lines.append(f"disallowed-tools: {', '.join(payload['disallowed_tools'])}")
+		if payload.get("model"):
+			lines.append(f"model: {payload['model']}")
+		lines.append("---")
+		lines.append("")
+		lines.append(payload.get("system_prompt", ""))
+		agent_path = agents_dir / f"{payload['name']}.md"
+		agent_path.write_text("\n".join(lines))
+		return {"name": payload["name"], "created": True, "path": str(agent_path)}
+
+	async def _handle_use_skill(self, payload: dict[str, Any]) -> dict[str, Any]:
+		"""Instruct an active agent to invoke a skill via inbox message."""
+		agent_name = payload["agent_name"]
+		skill_name = payload["skill_name"]
+		args = payload.get("args", "")
+		self._write_to_inbox(agent_name, {
+			"type": "directive",
+			"from": "planner",
+			"text": f"Invoke /{skill_name} {args}".strip(),
+		})
+		return {"agent_name": agent_name, "skill": skill_name, "directed": True}
 
 	# -- Worker Prompt --
 

@@ -1117,3 +1117,254 @@ class TestTaskStateSync:
 
 		# Agent should have current_task_id cleared (not pointing to bogus ID)
 		assert ctrl.agents[0].current_task_id is None
+
+
+class TestHandleCreateHook:
+	async def test_creates_hook_in_settings(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		result = await ctrl._handle_create_hook({
+			"event": "PreToolUse",
+			"matcher": "Bash",
+			"type": "command",
+			"command": "echo safety check",
+		})
+		assert result["hook_added"] is True
+		assert result["event"] == "PreToolUse"
+		settings_path = Path(tmp_path) / ".claude" / "settings.json"
+		import json
+		data = json.loads(settings_path.read_text())
+		assert len(data["hooks"]["PreToolUse"]) == 1
+		hook = data["hooks"]["PreToolUse"][0]
+		assert hook["matcher"] == "Bash"
+		assert hook["command"] == "echo safety check"
+		assert hook["type"] == "command"
+
+	async def test_creates_prompt_hook(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		await ctrl._handle_create_hook({
+			"event": "PostToolUse",
+			"matcher": "Write",
+			"type": "prompt",
+			"prompt": "Check output format",
+		})
+		settings_path = Path(tmp_path) / ".claude" / "settings.json"
+		import json
+		data = json.loads(settings_path.read_text())
+		hook = data["hooks"]["PostToolUse"][0]
+		assert hook["type"] == "prompt"
+		assert hook["prompt"] == "Check output format"
+
+	async def test_appends_to_existing_hooks(self, tmp_path: Path) -> None:
+		import json
+		settings_dir = Path(tmp_path) / ".claude"
+		settings_dir.mkdir(parents=True)
+		settings_path = settings_dir / "settings.json"
+		settings_path.write_text(json.dumps({
+			"hooks": {"PreToolUse": [{"matcher": "Edit", "type": "command", "command": "lint"}]}
+		}))
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		await ctrl._handle_create_hook({
+			"event": "PreToolUse",
+			"matcher": "Bash",
+			"type": "command",
+			"command": "check",
+		})
+		data = json.loads(settings_path.read_text())
+		assert len(data["hooks"]["PreToolUse"]) == 2
+
+	async def test_background_hook(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		await ctrl._handle_create_hook({
+			"event": "PreToolUse",
+			"matcher": "Bash",
+			"type": "command",
+			"command": "log",
+			"background": True,
+		})
+		import json
+		settings_path = Path(tmp_path) / ".claude" / "settings.json"
+		data = json.loads(settings_path.read_text())
+		assert data["hooks"]["PreToolUse"][0]["background"] is True
+
+
+class TestHandleRegisterMcp:
+	async def test_registers_stdio_server(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		result = await ctrl._handle_register_mcp({
+			"name": "my-mcp",
+			"type": "stdio",
+			"command": "npx",
+			"args": ["-y", "my-mcp-server"],
+		})
+		assert result["registered"] is True
+		assert result["name"] == "my-mcp"
+		import json
+		mcp_path = Path(tmp_path) / ".mcp.json"
+		data = json.loads(mcp_path.read_text())
+		assert data["mcpServers"]["my-mcp"]["command"] == "npx"
+		assert data["mcpServers"]["my-mcp"]["args"] == ["-y", "my-mcp-server"]
+
+	async def test_registers_sse_server(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		await ctrl._handle_register_mcp({
+			"name": "remote-mcp",
+			"type": "sse",
+			"url": "https://example.com/mcp",
+		})
+		import json
+		mcp_path = Path(tmp_path) / ".mcp.json"
+		data = json.loads(mcp_path.read_text())
+		assert data["mcpServers"]["remote-mcp"]["url"] == "https://example.com/mcp"
+
+	async def test_registers_with_env(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		await ctrl._handle_register_mcp({
+			"name": "with-env",
+			"type": "stdio",
+			"command": "cmd",
+			"env": {"API_KEY": "secret"},
+		})
+		import json
+		mcp_path = Path(tmp_path) / ".mcp.json"
+		data = json.loads(mcp_path.read_text())
+		assert data["mcpServers"]["with-env"]["env"] == {"API_KEY": "secret"}
+
+	async def test_appends_to_existing_config(self, tmp_path: Path) -> None:
+		import json
+		mcp_path = Path(tmp_path) / ".mcp.json"
+		mcp_path.write_text(json.dumps({
+			"mcpServers": {"existing": {"command": "old"}}
+		}))
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		await ctrl._handle_register_mcp({
+			"name": "new-server",
+			"type": "stdio",
+			"command": "new-cmd",
+		})
+		data = json.loads(mcp_path.read_text())
+		assert "existing" in data["mcpServers"]
+		assert "new-server" in data["mcpServers"]
+
+	async def test_global_scope_writes_to_home(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		with patch.object(Path, "home", return_value=tmp_path):
+			await ctrl._handle_register_mcp({
+				"name": "global-mcp",
+				"scope": "global",
+				"type": "stdio",
+				"command": "global-cmd",
+			})
+		import json
+		mcp_path = tmp_path / ".claude.json"
+		data = json.loads(mcp_path.read_text())
+		assert "global-mcp" in data["mcpServers"]
+
+
+class TestHandleCreateAgentDef:
+	async def test_creates_agent_definition(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		result = await ctrl._handle_create_agent_def({
+			"name": "code-reviewer",
+			"description": "Reviews code for bugs",
+			"tools": ["Read", "Grep", "Glob"],
+			"model": "sonnet",
+			"system_prompt": "You are a code reviewer.",
+		})
+		assert result["created"] is True
+		assert result["name"] == "code-reviewer"
+		agent_path = Path(tmp_path) / ".claude" / "agents" / "code-reviewer.md"
+		assert agent_path.exists()
+		content = agent_path.read_text()
+		assert "name: code-reviewer" in content
+		assert "description: Reviews code for bugs" in content
+		assert "allowed-tools: Read, Grep, Glob" in content
+		assert "model: sonnet" in content
+		assert "You are a code reviewer." in content
+
+	async def test_creates_minimal_agent(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		await ctrl._handle_create_agent_def({
+			"name": "simple-agent",
+		})
+		agent_path = Path(tmp_path) / ".claude" / "agents" / "simple-agent.md"
+		content = agent_path.read_text()
+		assert "name: simple-agent" in content
+		assert "description" not in content
+		assert "allowed-tools" not in content
+
+	async def test_creates_agent_with_disallowed_tools(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		await ctrl._handle_create_agent_def({
+			"name": "safe-agent",
+			"disallowed_tools": ["Bash", "Write"],
+		})
+		agent_path = Path(tmp_path) / ".claude" / "agents" / "safe-agent.md"
+		content = agent_path.read_text()
+		assert "disallowed-tools: Bash, Write" in content
+
+
+class TestHandleUseSkill:
+	async def test_sends_directive_to_agent_inbox(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		with patch.object(ctrl, "_write_to_inbox") as mock_write:
+			result = await ctrl._handle_use_skill({
+				"agent_name": "worker-1",
+				"skill_name": "commit",
+				"args": "-m 'fix bug'",
+			})
+		assert result["directed"] is True
+		assert result["skill"] == "commit"
+		assert result["agent_name"] == "worker-1"
+		mock_write.assert_called_once()
+		call_args = mock_write.call_args
+		assert call_args[0][0] == "worker-1"
+		msg = call_args[0][1]
+		assert msg["type"] == "directive"
+		assert "/commit -m 'fix bug'" in msg["text"]
+
+	async def test_sends_skill_without_args(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		with patch.object(ctrl, "_write_to_inbox") as mock_write:
+			await ctrl._handle_use_skill({
+				"agent_name": "worker-2",
+				"skill_name": "verify-all",
+			})
+		msg = mock_write.call_args[0][1]
+		assert msg["text"] == "Invoke /verify-all"
+
+
+class TestHandleEscalate:
+	async def test_escalate_returns_reason(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		result = await ctrl._handle_escalate({
+			"reason": "Tests stuck in infinite loop",
+		})
+		assert result["escalated"] is True
+		assert result["reason"] == "Tests stuck in infinite loop"
+
+	async def test_escalate_default_reason(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		result = await ctrl._handle_escalate({})
+		assert result["escalated"] is True
+		assert result["reason"] == "Planner needs human input"
+
+
+class TestHandleWait:
+	async def test_wait_returns_duration(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		with patch("autodev.swarm.controller.asyncio.sleep", new=AsyncMock()):
+			result = await ctrl._handle_wait({"duration": 5, "reason": "agents busy"})
+		assert result["waited"] == 5
+		assert result["reason"] == "agents busy"
+
+	async def test_wait_caps_at_120(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		with patch("autodev.swarm.controller.asyncio.sleep", new=AsyncMock()):
+			result = await ctrl._handle_wait({"duration": 999})
+		assert result["waited"] == 120
+
+	async def test_wait_default_duration(self, tmp_path: Path) -> None:
+		ctrl = SwarmController(_make_config(tmp_path), _make_swarm_config(), _make_db())
+		with patch("autodev.swarm.controller.asyncio.sleep", new=AsyncMock()):
+			result = await ctrl._handle_wait({})
+		assert result["waited"] == 10

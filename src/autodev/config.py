@@ -372,6 +372,7 @@ class SwarmConfig:
 	min_agents: int = 2
 	stagnation_threshold: int = 3
 	inherit_global_mcps: bool = True  # workers get ~/.claude.json MCP servers
+	inherit_global_capabilities: bool = True  # workers see global skills, agents, hooks, plugins
 	allowed_mcps: list[str] = field(default_factory=list)  # empty = all
 
 
@@ -964,6 +965,8 @@ def _build_swarm(data: dict[str, Any]) -> SwarmConfig:
 		sc.stagnation_threshold = int(data["stagnation_threshold"])
 	if "inherit_global_mcps" in data:
 		sc.inherit_global_mcps = bool(data["inherit_global_mcps"])
+	if "inherit_global_capabilities" in data:
+		sc.inherit_global_capabilities = bool(data["inherit_global_capabilities"])
 	if "allowed_mcps" in data:
 		sc.allowed_mcps = [str(m) for m in data["allowed_mcps"]]
 	return sc
@@ -1193,7 +1196,11 @@ def build_claude_cmd(
 	if allowed_tools:
 		for tool in allowed_tools:
 			cmd.extend(["--allowedTools", tool])
-	if setting_sources:
+	# When inherit_global_capabilities (or inherit_global_mcps) is true, suppress
+	# setting_sources that would restrict workers to project-only settings, blocking
+	# global skills, agents, hooks, and plugins.
+	_inherit = getattr(config.swarm, "inherit_global_capabilities", False) or config.swarm.inherit_global_mcps
+	if setting_sources and not _inherit:
 		cmd.extend(["--setting-sources", setting_sources])
 	if json_schema is not None:
 		cmd.extend(["--json-schema", json_schema])

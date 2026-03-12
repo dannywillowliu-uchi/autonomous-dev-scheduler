@@ -8,6 +8,7 @@ import logging
 import re
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Generator, Sequence
 
@@ -560,6 +561,17 @@ CREATE TABLE IF NOT EXISTS speculation_results (
 	timestamp TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_speculation_results_parent ON speculation_results(parent_unit_id);
+
+CREATE TABLE IF NOT EXISTS applied_proposals (
+	id TEXT PRIMARY KEY,
+	proposal_id TEXT NOT NULL,
+	finding_title TEXT NOT NULL DEFAULT '',
+	applied_at TEXT NOT NULL,
+	mission_id TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL DEFAULT 'launched',
+	objective TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_applied_proposals_proposal ON applied_proposals(proposal_id);
 """
 
 
@@ -3183,3 +3195,54 @@ class Database:
 			application_count=row["application_count"],
 			created_at=row["created_at"],
 		)
+
+	# -- Applied Proposals (auto-update pipeline) --
+
+	def is_proposal_applied(self, title: str) -> bool:
+		"""Check if a proposal with this title has already been applied."""
+		row = self.conn.execute(
+			"SELECT 1 FROM applied_proposals WHERE finding_title = ?",
+			(title,),
+		).fetchone()
+		return row is not None
+
+	def record_applied_proposal(
+		self,
+		proposal_id: str,
+		finding_title: str,
+		mission_id: str,
+		status: str = "launched",
+		objective: str = "",
+	) -> str:
+		"""Record a proposal as applied. Returns the row id."""
+		from autodev.models import _new_id
+
+		row_id = _new_id()
+		now = datetime.now(timezone.utc).isoformat()
+		self.conn.execute(
+			"INSERT INTO applied_proposals "
+			"(id, proposal_id, finding_title, applied_at, mission_id, status, objective) "
+			"VALUES (?, ?, ?, ?, ?, ?, ?)",
+			(row_id, proposal_id, finding_title, now, mission_id, status, objective),
+		)
+		self.conn.commit()
+		return row_id
+
+	def get_applied_proposals(self, limit: int = 50) -> list[dict[str, str]]:
+		"""Return recent applied proposals as dicts."""
+		rows = self.conn.execute(
+			"SELECT * FROM applied_proposals ORDER BY applied_at DESC LIMIT ?",
+			(limit,),
+		).fetchall()
+		return [
+			{
+				"id": r["id"],
+				"proposal_id": r["proposal_id"],
+				"finding_title": r["finding_title"],
+				"applied_at": r["applied_at"],
+				"mission_id": r["mission_id"],
+				"status": r["status"],
+				"objective": r["objective"],
+			}
+			for r in rows
+		]

@@ -59,7 +59,11 @@ class TestPlannerDecision:
 		assert d.priority == 2
 
 	def test_decision_types_cover_all(self) -> None:
-		expected = {"spawn", "kill", "redirect", "create_task", "adjust", "wait", "escalate", "create_skill"}
+		expected = {
+			"spawn", "kill", "redirect", "create_task", "adjust", "wait",
+			"escalate", "create_skill", "create_hook", "register_mcp",
+			"create_agent_def", "use_skill",
+		}
 		actual = {dt.value for dt in DecisionType}
 		assert actual == expected
 

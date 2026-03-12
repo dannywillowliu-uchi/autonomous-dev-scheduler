@@ -51,3 +51,4 @@ class AdaptationProposal:
 	target_modules: list[str] = field(default_factory=list)
 	priority: int = 3  # 1 (highest) to 5 (lowest)
 	effort_estimate: str = "medium"  # "small", "medium", "large"
+	risk_level: str = "low"  # "low", "high"

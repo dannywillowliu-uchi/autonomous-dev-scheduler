@@ -69,12 +69,27 @@ def _mock_arxiv_response() -> httpx.Response:
 	return httpx.Response(200, text=xml)
 
 
+def _mock_claude_code_response() -> httpx.Response:
+	"""Fake Claude Code releases response."""
+	data = [
+		{
+			"tag_name": "v1.0.50",
+			"html_url": "https://github.com/anthropics/claude-code/releases/tag/v1.0.50",
+			"body": "New skill and hook support for automation workflows",
+			"published_at": "2026-01-20T10:00:00Z",
+		},
+	]
+	return httpx.Response(200, json=data)
+
+
 def _route_mock_response(request: httpx.Request) -> httpx.Response:
 	"""Route mock responses based on URL host."""
 	url = str(request.url)
 	if "hn.algolia.com" in url:
 		return _mock_hn_response()
 	elif "api.github.com" in url:
+		if "anthropics/claude-code/releases" in url:
+			return _mock_claude_code_response()
 		return _mock_gh_response()
 	elif "arxiv.org" in url:
 		return _mock_arxiv_response()
