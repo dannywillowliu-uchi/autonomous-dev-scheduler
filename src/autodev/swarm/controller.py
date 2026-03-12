@@ -78,6 +78,12 @@ class SwarmController:
 		self._max_dead_history = 50
 		self._task_claim_timeout = task_claim_timeout
 		self._stalled_task_timeout = stalled_task_timeout
+		# Trace system
+		self._run_id = _now_iso().replace(":", "-").replace("T", "_")[:19]
+		self._trace_dir = Path(config.target.resolved_path) / ".autodev-traces" / self._run_id
+		self._trace_tasks: dict[str, asyncio.Task] = {}  # agent_id -> streaming task
+		self._agent_outputs: dict[str, str] = {}  # agent_id -> accumulated output
+		self._agent_spawn_times: dict[str, str] = {}  # agent_id -> ISO timestamp
 
 	@property
 	def team_name(self) -> str:
@@ -600,6 +606,8 @@ class SwarmController:
 		isolate from global config), swarm agents inherit global MCP servers
 		by default so they can use browser automation, nanobanana, obsidian,
 		and other tools configured in ~/.claude.json.
+
+		Output is streamed to a trace file at .autodev-traces/{run_id}/{agent}.log.
 		"""
 		from autodev.config import build_claude_cmd, claude_subprocess_env
 
@@ -628,10 +636,51 @@ class SwarmController:
 				cwd=str(self._config.target.resolved_path),
 				env=env,
 			)
+			# Start streaming output to trace file
+			self._agent_spawn_times[agent.id] = _now_iso()
+			self._agent_outputs[agent.id] = ""
+			trace_task = asyncio.create_task(
+				self._stream_agent_output(agent.id, agent.name, proc)
+			)
+			self._trace_tasks[agent.id] = trace_task
 			return proc
 		except Exception as e:
 			logger.error("Failed to spawn Claude session for %s: %s", agent.name, e)
 			return None
+
+	async def _stream_agent_output(
+		self, agent_id: str, agent_name: str, proc: asyncio.subprocess.Process
+	) -> None:
+		"""Stream agent stdout/stderr to a trace file, avoiding pipe deadlocks."""
+		self._trace_dir.mkdir(parents=True, exist_ok=True)
+		trace_path = self._trace_dir / f"{agent_name}-{agent_id[:8]}.log"
+		try:
+			with open(trace_path, "w") as f:
+				f.write(f"# Agent: {agent_name} ({agent_id})\n")
+				f.write(f"# Started: {self._agent_spawn_times.get(agent_id, '')}\n\n")
+
+				async def read_stream(stream: asyncio.StreamReader, prefix: str) -> None:
+					while True:
+						line = await stream.readline()
+						if not line:
+							break
+						decoded = line.decode(errors="replace")
+						f.write(f"{prefix}{decoded}")
+						f.flush()
+						if prefix == "[OUT] ":
+							self._agent_outputs[agent_id] = (
+								self._agent_outputs.get(agent_id, "") + decoded
+							)
+
+				tasks = []
+				if proc.stdout:
+					tasks.append(asyncio.create_task(read_stream(proc.stdout, "[OUT] ")))
+				if proc.stderr:
+					tasks.append(asyncio.create_task(read_stream(proc.stderr, "[ERR] ")))
+				if tasks:
+					await asyncio.gather(*tasks)
+		except Exception as e:
+			logger.warning("Trace streaming error for %s: %s", agent_name, e)
 
 	# -- Agent Monitoring --
 
@@ -645,11 +694,22 @@ class SwarmController:
 				continue
 
 			if proc.returncode is not None:
-				try:
-					stdout_bytes = await proc.stdout.read() if proc.stdout else b""
-					output = stdout_bytes.decode(errors="replace")
-				except Exception:
-					output = ""
+				# Wait for trace streaming to finish
+				trace_task = self._trace_tasks.pop(agent_id, None)
+				if trace_task and not trace_task.done():
+					try:
+						await asyncio.wait_for(trace_task, timeout=5.0)
+					except (asyncio.TimeoutError, Exception):
+						pass
+
+				# Use output accumulated by the streaming task, fall back to pipe read
+				output = self._agent_outputs.pop(agent_id, "")
+				if not output:
+					try:
+						stdout_bytes = await proc.stdout.read() if proc.stdout else b""
+						output = stdout_bytes.decode(errors="replace")
+					except Exception:
+						output = ""
 
 				result = self._parse_ad_result(output)
 				if result:
@@ -695,6 +755,18 @@ class SwarmController:
 				if status == "completed" and task:
 					commit_hash = await self._auto_commit_task(task.title, agent.name)
 
+				# Save trace to DB
+				trace_path = self._trace_dir / f"{agent.name}-{agent_id[:8]}.log"
+				self._save_agent_trace(
+					agent=agent,
+					task=task,
+					exit_code=proc.returncode,
+					cost_usd=agent_cost,
+					files_changed=files_changed or [],
+					trace_path=str(trace_path) if trace_path.exists() else "",
+					output=output,
+				)
+
 				event: dict[str, Any] = {
 					"type": "agent_completed",
 					"agent_id": agent_id,
@@ -713,6 +785,47 @@ class SwarmController:
 		self._check_claim_timeouts(events)
 		self._cleanup_dead_agents()
 		return events
+
+	def _save_agent_trace(
+		self,
+		agent: SwarmAgent,
+		task: SwarmTask | None,
+		exit_code: int | None,
+		cost_usd: float,
+		files_changed: list[str],
+		trace_path: str,
+		output: str,
+	) -> None:
+		"""Save agent trace metadata to DB."""
+		try:
+			spawn_time = self._agent_spawn_times.pop(agent.id, "")
+			ended_at = _now_iso()
+			duration_s = 0.0
+			if spawn_time:
+				from datetime import datetime
+				try:
+					start = datetime.fromisoformat(spawn_time)
+					end = datetime.fromisoformat(ended_at)
+					duration_s = (end - start).total_seconds()
+				except (ValueError, TypeError):
+					pass
+			self._db.save_agent_trace(
+				run_id=self._run_id,
+				agent_name=agent.name,
+				agent_id=agent.id,
+				task_id=task.id if task else "",
+				task_title=task.title if task else "",
+				started_at=spawn_time,
+				ended_at=ended_at,
+				duration_s=duration_s,
+				exit_code=exit_code,
+				cost_usd=cost_usd,
+				files_changed=files_changed,
+				trace_path=trace_path,
+				output_tail=output[-2000:] if output else "",
+			)
+		except Exception as e:
+			logger.warning("Failed to save agent trace for %s: %s", agent.name, e)
 
 	def _resolve_agent_task(self, agent: SwarmAgent) -> SwarmTask | None:
 		"""Find the task associated with an agent.

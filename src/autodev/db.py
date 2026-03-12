@@ -572,6 +572,25 @@ CREATE TABLE IF NOT EXISTS applied_proposals (
 	objective TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_applied_proposals_proposal ON applied_proposals(proposal_id);
+
+CREATE TABLE IF NOT EXISTS agent_traces (
+	id TEXT PRIMARY KEY,
+	run_id TEXT NOT NULL,
+	agent_name TEXT NOT NULL,
+	agent_id TEXT NOT NULL,
+	task_id TEXT NOT NULL DEFAULT '',
+	task_title TEXT NOT NULL DEFAULT '',
+	started_at TEXT NOT NULL,
+	ended_at TEXT NOT NULL DEFAULT '',
+	duration_s REAL NOT NULL DEFAULT 0.0,
+	exit_code INTEGER,
+	cost_usd REAL NOT NULL DEFAULT 0.0,
+	files_changed TEXT NOT NULL DEFAULT '[]',
+	trace_path TEXT NOT NULL DEFAULT '',
+	output_tail TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_agent_traces_run ON agent_traces(run_id);
+CREATE INDEX IF NOT EXISTS idx_agent_traces_agent ON agent_traces(agent_name);
 """
 
 
@@ -3243,6 +3262,76 @@ class Database:
 				"mission_id": r["mission_id"],
 				"status": r["status"],
 				"objective": r["objective"],
+			}
+			for r in rows
+		]
+
+	# -- Agent Traces --
+
+	def save_agent_trace(
+		self,
+		run_id: str,
+		agent_name: str,
+		agent_id: str,
+		task_id: str = "",
+		task_title: str = "",
+		started_at: str = "",
+		ended_at: str = "",
+		duration_s: float = 0.0,
+		exit_code: int | None = None,
+		cost_usd: float = 0.0,
+		files_changed: list[str] | None = None,
+		trace_path: str = "",
+		output_tail: str = "",
+	) -> str:
+		"""Save an agent trace record. Returns the row id."""
+		from autodev.models import _new_id
+
+		row_id = _new_id()
+		self.conn.execute(
+			"INSERT INTO agent_traces "
+			"(id, run_id, agent_name, agent_id, task_id, task_title, "
+			"started_at, ended_at, duration_s, exit_code, cost_usd, "
+			"files_changed, trace_path, output_tail) "
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			(
+				row_id, run_id, agent_name, agent_id, task_id, task_title,
+				started_at, ended_at, duration_s, exit_code, cost_usd,
+				json.dumps(files_changed or []),
+				trace_path, output_tail[-2000:],
+			),
+		)
+		self.conn.commit()
+		return row_id
+
+	def get_agent_traces(self, run_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+		"""Return agent traces, optionally filtered by run_id."""
+		if run_id:
+			rows = self.conn.execute(
+				"SELECT * FROM agent_traces WHERE run_id = ? ORDER BY started_at DESC LIMIT ?",
+				(run_id, limit),
+			).fetchall()
+		else:
+			rows = self.conn.execute(
+				"SELECT * FROM agent_traces ORDER BY started_at DESC LIMIT ?",
+				(limit,),
+			).fetchall()
+		return [
+			{
+				"id": r["id"],
+				"run_id": r["run_id"],
+				"agent_name": r["agent_name"],
+				"agent_id": r["agent_id"],
+				"task_id": r["task_id"],
+				"task_title": r["task_title"],
+				"started_at": r["started_at"],
+				"ended_at": r["ended_at"],
+				"duration_s": r["duration_s"],
+				"exit_code": r["exit_code"],
+				"cost_usd": r["cost_usd"],
+				"files_changed": json.loads(r["files_changed"]),
+				"trace_path": r["trace_path"],
+				"output_tail": r["output_tail"],
 			}
 			for r in rows
 		]
