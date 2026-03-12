@@ -321,6 +321,126 @@ class TestBackwardCompatibility:
 			assert "STOPPED" in msg
 
 
+class TestRequestApproval:
+	@pytest.mark.asyncio
+	async def test_approved_returns_true(self, notifier: TelegramNotifier) -> None:
+		"""request_approval returns True when user replies 'approve'."""
+		mock_post_resp = httpx.Response(200)
+		approve_update = {
+			"result": [{
+				"update_id": 1,
+				"message": {
+					"text": "approve",
+					"chat": {"id": 12345},
+				},
+			}],
+		}
+		mock_get_resp = httpx.Response(200, json=approve_update)
+
+		with patch("autodev.notifier.httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post, \
+			patch("autodev.notifier.httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+			mock_post.return_value = mock_post_resp
+			mock_get.return_value = mock_get_resp
+
+			result = await notifier.request_approval("Deploy to prod?", timeout_seconds=5.0, poll_interval=0.01)
+			assert result is True
+			mock_post.assert_called_once()
+
+		await notifier.close()
+
+	@pytest.mark.asyncio
+	async def test_rejected_returns_false(self, notifier: TelegramNotifier) -> None:
+		"""request_approval returns False when user replies 'reject'."""
+		mock_post_resp = httpx.Response(200)
+		reject_update = {
+			"result": [{
+				"update_id": 1,
+				"message": {
+					"text": "no",
+					"chat": {"id": 12345},
+				},
+			}],
+		}
+		mock_get_resp = httpx.Response(200, json=reject_update)
+
+		with patch("autodev.notifier.httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post, \
+			patch("autodev.notifier.httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+			mock_post.return_value = mock_post_resp
+			mock_get.return_value = mock_get_resp
+
+			result = await notifier.request_approval("Deploy to prod?", timeout_seconds=5.0, poll_interval=0.01)
+			assert result is False
+
+		await notifier.close()
+
+	@pytest.mark.asyncio
+	async def test_timeout_returns_false(self, notifier: TelegramNotifier) -> None:
+		"""request_approval returns False when no response before timeout."""
+		mock_post_resp = httpx.Response(200)
+		empty_updates = {"result": []}
+		mock_get_resp = httpx.Response(200, json=empty_updates)
+
+		with patch("autodev.notifier.httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post, \
+			patch("autodev.notifier.httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+			mock_post.return_value = mock_post_resp
+			mock_get.return_value = mock_get_resp
+
+			result = await notifier.request_approval("Deploy?", timeout_seconds=0.05, poll_interval=0.01)
+			assert result is False
+
+		await notifier.close()
+
+	@pytest.mark.asyncio
+	async def test_ignores_other_chat_ids(self, notifier: TelegramNotifier) -> None:
+		"""request_approval ignores messages from other chats."""
+		mock_post_resp = httpx.Response(200)
+		wrong_chat = {
+			"result": [{
+				"update_id": 1,
+				"message": {
+					"text": "approve",
+					"chat": {"id": 99999},
+				},
+			}],
+		}
+		mock_get_resp = httpx.Response(200, json=wrong_chat)
+
+		with patch("autodev.notifier.httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post, \
+			patch("autodev.notifier.httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+			mock_post.return_value = mock_post_resp
+			mock_get.return_value = mock_get_resp
+
+			result = await notifier.request_approval("Deploy?", timeout_seconds=0.05, poll_interval=0.01)
+			assert result is False
+
+		await notifier.close()
+
+	@pytest.mark.asyncio
+	async def test_poll_error_continues(self, notifier: TelegramNotifier) -> None:
+		"""request_approval continues polling after transient errors."""
+		mock_post_resp = httpx.Response(200)
+		approve_update = {
+			"result": [{
+				"update_id": 1,
+				"message": {
+					"text": "y",
+					"chat": {"id": 12345},
+				},
+			}],
+		}
+		mock_get_resp = httpx.Response(200, json=approve_update)
+
+		with patch("autodev.notifier.httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post, \
+			patch("autodev.notifier.httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+			mock_post.return_value = mock_post_resp
+			mock_get.side_effect = [httpx.ConnectError("net error"), mock_get_resp]
+
+			result = await notifier.request_approval("Deploy?", timeout_seconds=5.0, poll_interval=0.01)
+			assert result is True
+
+		await notifier.close()
+
+
 class TestRetryLogic:
 	"""Tests for transient network failure retry logic in _send_with_retry."""
 

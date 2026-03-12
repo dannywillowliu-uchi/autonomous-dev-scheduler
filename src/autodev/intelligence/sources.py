@@ -14,6 +14,7 @@ from typing import Any, Callable, Coroutine
 
 import httpx
 
+from autodev.intelligence.claude_code import scan_claude_code
 from autodev.intelligence.models import Finding
 
 logger = logging.getLogger(__name__)
@@ -282,6 +283,9 @@ async def scan_arxiv(client: httpx.AsyncClient | None = None) -> list[Finding]:
 			await client.aclose()
 
 	return findings
+
+
+_register_scanner("claude_code")(scan_claude_code)
 
 
 async def scan_incremental(

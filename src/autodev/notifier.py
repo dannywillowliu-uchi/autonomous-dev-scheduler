@@ -214,6 +214,61 @@ class TelegramNotifier:
 		self._apply_backpressure()
 		self._queue_event.set()
 
+	async def request_approval(
+		self,
+		proposal_description: str,
+		timeout_seconds: float = 3600.0,
+		poll_interval: float = 10.0,
+	) -> bool:
+		"""Send an approval request via Telegram and poll for response.
+
+		Sends a message with the proposal description asking the user to
+		reply with 'approve' or 'reject'. Polls getUpdates for a matching
+		reply. Returns True if approved, False if rejected or timed out.
+		"""
+		import time
+
+		client = await self._ensure_client()
+		url = f"https://api.telegram.org/bot{self._bot_token}/sendMessage"
+		request_text = (
+			f"*Approval Required*\n\n"
+			f"{proposal_description}\n\n"
+			f"Reply with `approve` or `reject`"
+		)
+		await self._send_with_retry(client, url, {
+			"chat_id": self._chat_id,
+			"text": request_text,
+			"parse_mode": "Markdown",
+		})
+
+		deadline = time.monotonic() + timeout_seconds
+		last_update_id = 0
+		while time.monotonic() < deadline:
+			try:
+				updates_url = f"https://api.telegram.org/bot{self._bot_token}/getUpdates"
+				resp = await client.get(updates_url, params={
+					"offset": last_update_id + 1,
+					"timeout": min(int(poll_interval), 30),
+				})
+				if resp.status_code == 200:
+					data = resp.json()
+					for update in data.get("result", []):
+						last_update_id = update["update_id"]
+						msg = update.get("message", {})
+						text = msg.get("text", "").strip().lower()
+						chat_id = str(msg.get("chat", {}).get("id", ""))
+						if chat_id == str(self._chat_id):
+							if text in ("approve", "yes", "y"):
+								return True
+							if text in ("reject", "no", "n"):
+								return False
+			except Exception as exc:
+				logger.warning("Telegram poll error: %s", exc)
+			await asyncio.sleep(poll_interval)
+
+		logger.warning("Approval request timed out after %.0fs", timeout_seconds)
+		return False
+
 	async def close(self) -> None:
 		"""Flush remaining messages and close the HTTP client."""
 		if self._batch_task is not None and not self._batch_task.done():

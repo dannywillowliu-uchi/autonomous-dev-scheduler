@@ -14,7 +14,7 @@ from autodev.backends.base import WorkerHandle
 from autodev.backends.container import ContainerBackend
 from autodev.backends.local import _MB, HealthCheckResult, LocalBackend
 from autodev.backends.ssh import SSHBackend
-from autodev.config import ContainerConfig, MissionConfig, SSHHostConfig
+from autodev.config import ContainerConfig, MissionConfig, SSHHostConfig, SwarmConfig
 
 # ---------------------------------------------------------------------------
 # WorkerHandle dataclass
@@ -1715,10 +1715,11 @@ class TestBuildClaudeCmdSettingSources:
 	"""Tests for the setting_sources parameter in build_claude_cmd."""
 
 	def test_setting_sources_included_when_provided(self) -> None:
-		"""build_claude_cmd includes --setting-sources when setting_sources is given."""
+		"""build_claude_cmd includes --setting-sources when capability inheritance is off."""
 		from autodev.config import build_claude_cmd
 
 		cfg = MissionConfig()
+		cfg.swarm = SwarmConfig(inherit_global_mcps=False, inherit_global_capabilities=False)
 		cmd = build_claude_cmd(cfg, model="sonnet", setting_sources="project")
 		assert "--setting-sources" in cmd
 		idx = cmd.index("--setting-sources")

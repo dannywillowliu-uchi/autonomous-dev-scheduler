@@ -66,11 +66,25 @@ def _mock_arxiv_response() -> httpx.Response:
 	return httpx.Response(200, text=xml)
 
 
+def _mock_claude_code_response() -> httpx.Response:
+	data = [
+		{
+			"tag_name": "v1.0.50",
+			"html_url": "https://github.com/anthropics/claude-code/releases/tag/v1.0.50",
+			"body": "New skill and hook support for automation workflows",
+			"published_at": "2026-01-20T10:00:00Z",
+		},
+	]
+	return httpx.Response(200, json=data)
+
+
 def _route_mock(request: httpx.Request) -> httpx.Response:
 	url = str(request.url)
 	if "hn.algolia.com" in url:
 		return _mock_hn_response()
 	if "api.github.com" in url:
+		if "anthropics/claude-code/releases" in url:
+			return _mock_claude_code_response()
 		return _mock_gh_response()
 	if "arxiv.org" in url:
 		return _mock_arxiv_response()
@@ -163,6 +177,7 @@ class TestTTLExpiry:
 			"hackernews": now - 100,
 			"github": now - 100,
 			"arxiv": now - 100,
+			"claude_code": now - 100,
 		}
 		expired = scanner._expired_sources(now)
 		assert expired == []
@@ -174,6 +189,7 @@ class TestTTLExpiry:
 			"hackernews": now - 100,
 			"github": now - 5000,
 			"arxiv": now - 100,
+			"claude_code": now - 100,
 		}
 		expired = scanner._expired_sources(now)
 		assert expired == ["github"]
@@ -275,6 +291,7 @@ class TestIncrementalMerge:
 			"hackernews": now,
 			"github": now,
 			"arxiv": now,
+			"claude_code": now,
 		}
 		cached = _make_finding("Cached", "https://cached.com", "test")
 		scanner.cache.findings = [cached]

@@ -17,6 +17,7 @@ from autodev.config import (
 	MissionConfig,
 	ModelsConfig,
 	SecurityConfig,
+	SwarmConfig,
 	TargetConfig,
 	ZFCConfig,
 	build_claude_cmd,
@@ -1066,3 +1067,59 @@ class TestDefaultLimits:
 	def test_all_values_positive(self) -> None:
 		for key, val in DEFAULT_LIMITS.items():
 			assert val > 0, f"{key} should be positive"
+
+
+class TestCapabilityInheritance:
+	"""Tests for inherit_global_capabilities and setting_sources guard."""
+
+	def test_setting_sources_suppressed_when_inherit_capabilities_true(self) -> None:
+		"""setting_sources='project' should be ignored when inherit_global_capabilities is True."""
+		cfg = _build_cmd_config(swarm=SwarmConfig(inherit_global_capabilities=True))
+		cmd = build_claude_cmd(cfg, model="sonnet", setting_sources="project")
+		assert "--setting-sources" not in cmd
+
+	def test_setting_sources_suppressed_when_inherit_mcps_true(self) -> None:
+		"""setting_sources='project' should be ignored when inherit_global_mcps is True."""
+		cfg = _build_cmd_config(swarm=SwarmConfig(inherit_global_mcps=True, inherit_global_capabilities=False))
+		cmd = build_claude_cmd(cfg, model="sonnet", setting_sources="project")
+		assert "--setting-sources" not in cmd
+
+	def test_setting_sources_passed_when_both_inherit_false(self) -> None:
+		"""setting_sources should be passed through when both inheritance flags are False."""
+		cfg = _build_cmd_config(swarm=SwarmConfig(inherit_global_mcps=False, inherit_global_capabilities=False))
+		cmd = build_claude_cmd(cfg, model="sonnet", setting_sources="project")
+		assert "--setting-sources" in cmd
+		idx = cmd.index("--setting-sources")
+		assert cmd[idx + 1] == "project"
+
+	def test_no_setting_sources_when_not_provided(self) -> None:
+		"""No --setting-sources when caller doesn't pass one, regardless of inheritance."""
+		cfg = _build_cmd_config(swarm=SwarmConfig(inherit_global_mcps=False, inherit_global_capabilities=False))
+		cmd = build_claude_cmd(cfg, model="sonnet")
+		assert "--setting-sources" not in cmd
+
+	def test_default_swarm_config_suppresses_setting_sources(self) -> None:
+		"""Default SwarmConfig (both inherit=True) should suppress setting_sources."""
+		cfg = _build_cmd_config()  # default SwarmConfig
+		cmd = build_claude_cmd(cfg, model="sonnet", setting_sources="project")
+		assert "--setting-sources" not in cmd
+
+	def test_inherit_global_capabilities_default_true(self) -> None:
+		"""New field defaults to True."""
+		sc = SwarmConfig()
+		assert sc.inherit_global_capabilities is True
+
+	def test_inherit_global_capabilities_from_toml(self, tmp_path: Path) -> None:
+		"""inherit_global_capabilities parsed from TOML."""
+		toml = tmp_path / "autodev.toml"
+		toml.write_text("""\
+[target]
+name = "test"
+path = "/tmp/test"
+objective = "build"
+
+[swarm]
+inherit_global_capabilities = false
+""")
+		cfg = load_config(toml)
+		assert cfg.swarm.inherit_global_capabilities is False

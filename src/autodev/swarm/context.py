@@ -23,6 +23,7 @@ from autodev.swarm.models import (
 if TYPE_CHECKING:
 	from autodev.config import MissionConfig
 	from autodev.db import Database
+	from autodev.swarm.capabilities import CapabilityManifest
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +183,7 @@ class ContextSynthesizer:
 		total_cost_usd: float = 0.0,
 		wall_time_seconds: float = 0.0,
 		dead_agent_history: list[SwarmAgent] | None = None,
+		capabilities: CapabilityManifest | None = None,
 	) -> SwarmState:
 		"""Build a complete SwarmState snapshot for the planner."""
 		self._cycle_number += 1
@@ -209,6 +211,7 @@ class ContextSynthesizer:
 			total_cost_usd=total_cost_usd,
 			wall_time_seconds=wall_time_seconds,
 			files_in_flight=files_in_flight,
+			capabilities=capabilities,
 			dead_agent_history=dead_agent_history or [],
 		)
 
@@ -397,6 +400,32 @@ class ContextSynthesizer:
 			sections.append("## Available Skills\n" + ", ".join(state.available_skills))
 		if state.available_tools:
 			sections.append("## Available Tools\n" + ", ".join(state.available_tools))
+
+		# Capability manifest
+		if state.capabilities:
+			cap_lines: list[str] = []
+			if state.capabilities.skills:
+				cap_lines.append("### Skills")
+				for s in state.capabilities.skills:
+					desc = f" -- {s.description}" if s.description else ""
+					cap_lines.append(f"- `{s.invocation}`{desc}")
+			if state.capabilities.agents:
+				cap_lines.append("### Agent Definitions")
+				for a in state.capabilities.agents:
+					desc = f" -- {a.description}" if a.description else ""
+					model = f" (model: {a.model})" if a.model else ""
+					cap_lines.append(f"- **{a.name}**{model}{desc}")
+			if state.capabilities.hooks:
+				cap_lines.append("### Hooks")
+				for h in state.capabilities.hooks:
+					cap_lines.append(f"- {h.event}: matcher={h.matcher} type={h.hook_type}")
+			if state.capabilities.mcp_servers:
+				cap_lines.append("### MCP Servers")
+				for m in state.capabilities.mcp_servers:
+					tools_info = f" tools: {', '.join(m.tools[:5])}" if m.tools else ""
+					cap_lines.append(f"- **{m.name}** [{m.server_type}]{tools_info}")
+			if cap_lines:
+				sections.append("## Available Capabilities\n" + "\n".join(cap_lines))
 
 		# Files in flight
 		if state.files_in_flight:

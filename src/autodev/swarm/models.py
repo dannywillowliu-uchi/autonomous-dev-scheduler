@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+	from autodev.swarm.capabilities import CapabilityManifest
 from uuid import uuid4
 
 
@@ -31,6 +34,10 @@ class DecisionType(str, Enum):
 	WAIT = "wait"
 	ESCALATE = "escalate"
 	CREATE_SKILL = "create_skill"
+	CREATE_HOOK = "create_hook"
+	REGISTER_MCP = "register_mcp"
+	CREATE_AGENT_DEF = "create_agent_def"
+	USE_SKILL = "use_skill"
 
 
 @dataclass
@@ -163,4 +170,5 @@ class SwarmState:
 	total_cost_usd: float = 0.0
 	wall_time_seconds: float = 0.0
 	files_in_flight: list[str] = field(default_factory=list)
+	capabilities: CapabilityManifest | None = None
 	dead_agent_history: list[SwarmAgent] = field(default_factory=list)
