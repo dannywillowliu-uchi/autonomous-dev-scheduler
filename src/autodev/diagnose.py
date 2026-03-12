@@ -18,7 +18,10 @@ def _check_entry(name: str, status: str, details: list[str], remediation: str = 
 def _check_db_health(db_path: Path) -> dict[str, Any]:
 	"""Check database health: stale WAL/SHM files, orphaned running units, DB size."""
 	if not db_path.exists():
-		return _check_entry("Database", "WARN", ["Database file not found"], "Run 'autodev mission' to create the database")
+		return _check_entry(
+			"Database", "WARN", ["Database file not found"],
+			"Run 'autodev mission' to create the database",
+		)
 
 	details: list[str] = []
 	status = "OK"
