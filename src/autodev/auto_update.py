@@ -335,6 +335,37 @@ class AutoUpdatePipeline:
 			action="rejected",
 		)
 
+	async def _generate_spec(self, proposal: AdaptationProposal) -> str:
+		"""Generate a full implementation spec and write it to docs/superpowers/specs/."""
+		from autodev.intelligence.spec_generator import SpecGenerator
+
+		repo_path = Path(self._config.target.resolved_path)
+		generator = SpecGenerator(repo_path)
+
+		finding = self._findings_by_id.get(proposal.finding_id)
+		source_url = finding.url if finding else ""
+
+		spec = await generator.generate_spec(proposal, source_url=source_url)
+
+		# Write spec to docs/superpowers/specs/auto-{date}-{slug}.md
+		date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+		slug = re.sub(r"[^a-z0-9]+", "-", proposal.title.lower()).strip("-")[:60]
+		spec_dir = repo_path / "docs" / "superpowers" / "specs"
+		spec_dir.mkdir(parents=True, exist_ok=True)
+		spec_path = spec_dir / f"auto-{date_str}-{slug}.md"
+		spec_path.write_text(spec)
+		logger.info("Wrote spec to %s", spec_path)
+
+		return spec
+
+	async def _generate_spec_or_objective(self, proposal: AdaptationProposal) -> str:
+		"""Try spec generation first, fall back to simple objective."""
+		try:
+			return await self._generate_spec(proposal)
+		except Exception:
+			logger.warning("Spec generation failed, falling back to simple objective", exc_info=True)
+			return self._generate_objective(proposal)
+
 	def _generate_objective(self, proposal: AdaptationProposal) -> str:
 		"""Convert a proposal into a swarm mission objective."""
 		modules = ", ".join(proposal.target_modules) if proposal.target_modules else "TBD"
