@@ -25,9 +25,9 @@
       "id": "d6071f44",
       "name": "scheduler-impl",
       "role": "implementer",
-      "status": "working",
+      "status": "dead",
       "task_id": "85b9b728",
-      "completed": 0,
+      "completed": 1,
       "failed": 0
     },
     {
@@ -62,9 +62,9 @@
     {
       "id": "85b9b728",
       "title": "Scheduler + daemon CLI",
-      "status": "claimed",
+      "status": "completed",
       "claimed_by": "d6071f44",
-      "attempts": 0,
+      "attempts": 1,
       "max_attempts": 3,
       "priority": "HIGH"
     },
@@ -90,12 +90,14 @@
     "[final-integration-verify] (report) Final integration verification PASSED. All 9 spec items confirmed: (1) ratchet.py - GitRatchet class imports OK, (2) oracle.py - check_oracle_violation + 8 PROTECTED_PATTERNS imports OK, (3) trace_review.py - TraceAnalyzer imports OK, (4) contrib.py - ContributorProtocol imports OK, (5) auto_update.py has _check_rate_limit + _review_modification, (6) db.py Database.count_proposals_applied_since exists, (7) cli.py has trace-review + contrib subcommands, (8) swarm/controller.py has _run_trace_review in cleanup. Fixed 12 E501 lint errors across 5 files. Final: 2788 tests pass, 1 skipped, 0 lint errors."
   ],
   "cost_usd": 0.0,
-  "wall_minutes": 5.1050525194499645,
+  "wall_minutes": 5.6063300409834484,
   "test_history": [],
   "completion_history": [
-    0
+    0,
+    1
   ],
   "failure_history": [
+    0,
     0
   ],
   "log_events": []

@@ -15,7 +15,6 @@ from autodev.intelligence.web_sources import (
 	_score_relevance,
 )
 
-
 MOCK_BLOG_HTML = """
 <html><body>
 <a href="/news/new-agent-skill-support">New Agent Skill Support for Automation</a>

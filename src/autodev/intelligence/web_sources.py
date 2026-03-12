@@ -183,8 +183,7 @@ class WebSourceScanner:
 			resp.raise_for_status()
 			html = resp.text
 
-			# arXiv listing page has links like /abs/XXXX.XXXXX with titles in <span class="descriptor">Title:</span> text
-			# Simpler: extract /abs/ links and their neighboring title text
+			# Extract /abs/ links and their neighboring title text
 			entries = re.findall(
 				r'<a[^>]+href=["\'](/abs/[^"\']+)["\'][^>]*>([^<]*)</a>',
 				html,
@@ -231,7 +230,7 @@ class WebSourceScanner:
 						source="arxiv_agents",
 						title=link_text or f"arXiv paper {arxiv_id}",
 						url=f"https://arxiv.org{href}",
-						summary=f"arXiv cs.AI paper",
+						summary="arXiv cs.AI paper",
 						published_at=datetime.now(timezone.utc).isoformat(),
 						relevance_score=0.3,
 						trust_level=trust,
