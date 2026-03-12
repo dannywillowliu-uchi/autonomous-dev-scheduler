@@ -256,7 +256,10 @@ async def test_pipeline_high_risk_approve_all(config: MissionConfig, db: Databas
 	mock_report.findings = [_make_finding()]
 	mock_report.proposals = [high_risk]
 
-	with patch("autodev.auto_update.run_scan", return_value=mock_report):
+	with (
+		patch("autodev.auto_update.run_scan", return_value=mock_report),
+		_patch_ratchet(),
+	):
 		results = await pipeline.run(approve_all=True)
 
 	assert len(results) == 1
@@ -290,6 +293,8 @@ async def test_pipeline_high_risk_approved_via_telegram(config: MissionConfig, d
 	assert results[0].mission_id != ""
 	mock_notifier.request_approval.assert_called_once()
 	mock_notifier.close.assert_called_once()
+
+
 
 
 @pytest.mark.asyncio
