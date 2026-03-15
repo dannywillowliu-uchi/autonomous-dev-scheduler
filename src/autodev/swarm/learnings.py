@@ -150,6 +150,21 @@ class SwarmLearnings:
 		self._append(entry)
 		return True
 
+	def add_reflection(self, task_title: str, failures: list[str], assessment: str) -> bool:
+		"""Record a structured reflection on repeated failures."""
+		failure_lines = "\n".join(f"{i + 1}. {f}" for i, f in enumerate(failures))
+		body = (
+			f"**Task:** {task_title} (failed {len(failures)}x)\n\n"
+			f"**Failures:**\n{failure_lines}\n\n"
+			f"**Assessment:** {assessment}"
+		)
+		if self._is_duplicate(body):
+			return False
+		ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+		entry = f"\n## Reflection ({ts})\n{body}\n"
+		self._append(entry)
+		return True
+
 	def add_stagnation_insight(self, metric: str, pivot: str) -> bool:
 		"""Record a stagnation detection and the pivot taken."""
 		if self._is_duplicate(pivot):

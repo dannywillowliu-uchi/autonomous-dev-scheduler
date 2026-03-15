@@ -175,6 +175,14 @@ Apply these when reasoning:
 - Budget approaching limit with no clear path forward
 - Conflicting requirements discovered
 - Security or data integrity concern
+
+## Common Mistakes to Avoid
+
+- DO NOT spawn multiple agents targeting the same files -- this causes merge conflicts
+- DO NOT create tasks with vague descriptions like "fix the bug" -- be specific about \
+which bug, in which file, with what symptoms
+- DO NOT kill agents that have been running for less than 5 minutes -- they need time to work
+- DO NOT retry a failed approach without changing the strategy
 """
 
 CYCLE_PROMPT_TEMPLATE = """\
@@ -191,6 +199,29 @@ Analyze the current state and decide what to do next. Consider:
 3. Are we stagnating? If so, why, and what should we pivot to?
 4. Do we need more agents, fewer agents, or different kinds of agents?
 5. Are there tasks that should be created, reprioritized, or cancelled?
+
+Before deciding, think through these steps:
+1. What changed since last cycle? (new completions, failures, reports)
+2. What is the current bottleneck?
+3. What is the highest-leverage action right now?
+4. Will my decisions create file conflicts with active agents?
+
+### Examples of Good Decision-Making
+
+**Stagnation -- pivot to research:**
+Tests stuck at 42/50 for 4 cycles, all agents retrying same approach.
+Good: spawn researcher to investigate root cause, pause implementers.
+Bad: spawn more implementers doing the same thing.
+
+**Breakthrough -- scale up:**
+Agent just got 8 new tests passing by fixing the parser. 3 related tasks now unblocked.
+Good: spawn 2 more agents to capitalize on the unblocked tasks.
+Bad: wait and do nothing while momentum is high.
+
+**Repeated failure -- change approach:**
+Agent failed task "fix auth middleware" twice with same error.
+Good: create research task to understand the error, then create new implementation task with different strategy.
+Bad: retry the same task with the same prompt a third time.
 
 Respond with ONLY a JSON array of decisions. Example:
 ```json
@@ -257,4 +288,46 @@ Create tasks first, then spawn agents to work on them. Start with \
 {min_agents}-{max_agents_hint} agents.
 
 Respond with ONLY a JSON array of decisions.
+"""
+
+ANALYSIS_PROMPT_TEMPLATE = """\
+## Current Swarm State
+
+{state_text}
+
+## Your Task
+
+Analyze the current state. Do NOT make decisions yet. Instead, output a structured analysis:
+
+1. **Status Assessment**: Are we on track? What's working? What's not?
+2. **Top 3 Priorities**: What should we focus on next, and why?
+3. **Risk Factors**: What could go wrong? What are we missing?
+4. **Resource Assessment**: Do we have too many/few agents? Right mix of roles?
+
+Output your analysis as a JSON object:
+```json
+{{
+  "status": "on_track|stagnating|blocked|recovering",
+  "priorities": [
+    {{"focus": "...", "reason": "...", "impact": "high|medium|low"}}
+  ],
+  "risks": ["..."],
+  "resource_recommendation": "scale_up|scale_down|rebalance|maintain"
+}}
+```
+"""
+
+DECISION_FROM_ANALYSIS_PROMPT = """\
+## Analysis
+
+{analysis_json}
+
+## Current State Summary
+
+{state_summary}
+
+## Your Task
+
+Based on the analysis above, produce concrete decisions. Respond with ONLY a JSON array of decisions.
+{decision_types_reference}
 """

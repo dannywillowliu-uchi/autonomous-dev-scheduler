@@ -389,6 +389,7 @@ class SwarmConfig:
 	inherit_global_mcps: bool = True  # workers get ~/.claude.json MCP servers
 	inherit_global_capabilities: bool = True  # workers see global skills, agents, hooks, plugins
 	allowed_mcps: list[str] = field(default_factory=list)  # empty = all
+	two_step_planning: bool = True
 
 
 @dataclass

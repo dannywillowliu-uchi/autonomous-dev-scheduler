@@ -819,7 +819,10 @@ class SwarmController:
 
 				result = self._parse_ad_result(output)
 				if result:
-					status = result.get("status", "failed")
+					result, validation_warnings = self._validate_ad_result(result)
+					for w in validation_warnings:
+						logger.warning("AD_RESULT validation [%s]: %s", agent.name, w)
+					status = result["status"]
 				else:
 					status = "failed"
 					result = {
@@ -1093,6 +1096,61 @@ class SwarmController:
 
 	# 10 MB default cap on stdout read to prevent memory exhaustion
 	MAX_OUTPUT_SIZE = 10 * 1024 * 1024
+
+	_VALID_AD_STATUSES = {"completed", "failed", "blocked"}
+
+	def _validate_ad_result(self, raw_result: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+		"""Validate and normalize an AD_RESULT from a worker.
+		Returns (normalized_result, warnings).
+		"""
+		warnings: list[str] = []
+		result = dict(raw_result)
+
+		# status: must be one of completed/failed/blocked
+		status = result.get("status")
+		if status not in self._VALID_AD_STATUSES:
+			warnings.append(f"Invalid status {status!r}, defaulting to 'failed'")
+			result["status"] = "failed"
+
+		# summary: must be non-empty string
+		summary = result.get("summary")
+		if not isinstance(summary, str):
+			result["summary"] = ""
+			warnings.append("Missing summary, defaulting to ''")
+		elif len(summary) < 20:
+			warnings.append(f"Short summary ({len(summary)} chars): {summary!r}")
+
+		# files_changed: must be list of strings
+		fc = result.get("files_changed")
+		if fc is None:
+			result["files_changed"] = []
+		elif isinstance(fc, str):
+			result["files_changed"] = [f.strip() for f in fc.split(",") if f.strip()]
+			warnings.append("Coerced files_changed from comma-separated string to list")
+		elif not isinstance(fc, list):
+			result["files_changed"] = []
+			warnings.append(f"Invalid files_changed type {type(fc).__name__}, defaulting to []")
+
+		# discoveries: must be a list
+		disc = result.get("discoveries")
+		if disc is None:
+			result["discoveries"] = []
+		elif isinstance(disc, str):
+			result["discoveries"] = [disc]
+			warnings.append("Wrapped single-string discoveries into list")
+		elif not isinstance(disc, list):
+			result["discoveries"] = []
+			warnings.append(f"Invalid discoveries type {type(disc).__name__}, defaulting to []")
+
+		# commits: must be a list
+		commits = result.get("commits")
+		if commits is None:
+			result["commits"] = []
+		elif not isinstance(commits, list):
+			result["commits"] = []
+			warnings.append(f"Invalid commits type {type(commits).__name__}, defaulting to []")
+
+		return result, warnings
 
 	def _parse_ad_result(self, output: str, *, max_output_size: int = 0) -> dict[str, Any] | None:
 		"""Parse AD_RESULT JSON from worker stdout.

@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import deque
+from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Any
 
 from autodev.swarm.models import (
@@ -82,6 +84,7 @@ class DrivingPlanner:
 			# Initial planning cycle
 			state = self._build_state(core_test_runner)
 			decisions = await self._initial_plan(state)
+			decisions = self._validate_decisions(decisions, state)
 			await self._controller.execute_decisions(decisions)
 
 			self._write_state_file(state)
@@ -112,6 +115,7 @@ class DrivingPlanner:
 				# Check if we should plan
 				if self._should_plan(state, events):
 					decisions = await self._plan_cycle(state)
+					decisions = self._validate_decisions(decisions, state)
 					results = await self._controller.execute_decisions(decisions)
 					self._log_cycle(decisions, results)
 
@@ -134,6 +138,209 @@ class DrivingPlanner:
 	def stop(self) -> None:
 		"""Signal the planner to stop."""
 		self._running = False
+
+	def _validate_decisions(
+		self, decisions: list[PlannerDecision], state: SwarmState
+	) -> list[PlannerDecision]:
+		"""Rule-based validation gate for planner decisions.
+
+		Filters out bad decisions before they reach execute_decisions().
+		All checks are algorithmic -- no LLM calls.
+		"""
+		if not decisions:
+			return decisions
+
+		validated: list[PlannerDecision] = []
+		rejected_reasons: list[str] = []
+
+		# Pre-compute existing task titles for duplicate detection
+		existing_titles = [
+			t.title.lower().strip()
+			for t in state.tasks
+			if t.status in (TaskStatus.PENDING, TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS)
+		]
+
+		# Track files claimed by decisions already accepted this batch
+		accepted_files: list[set[str]] = []
+
+		# Track spawn count against budget
+		active_agents = sum(
+			1 for a in state.agents
+			if a.status in (AgentStatus.WORKING, AgentStatus.SPAWNING)
+		)
+		max_agents = self._config.max_agents
+		spawns_allowed = (max_agents - active_agents) if max_agents > 0 else float("inf")
+		spawns_accepted = 0
+
+		# Collect create_task decisions for circular dependency check
+		new_task_decisions: list[tuple[int, PlannerDecision]] = []
+
+		for i, decision in enumerate(decisions):
+			reject_reason = self._check_decision(
+				decision, state, existing_titles, accepted_files,
+				spawns_allowed, spawns_accepted,
+			)
+			if reject_reason:
+				rejected_reasons.append(
+					f"Decision #{i} ({decision.type.value}): {reject_reason}"
+				)
+				continue
+
+			# Track accepted state
+			if decision.type == DecisionType.SPAWN:
+				spawns_accepted += 1
+			files = self._extract_files_hint(decision)
+			if files:
+				accepted_files.append(files)
+			if decision.type == DecisionType.CREATE_TASK:
+				title = decision.payload.get("title", "").lower().strip()
+				if title:
+					existing_titles.append(title)
+				new_task_decisions.append((len(validated), decision))
+
+			validated.append(decision)
+
+		# Circular dependency check across new create_task decisions
+		validated = self._filter_circular_deps(validated, new_task_decisions, rejected_reasons)
+
+		for reason in rejected_reasons:
+			logger.warning("Validation gate rejected: %s", reason)
+
+		if rejected_reasons:
+			logger.info(
+				"Validation gate: %d/%d decisions passed, %d rejected",
+				len(validated), len(decisions), len(rejected_reasons),
+			)
+
+		return validated
+
+	def _check_decision(
+		self,
+		decision: PlannerDecision,
+		state: SwarmState,
+		existing_titles: list[str],
+		accepted_files: list[set[str]],
+		spawns_allowed: float,
+		spawns_accepted: int,
+	) -> str | None:
+		"""Check a single decision against validation rules.
+
+		Returns a rejection reason string, or None if the decision is valid.
+		"""
+		# EMPTY PROMPT: reject spawn with empty or whitespace-only prompt
+		if decision.type == DecisionType.SPAWN:
+			prompt = decision.payload.get("prompt", "")
+			if not prompt or not prompt.strip():
+				return "spawn with empty prompt"
+
+		# SPAWN BUDGET: don't exceed max_agents
+		if decision.type == DecisionType.SPAWN:
+			if spawns_accepted >= spawns_allowed:
+				return (
+					f"spawn budget exceeded "
+					f"(allowed={int(spawns_allowed)}, already accepted={spawns_accepted})"
+				)
+
+		# DUPLICATE TASKS: >80% title similarity with existing tasks
+		if decision.type == DecisionType.CREATE_TASK:
+			title = decision.payload.get("title", "").lower().strip()
+			if title:
+				for existing in existing_titles:
+					ratio = SequenceMatcher(None, title, existing).ratio()
+					if ratio > 0.80:
+						return f"duplicate task ('{title}' ~{ratio:.0%} similar to '{existing}')"
+
+		# FILE OVERLAP: flag spawn/create_task that overlap with already-accepted decisions
+		if decision.type in (DecisionType.SPAWN, DecisionType.CREATE_TASK):
+			files = self._extract_files_hint(decision)
+			if files:
+				for prev_files in accepted_files:
+					overlap = files & prev_files
+					if overlap:
+						return f"file overlap with prior decision: {overlap}"
+
+		return None
+
+	@staticmethod
+	def _extract_files_hint(decision: PlannerDecision) -> set[str]:
+		"""Extract files_hint from a decision payload as a set of paths."""
+		hint = decision.payload.get("files_hint", [])
+		if isinstance(hint, str):
+			return {f.strip() for f in hint.split(",") if f.strip()}
+		if isinstance(hint, list):
+			return {str(f).strip() for f in hint if str(f).strip()}
+		return set()
+
+	@staticmethod
+	def _filter_circular_deps(
+		validated: list[PlannerDecision],
+		new_task_decisions: list[tuple[int, PlannerDecision]],
+		rejected_reasons: list[str],
+	) -> list[PlannerDecision]:
+		"""Detect and remove create_task decisions that form dependency cycles."""
+		if len(new_task_decisions) < 2:
+			return validated
+
+		# Build a task_id -> depends_on graph for new tasks
+		task_ids: dict[str, int] = {}  # task_id -> index in validated
+		graph: dict[str, set[str]] = {}
+		for idx, dec in new_task_decisions:
+			tid = dec.payload.get("task_id", dec.payload.get("title", f"__idx_{idx}"))
+			task_ids[tid] = idx
+			deps = dec.payload.get("depends_on", [])
+			if isinstance(deps, str):
+				deps = [d.strip() for d in deps.split(",") if d.strip()]
+			graph[tid] = {d for d in deps if d in task_ids or d in graph}
+
+		# Only check deps among the new batch
+		new_ids = set(task_ids.keys())
+		for tid in graph:
+			graph[tid] = graph[tid] & new_ids
+
+		# Kahn's algorithm to detect cycles
+		in_degree: dict[str, int] = {tid: 0 for tid in new_ids}
+		for tid, deps in graph.items():
+			for dep in deps:
+				if dep in in_degree:
+					in_degree[tid] = in_degree.get(tid, 0) + 1
+
+		# Re-count properly: in_degree[X] = number of edges pointing TO X
+		in_degree = {tid: 0 for tid in new_ids}
+		adjacency: dict[str, list[str]] = {tid: [] for tid in new_ids}
+		for tid, deps in graph.items():
+			for dep in deps:
+				if dep in new_ids:
+					adjacency[dep].append(tid)
+					in_degree[tid] += 1
+
+		queue: deque[str] = deque(tid for tid, deg in in_degree.items() if deg == 0)
+		visited = 0
+		while queue:
+			node = queue.popleft()
+			visited += 1
+			for neighbor in adjacency.get(node, []):
+				in_degree[neighbor] -= 1
+				if in_degree[neighbor] == 0:
+					queue.append(neighbor)
+
+		if visited == len(new_ids):
+			return validated  # No cycles
+
+		# Cycle detected -- find which task IDs are in the cycle
+		cycle_ids = {tid for tid, deg in in_degree.items() if deg > 0}
+		indices_to_remove: set[int] = set()
+		for tid in cycle_ids:
+			if tid in task_ids:
+				idx = task_ids[tid]
+				indices_to_remove.add(idx)
+				rejected_reasons.append(
+					f"Decision (create_task '{tid}'): circular dependency detected"
+				)
+
+		if indices_to_remove:
+			validated = [d for i, d in enumerate(validated) if i not in indices_to_remove]
+
+		return validated
 
 	def _build_state(self, core_test_runner: Any = None) -> SwarmState:
 		"""Build current swarm state, optionally running core tests."""
