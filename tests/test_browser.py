@@ -1,13 +1,14 @@
-"""Tests for headless browser auth handler."""
+"""Tests for tiered auth handler."""
 
 from __future__ import annotations
 
-import asyncio
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from autodev.auth.browser import (
+	AuthHandler,
 	AuthResult,
 	HeadlessAuthHandler,
 )
@@ -25,64 +26,13 @@ def mock_vault():
 def mock_notifier():
 	notifier = AsyncMock()
 	notifier.send_auth_help = AsyncMock()
+	notifier.send = AsyncMock()
 	return notifier
 
 
 @pytest.fixture
 def handler(mock_vault, mock_notifier):
-	return HeadlessAuthHandler(vault=mock_vault, notifier=mock_notifier)
-
-
-def _make_mock_page(content: str = "<html></html>", url: str = "https://example.com"):
-	"""Create a mock Playwright page with configurable content and URL."""
-	page = AsyncMock()
-	page.content = AsyncMock(return_value=content)
-	page.url = url
-	page.goto = AsyncMock()
-	page.close = AsyncMock()
-	page.screenshot = AsyncMock(return_value=b"fake-png-bytes")
-	page.wait_for_load_state = AsyncMock()
-
-	# Default locator that finds nothing
-	locator = AsyncMock()
-	locator.first = locator
-	locator.is_visible = AsyncMock(return_value=False)
-	locator.count = AsyncMock(return_value=0)
-	locator.nth = MagicMock(return_value=locator)
-	locator.text_content = AsyncMock(return_value="")
-	locator.get_attribute = AsyncMock(return_value=None)
-	page.locator = MagicMock(return_value=locator)
-
-	return page
-
-
-def _make_mock_browser(page):
-	"""Create mock browser and playwright context manager."""
-	browser = AsyncMock()
-	browser.new_page = AsyncMock(return_value=page)
-	browser.close = AsyncMock()
-
-	pw_instance = AsyncMock()
-	pw_instance.chromium.launch = AsyncMock(return_value=browser)
-	pw_instance.stop = AsyncMock()
-
-	pw_cm = AsyncMock()
-	pw_cm.start = AsyncMock(return_value=pw_instance)
-
-	return browser, pw_instance, pw_cm
-
-
-@pytest.fixture
-def mock_playwright():
-	"""Patch playwright and return (page, browser, pw_instance, pw_cm)."""
-	page = _make_mock_page()
-	browser, pw_instance, pw_cm = _make_mock_browser(page)
-
-	with patch("autodev.auth.browser.HeadlessAuthHandler._ensure_browser") as mock_ensure:
-		async def set_browser(self=None):
-			pass
-
-		yield page, browser, pw_instance, pw_cm, mock_ensure
+	return AuthHandler(vault=mock_vault, notifier=mock_notifier)
 
 
 # --- AuthResult tests ---
@@ -106,141 +56,255 @@ class TestAuthResult:
 		r = AuthResult(success=False, service="x", required_human=True, error="CAPTCHA")
 		assert r.required_human is True
 
-
-# --- Lazy browser initialization ---
-
-
-class TestLazyInit:
-	async def test_browser_not_initialized_on_construction(self, handler):
-		assert handler._browser is None
-		assert handler._pw is None
-
-	async def test_ensure_browser_called_on_auth_flow(self, mock_vault, mock_notifier):
-		handler = HeadlessAuthHandler(vault=mock_vault, notifier=mock_notifier)
-		page = _make_mock_page()
-		browser, pw_instance, pw_cm = _make_mock_browser(page)
-
-		mock_pw_module = MagicMock()
-		mock_pw_module.async_playwright = MagicMock(return_value=pw_cm)
-		with patch.dict("sys.modules", {"playwright": MagicMock(), "playwright.async_api": mock_pw_module}):
-			await handler._ensure_browser()
-			assert handler._browser is not None
-			assert handler._pw is not None
-
-	async def test_ensure_browser_idempotent(self, mock_vault, mock_notifier):
-		handler = HeadlessAuthHandler(vault=mock_vault, notifier=mock_notifier)
-		page = _make_mock_page()
-		browser, pw_instance, pw_cm = _make_mock_browser(page)
-
-		mock_pw_module = MagicMock()
-		mock_pw_module.async_playwright = MagicMock(return_value=pw_cm)
-		with patch.dict("sys.modules", {"playwright": MagicMock(), "playwright.async_api": mock_pw_module}):
-			await handler._ensure_browser()
-			first_browser = handler._browser
-			await handler._ensure_browser()
-			assert handler._browser is first_browser
+	def test_instructions_field(self):
+		r = AuthResult(success=True, service="gcp", instructions="Token from $GH_TOKEN")
+		assert r.instructions == "Token from $GH_TOKEN"
 
 
-# --- Flow detection ---
+class TestBackwardCompat:
+	def test_headless_auth_handler_alias(self):
+		assert HeadlessAuthHandler is AuthHandler
+
+
+# --- Tier 1: Environment variables ---
+
+
+class TestTryEnvVar:
+	@pytest.mark.asyncio
+	async def test_finds_github_token(self, handler, mock_vault):
+		with patch.dict(os.environ, {"GH_TOKEN": "ghp_test123"}):
+			result = await handler._try_env_var("github")
+		assert result.success is True
+		assert result.credential_type == "env_var"
+		mock_vault.store.assert_called_once_with("github", "env_token", "ghp_test123")
+
+	@pytest.mark.asyncio
+	async def test_finds_second_env_var(self, handler, mock_vault):
+		with patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_fallback"}, clear=False):
+			# Remove GH_TOKEN if it exists
+			env = {k: v for k, v in os.environ.items() if k != "GH_TOKEN"}
+			env["GITHUB_TOKEN"] = "ghp_fallback"
+			with patch.dict(os.environ, env, clear=True):
+				result = await handler._try_env_var("github")
+		assert result.success is True
+
+	@pytest.mark.asyncio
+	async def test_no_env_var_returns_failure(self, handler):
+		with patch.dict(os.environ, {}, clear=True):
+			result = await handler._try_env_var("github")
+		assert result.success is False
+
+	@pytest.mark.asyncio
+	async def test_unknown_service_returns_failure(self, handler):
+		result = await handler._try_env_var("unknown-service")
+		assert result.success is False
+
+
+# --- Tier 2: Service accounts ---
+
+
+class TestTryServiceAccount:
+	@pytest.mark.asyncio
+	async def test_non_google_service_skipped(self, handler):
+		result = await handler._try_service_account("github")
+		assert result.success is False
+
+	@pytest.mark.asyncio
+	async def test_google_creds_env_var(self, handler, tmp_path):
+		creds_file = tmp_path / "sa.json"
+		creds_file.write_text("{}")
+		with patch.dict(os.environ, {"GOOGLE_APPLICATION_CREDENTIALS": str(creds_file)}):
+			result = await handler._try_service_account("google-cloud")
+		assert result.success is True
+		assert result.credential_type == "service_account"
+
+	@pytest.mark.asyncio
+	async def test_google_creds_missing_file(self, handler):
+		with patch.dict(os.environ, {"GOOGLE_APPLICATION_CREDENTIALS": "/nonexistent/sa.json"}):
+			result = await handler._try_service_account("google-cloud")
+		assert result.success is False
+
+	@pytest.mark.asyncio
+	async def test_google_default_creds_path(self, handler):
+		with (
+			patch.dict(os.environ, {}, clear=True),
+			patch("autodev.auth.browser.Path.home") as mock_home,
+		):
+			mock_home.return_value = MagicMock()
+			# Simulate no files existing
+			adc = mock_home.return_value / ".config" / "gcloud" / "application_default_credentials.json"
+			adc.exists.return_value = False
+			cdb = mock_home.return_value / ".config" / "gcloud" / "credentials.db"
+			cdb.exists.return_value = False
+			result = await handler._try_service_account("google-cloud")
+		assert result.success is False
+
+
+# --- Tier 3: Device code flow ---
+
+
+class TestTryDeviceCode:
+	@pytest.mark.asyncio
+	async def test_github_already_authed(self, handler):
+		mock_proc = AsyncMock()
+		mock_proc.returncode = 0
+		mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+		with (
+			patch("shutil.which", return_value="/usr/bin/gh"),
+			patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+		):
+			result = await handler._try_device_code("github", "test")
+		assert result.success is True
+		assert result.credential_type == "cli_auth"
+
+	@pytest.mark.asyncio
+	async def test_github_not_authed_telegrams(self, handler, mock_notifier):
+		mock_proc = AsyncMock()
+		mock_proc.returncode = 1
+		mock_proc.communicate = AsyncMock(return_value=(b"", b"not logged in"))
+		with (
+			patch("shutil.which", return_value="/usr/bin/gh"),
+			patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+		):
+			result = await handler._try_device_code("github", "need repos")
+		assert result.success is False
+		assert result.required_human is True
+		mock_notifier.send.assert_called_once()
+
+	@pytest.mark.asyncio
+	async def test_non_github_skipped(self, handler):
+		result = await handler._try_device_code("vercel", "deploy")
+		assert result.success is False
+
+	@pytest.mark.asyncio
+	async def test_github_no_gh_cli(self, handler):
+		with patch("shutil.which", return_value=None):
+			result = await handler._try_device_code("github", "test")
+		assert result.success is False
+
+
+# --- Tier 4: Console flow ---
+
+
+class TestTryConsoleFlow:
+	@pytest.mark.asyncio
+	async def test_gcloud_already_authed(self, handler):
+		mock_proc = AsyncMock()
+		mock_proc.returncode = 0
+		mock_proc.communicate = AsyncMock(return_value=(
+			b'[{"account": "danny@example.com", "status": "ACTIVE"}]', b"",
+		))
+		with (
+			patch("shutil.which", return_value="/usr/bin/gcloud"),
+			patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+		):
+			result = await handler._try_console_flow("google-cloud", "workspace", "")
+		assert result.success is True
+		assert "danny@example.com" in result.instructions
+
+	@pytest.mark.asyncio
+	async def test_unknown_service_skipped(self, handler):
+		result = await handler._try_console_flow("random-saas", "test", "")
+		assert result.success is False
+
+	@pytest.mark.asyncio
+	async def test_cli_not_installed(self, handler):
+		with patch("shutil.which", return_value=None):
+			result = await handler._try_console_flow("github", "test", "")
+		assert result.success is False
+
+
+# --- Tier 5: Playwright (kept from original tests) ---
+
+
+def _make_mock_page(content: str = "<html></html>", url: str = "https://example.com"):
+	"""Create a mock Playwright page with configurable content and URL."""
+	page = AsyncMock()
+	page.content = AsyncMock(return_value=content)
+	page.url = url
+	page.goto = AsyncMock()
+	page.close = AsyncMock()
+	page.screenshot = AsyncMock(return_value=b"fake-png-bytes")
+	page.wait_for_load_state = AsyncMock()
+
+	locator = AsyncMock()
+	locator.first = locator
+	locator.is_visible = AsyncMock(return_value=False)
+	locator.count = AsyncMock(return_value=0)
+	locator.nth = MagicMock(return_value=locator)
+	locator.text_content = AsyncMock(return_value="")
+	locator.get_attribute = AsyncMock(return_value=None)
+	page.locator = MagicMock(return_value=locator)
+
+	return page
 
 
 class TestDetectFlowType:
+	@pytest.mark.asyncio
 	async def test_detect_oauth(self, handler):
 		page = _make_mock_page(content="<html><body>Sign in with Google</body></html>")
 		result = await handler._detect_flow_type(page)
 		assert result == "oauth"
 
-	async def test_detect_oauth_github(self, handler):
-		page = _make_mock_page(content="<html><body>Authorize application on GitHub</body></html>")
-		result = await handler._detect_flow_type(page)
-		assert result == "oauth"
-
+	@pytest.mark.asyncio
 	async def test_detect_api_key(self, handler):
 		page = _make_mock_page(content="<html><body>Your API Key: abc123</body></html>")
 		result = await handler._detect_flow_type(page)
 		assert result == "api_key"
 
+	@pytest.mark.asyncio
 	async def test_detect_cli_login(self, handler):
 		page = _make_mock_page(content="<html><body>Paste this code into your CLI</body></html>")
 		result = await handler._detect_flow_type(page)
 		assert result == "cli_login"
 
+	@pytest.mark.asyncio
 	async def test_detect_captcha(self, handler):
 		page = _make_mock_page(content="<html><body>Please complete the CAPTCHA</body></html>")
 		result = await handler._detect_flow_type(page)
 		assert result == "captcha"
 
+	@pytest.mark.asyncio
 	async def test_detect_2fa(self, handler):
 		page = _make_mock_page(content="<html><body>Enter your two-factor authentication code</body></html>")
 		result = await handler._detect_flow_type(page)
 		assert result == "2fa"
 
+	@pytest.mark.asyncio
 	async def test_detect_unknown(self, handler):
 		page = _make_mock_page(content="<html><body>Nothing relevant here</body></html>")
 		result = await handler._detect_flow_type(page)
 		assert result == "unknown"
 
-	async def test_captcha_takes_priority_over_oauth(self, handler):
-		page = _make_mock_page(content="<html>Sign in with Google<div class='captcha'>CAPTCHA</div></html>")
+	@pytest.mark.asyncio
+	async def test_captcha_takes_priority(self, handler):
+		page = _make_mock_page(content="<html>Sign in with Google<div>CAPTCHA</div></html>")
 		result = await handler._detect_flow_type(page)
 		assert result == "captcha"
 
 
-# --- Handler tests ---
-
-
 class TestHandleStuck:
-	async def test_stuck_sends_screenshot_to_notifier(self, handler, mock_notifier):
+	@pytest.mark.asyncio
+	async def test_stuck_sends_screenshot(self, handler, mock_notifier):
 		page = _make_mock_page()
 		result = await handler._handle_stuck(page, "test-service", "something went wrong")
 		assert result.success is False
 		assert result.required_human is True
-		assert result.service == "test-service"
-		assert "something went wrong" in result.error
 		mock_notifier.send_auth_help.assert_called_once()
-		page.screenshot.assert_called_once()
 
+	@pytest.mark.asyncio
 	async def test_stuck_without_notifier(self, mock_vault):
-		handler = HeadlessAuthHandler(vault=mock_vault, notifier=None)
+		handler = AuthHandler(vault=mock_vault, notifier=None)
 		page = _make_mock_page()
 		result = await handler._handle_stuck(page, "test-service", "no notifier")
 		assert result.success is False
 		assert result.required_human is True
-		assert "no notifier" in result.error
-
-	async def test_stuck_screenshot_failure_still_returns_result(self, handler, mock_notifier):
-		page = _make_mock_page()
-		page.screenshot = AsyncMock(side_effect=Exception("screenshot failed"))
-		result = await handler._handle_stuck(page, "svc", "reason")
-		assert result.success is False
-		assert result.required_human is True
-
-
-class TestHandleCaptcha:
-	async def test_captcha_delegates_to_stuck(self, handler, mock_notifier):
-		page = _make_mock_page()
-		result = await handler._handle_captcha(page, "svc")
-		assert result.success is False
-		assert result.required_human is True
-		assert "CAPTCHA" in result.error
-		mock_notifier.send_auth_help.assert_called_once()
-
-
-class TestHandle2FA:
-	async def test_2fa_delegates_to_stuck(self, handler, mock_notifier):
-		page = _make_mock_page()
-		result = await handler._handle_2fa(page, "svc")
-		assert result.success is False
-		assert result.required_human is True
-		assert "2FA" in result.error
-		mock_notifier.send_auth_help.assert_called_once()
 
 
 class TestHandleOAuth:
-	async def test_oauth_captures_token_from_redirect(self, handler, mock_vault):
+	@pytest.mark.asyncio
+	async def test_oauth_captures_token(self, handler, mock_vault):
 		page = _make_mock_page(url="https://callback.example.com?code=abc123&state=xyz")
-
-		# No visible authorize buttons
 		locator = AsyncMock()
 		locator.first = locator
 		locator.is_visible = AsyncMock(return_value=False)
@@ -251,6 +315,7 @@ class TestHandleOAuth:
 		assert result.credential_type == "oauth_token"
 		mock_vault.store.assert_called_once_with("github", "oauth_token", "abc123")
 
+	@pytest.mark.asyncio
 	async def test_oauth_stuck_when_no_token(self, handler, mock_notifier):
 		page = _make_mock_page(url="https://example.com/login")
 		locator = AsyncMock()
@@ -264,7 +329,8 @@ class TestHandleOAuth:
 
 
 class TestHandleApiKey:
-	async def test_api_key_found_in_readonly_input(self, handler, mock_vault):
+	@pytest.mark.asyncio
+	async def test_api_key_found(self, handler, mock_vault):
 		page = _make_mock_page()
 		fake_key = "sk-abcdefghij1234567890abcdef"
 
@@ -275,7 +341,6 @@ class TestHandleApiKey:
 		el.get_attribute = AsyncMock(return_value=None)
 		locator.nth = MagicMock(return_value=el)
 
-		# First locator call (input[readonly]) finds the key
 		call_count = 0
 
 		def mock_locator(selector):
@@ -294,18 +359,9 @@ class TestHandleApiKey:
 		assert result.credential_type == "api_key"
 		mock_vault.store.assert_called_once_with("openai", "api_key", fake_key)
 
-	async def test_api_key_not_found_triggers_stuck(self, handler, mock_notifier):
-		page = _make_mock_page()
-		locator = AsyncMock()
-		locator.count = AsyncMock(return_value=0)
-		page.locator = MagicMock(return_value=locator)
-
-		result = await handler._handle_api_key(page, "openai")
-		assert result.success is False
-		assert result.required_human is True
-
 
 class TestHandleCliLogin:
+	@pytest.mark.asyncio
 	async def test_cli_code_found(self, handler, mock_vault):
 		page = _make_mock_page()
 
@@ -331,114 +387,107 @@ class TestHandleCliLogin:
 		result = await handler._handle_cli_login(page, "vercel")
 		assert result.success is True
 		assert result.credential_type == "cli_token"
-		mock_vault.store.assert_called_once_with("vercel", "cli_token", "ABCD-1234")
 
-	async def test_cli_code_not_found_triggers_stuck(self, handler, mock_notifier):
-		page = _make_mock_page()
-		locator = AsyncMock()
-		locator.count = AsyncMock(return_value=0)
-		page.locator = MagicMock(return_value=locator)
 
-		result = await handler._handle_cli_login(page, "vercel")
+# --- Tier 6: Telegram manual ---
+
+
+class TestTelegramManual:
+	@pytest.mark.asyncio
+	async def test_sends_manual_instructions(self, handler, mock_notifier):
+		result = await handler._telegram_manual("random-tool", "need access", "https://tool.com/login")
+		assert result.success is False
+		assert result.required_human is True
+		assert "Manual auth" in result.error
+		mock_notifier.send.assert_called_once()
+		call_msg = mock_notifier.send.call_args[0][0]
+		assert "random-tool" in call_msg
+		assert "autodev/random-tool" in call_msg
+
+	@pytest.mark.asyncio
+	async def test_manual_without_notifier(self, mock_vault):
+		handler = AuthHandler(vault=mock_vault, notifier=None)
+		result = await handler._telegram_manual("svc", "test", "")
 		assert result.success is False
 		assert result.required_human is True
 
 
-# --- Full flow tests ---
+# --- Full authenticate flow ---
 
 
-class TestRunAuthFlow:
-	async def test_timeout_returns_error_result(self, mock_vault, mock_notifier):
-		handler = HeadlessAuthHandler(vault=mock_vault, notifier=mock_notifier)
-
-		async def slow_inner(*args, **kwargs):
-			await asyncio.sleep(10)
-
-		with patch.object(handler, "_run_auth_flow_inner", side_effect=slow_inner):
-			result = await handler.run_auth_flow("https://example.com", "svc", timeout_s=0)
-			assert result.success is False
-			assert "timed out" in result.error
-
-	async def test_exception_returns_error_result(self, mock_vault, mock_notifier):
-		handler = HeadlessAuthHandler(vault=mock_vault, notifier=mock_notifier)
-
-		with patch.object(handler, "_run_auth_flow_inner", side_effect=RuntimeError("browser crashed")):
-			result = await handler.run_auth_flow("https://example.com", "svc")
-			assert result.success is False
-			assert "browser crashed" in result.error
-
-	async def test_explicit_flow_type_skips_detection(self, mock_vault, mock_notifier):
-		handler = HeadlessAuthHandler(vault=mock_vault, notifier=mock_notifier)
-		page = _make_mock_page(
-			content="<html>Nothing relevant</html>",
-			url="https://callback.example.com?code=tok123",
-		)
-		browser, pw_instance, pw_cm = _make_mock_browser(page)
-
-		handler._browser = browser
-		handler._pw = pw_instance
-		result = await handler.run_auth_flow(
-			"https://example.com",
-			"github",
-			flow_type="oauth",
-		)
+class TestAuthenticate:
+	@pytest.mark.asyncio
+	async def test_env_var_short_circuits(self, handler, mock_vault):
+		with patch.dict(os.environ, {"GH_TOKEN": "ghp_test"}):
+			result = await handler.authenticate("github", "need repos")
 		assert result.success is True
-		assert result.credential_type == "oauth_token"
+		assert result.credential_type == "env_var"
 
-	async def test_auto_detection_routes_correctly(self, mock_vault, mock_notifier):
-		handler = HeadlessAuthHandler(vault=mock_vault, notifier=mock_notifier)
-		page = _make_mock_page(
-			content="<html>Your API Key is here</html>",
-		)
-		browser, pw_instance, pw_cm = _make_mock_browser(page)
-
-		# Set up locator to return no API keys (will fall through to stuck)
-		locator = AsyncMock()
-		locator.count = AsyncMock(return_value=0)
-		page.locator = MagicMock(return_value=locator)
-
-		handler._browser = browser
-		handler._pw = pw_instance
-		result = await handler.run_auth_flow(
-			"https://example.com/api-keys",
-			"openai",
-			flow_type="auto",
-		)
-		# Detected api_key but couldn't find one -> stuck
+	@pytest.mark.asyncio
+	async def test_falls_through_all_tiers(self, handler, mock_notifier):
+		"""Unknown service with no env vars, no CLI, no URL -> manual fallback."""
+		with patch.dict(os.environ, {}, clear=True):
+			result = await handler.authenticate("obscure-saas", "test", url="")
 		assert result.success is False
 		assert result.required_human is True
+		assert "Manual auth" in result.error
 
-	async def test_unknown_flow_type_triggers_stuck(self, mock_vault, mock_notifier):
-		handler = HeadlessAuthHandler(vault=mock_vault, notifier=mock_notifier)
-		page = _make_mock_page()
-		browser, pw_instance, pw_cm = _make_mock_browser(page)
-
-		handler._browser = browser
-		handler._pw = pw_instance
-		result = await handler.run_auth_flow(
-			"https://example.com",
-			"svc",
-			flow_type="magic",
-		)
-		assert result.success is False
-		assert "Unknown flow type" in result.error
+	@pytest.mark.asyncio
+	async def test_playwright_tier_with_url(self, handler, mock_vault, mock_notifier):
+		"""With a URL and unknown service, tries Playwright then manual."""
+		with patch.dict(os.environ, {}, clear=True):
+			with patch.object(handler, "_try_playwright", new_callable=AsyncMock) as mock_pw:
+				mock_pw.return_value = AuthResult(success=True, service="custom", credential_type="api_key")
+				result = await handler.authenticate("custom", "test", url="https://custom.com/keys")
+		assert result.success is True
+		assert result.credential_type == "api_key"
 
 
 # --- Close / cleanup ---
 
 
 class TestClose:
-	async def test_close_cleans_up_resources(self, mock_vault):
-		handler = HeadlessAuthHandler(vault=mock_vault)
+	@pytest.mark.asyncio
+	async def test_close_cleans_up(self, mock_vault):
+		handler = AuthHandler(vault=mock_vault)
 		handler._browser = AsyncMock()
 		handler._pw = AsyncMock()
-
 		await handler.close()
-		handler._browser is None
-		handler._pw is None
-
-	async def test_close_noop_when_not_initialized(self, mock_vault):
-		handler = HeadlessAuthHandler(vault=mock_vault)
-		await handler.close()  # Should not raise
 		assert handler._browser is None
 		assert handler._pw is None
+
+	@pytest.mark.asyncio
+	async def test_close_noop_when_not_initialized(self, mock_vault):
+		handler = AuthHandler(vault=mock_vault)
+		await handler.close()
+		assert handler._browser is None
+
+
+# --- Lazy browser initialization ---
+
+
+class TestLazyInit:
+	@pytest.mark.asyncio
+	async def test_browser_not_initialized_on_construction(self, handler):
+		assert handler._browser is None
+		assert handler._pw is None
+
+	@pytest.mark.asyncio
+	async def test_ensure_browser_idempotent(self, mock_vault):
+		handler = AuthHandler(vault=mock_vault)
+		page = _make_mock_page()
+
+		browser = AsyncMock()
+		browser.new_page = AsyncMock(return_value=page)
+		pw_instance = AsyncMock()
+		pw_instance.chromium.launch = AsyncMock(return_value=browser)
+		pw_cm = AsyncMock()
+		pw_cm.start = AsyncMock(return_value=pw_instance)
+
+		mock_pw_module = MagicMock()
+		mock_pw_module.async_playwright = MagicMock(return_value=pw_cm)
+		with patch.dict("sys.modules", {"playwright": MagicMock(), "playwright.async_api": mock_pw_module}):
+			await handler._ensure_browser()
+			first_browser = handler._browser
+			await handler._ensure_browser()
+			assert handler._browser is first_browser

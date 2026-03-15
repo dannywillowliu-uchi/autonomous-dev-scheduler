@@ -1,4 +1,4 @@
-"""Auth gateway -- orchestrates vault + browser + Telegram for agent auth requests."""
+"""Auth gateway -- orchestrates vault + tiered auth + Telegram for agent auth requests."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from autodev.auth.browser import AuthResult
 from autodev.auth.vault import KeychainVault
 
 if TYPE_CHECKING:
-	from autodev.auth.browser import HeadlessAuthHandler
+	from autodev.auth.browser import AuthHandler
 	from autodev.notifier import TelegramNotifier
 
 logger = logging.getLogger(__name__)
@@ -19,18 +19,18 @@ logger = logging.getLogger(__name__)
 class AuthGateway:
 	"""Entry point for agent authentication requests.
 
-	Ties vault + browser + Telegram together with per-service locking
+	Ties vault + tiered auth handler + Telegram together with per-service locking
 	to prevent concurrent auth flows for the same service.
 	"""
 
 	def __init__(
 		self,
 		vault: KeychainVault,
-		browser: HeadlessAuthHandler,
+		auth_handler: AuthHandler,
 		notifier: TelegramNotifier | None = None,
 	) -> None:
 		self._vault = vault
-		self._browser = browser
+		self._auth_handler = auth_handler
 		self._notifier = notifier
 		self._locks: dict[str, asyncio.Lock] = {}
 
@@ -53,11 +53,9 @@ class AuthGateway:
 		1. Acquire per-service lock
 		2. Check vault for existing credentials (unless force_refresh)
 		3. If found, return success
-		4. If not found, notify via Telegram
-		5. If signup required and not approved, return failure
-		6. Run browser auth flow
-		7. Store credentials on success
-		8. Return result
+		4. If signup required and not approved, return failure
+		5. Run tiered auth (env -> service account -> device flow -> console -> playwright -> manual)
+		6. Return result
 		"""
 		async with self._get_lock(service):
 			# Check vault first
@@ -70,13 +68,6 @@ class AuthGateway:
 						service=service,
 						credential_type="cached",
 					)
-
-			# Notify about first-time auth
-			if self._notifier:
-				try:
-					await self._notifier.send_auth_request(service, purpose, url)
-				except Exception:
-					pass
 
 			# Check if signup approval is needed
 			if signup_ok is False and self._notifier:
@@ -91,22 +82,16 @@ class AuthGateway:
 				except Exception:
 					pass
 
-			# Run browser auth flow
-			if not url:
-				return AuthResult(
-					success=False,
-					service=service,
-					error="No auth URL provided",
-				)
-
+			# Run tiered auth handler
 			try:
-				result = await self._browser.run_auth_flow(
-					url=url,
+				result = await self._auth_handler.authenticate(
 					service=service,
+					purpose=purpose,
+					url=url,
 				)
 				return result
 			except Exception as e:
-				logger.error("Browser auth flow failed for %s: %s", service, e)
+				logger.error("Auth handler failed for %s: %s", service, e)
 				return AuthResult(
 					success=False,
 					service=service,
