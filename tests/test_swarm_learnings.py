@@ -256,3 +256,77 @@ def test_hash_dedup_different_text(learnings: SwarmLearnings) -> None:
 	)
 	assert r1 is True
 	assert r2 is True
+
+
+# --- Reflection tests ---
+
+
+class TestAddReflection:
+	def test_add_reflection_writes_structured_entry(
+		self, learnings: SwarmLearnings, learnings_path: Path,
+	) -> None:
+		"""Reflection entry contains task title, failure list, and assessment."""
+		failures = [
+			"TypeError in src/parser.py: float vs int mismatch",
+			"Import error: missing dependency in src/parser.py",
+		]
+		result = learnings.add_reflection(
+			"Fix parser bug",
+			failures,
+			"Task description was too vague -- workers didn't know which parser",
+		)
+		assert result is True
+		content = learnings_path.read_text()
+		assert "## Reflection" in content
+		assert "**Task:** Fix parser bug (failed 2x)" in content
+		assert "**Failures:**" in content
+		assert "1. TypeError in src/parser.py" in content
+		assert "2. Import error" in content
+		assert "**Assessment:**" in content
+		assert "too vague" in content
+
+	def test_add_reflection_deduplicates(
+		self, learnings: SwarmLearnings, learnings_path: Path,
+	) -> None:
+		"""Same reflection text should not be recorded twice."""
+		failures = ["Bug in src/autodev/db.py: connection timeout on cold start"]
+		assessment = "Must warm up the connection pool before dispatching workers"
+		first = learnings.add_reflection("DB task", failures, assessment)
+		assert first is True
+		content_after_first = learnings_path.read_text()
+		second = learnings.add_reflection("DB task", failures, assessment)
+		assert second is False
+		assert learnings_path.read_text() == content_after_first
+
+	def test_reflection_appears_in_get_for_planner(
+		self, learnings: SwarmLearnings,
+	) -> None:
+		"""Reflections should be surfaced in the planner prompt context."""
+		failures = [
+			"Gotcha in src/autodev/worker.py: wrong CWD caused file-not-found",
+			"Bug: subprocess.run() missing cwd= argument in src/autodev/worker.py",
+		]
+		learnings.add_reflection(
+			"Worker CWD fix",
+			failures,
+			"Need to always set cwd= when spawning subprocesses",
+		)
+		planner_text = learnings.get_for_planner()
+		assert "Reflection" in planner_text
+		assert "Worker CWD fix" in planner_text
+		assert "Need to always set cwd=" in planner_text
+
+	def test_reflection_with_single_failure(
+		self, learnings: SwarmLearnings, learnings_path: Path,
+	) -> None:
+		"""Reflection works with a single failure entry."""
+		failures = ["Bug in src/autodev/config.py: missing default for max_agents"]
+		result = learnings.add_reflection(
+			"Config validation",
+			failures,
+			"Should validate config on load not at runtime",
+		)
+		assert result is True
+		content = learnings_path.read_text()
+		assert "(failed 1x)" in content
+		assert "1. Bug in src/autodev/config.py" in content

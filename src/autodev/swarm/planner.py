@@ -281,38 +281,28 @@ class DrivingPlanner:
 		if len(new_task_decisions) < 2:
 			return validated
 
-		# Build a task_id -> depends_on graph for new tasks
-		task_ids: dict[str, int] = {}  # task_id -> index in validated
-		graph: dict[str, set[str]] = {}
+		# First pass: collect all task IDs
+		task_ids: dict[str, int] = {}
 		for idx, dec in new_task_decisions:
 			tid = dec.payload.get("task_id", dec.payload.get("title", f"__idx_{idx}"))
 			task_ids[tid] = idx
+
+		new_ids = set(task_ids.keys())
+
+		# Second pass: build dependency graph (only edges within the new batch)
+		adjacency: dict[str, list[str]] = {tid: [] for tid in new_ids}
+		in_degree: dict[str, int] = {tid: 0 for tid in new_ids}
+		for idx, dec in new_task_decisions:
+			tid = dec.payload.get("task_id", dec.payload.get("title", f"__idx_{idx}"))
 			deps = dec.payload.get("depends_on", [])
 			if isinstance(deps, str):
 				deps = [d.strip() for d in deps.split(",") if d.strip()]
-			graph[tid] = {d for d in deps if d in task_ids or d in graph}
-
-		# Only check deps among the new batch
-		new_ids = set(task_ids.keys())
-		for tid in graph:
-			graph[tid] = graph[tid] & new_ids
-
-		# Kahn's algorithm to detect cycles
-		in_degree: dict[str, int] = {tid: 0 for tid in new_ids}
-		for tid, deps in graph.items():
-			for dep in deps:
-				if dep in in_degree:
-					in_degree[tid] = in_degree.get(tid, 0) + 1
-
-		# Re-count properly: in_degree[X] = number of edges pointing TO X
-		in_degree = {tid: 0 for tid in new_ids}
-		adjacency: dict[str, list[str]] = {tid: [] for tid in new_ids}
-		for tid, deps in graph.items():
 			for dep in deps:
 				if dep in new_ids:
 					adjacency[dep].append(tid)
 					in_degree[tid] += 1
 
+		# Kahn's algorithm to detect cycles
 		queue: deque[str] = deque(tid for tid, deg in in_degree.items() if deg == 0)
 		visited = 0
 		while queue:
@@ -324,18 +314,17 @@ class DrivingPlanner:
 					queue.append(neighbor)
 
 		if visited == len(new_ids):
-			return validated  # No cycles
+			return validated
 
-		# Cycle detected -- find which task IDs are in the cycle
+		# Cycle detected -- remove all tasks involved in cycles
 		cycle_ids = {tid for tid, deg in in_degree.items() if deg > 0}
 		indices_to_remove: set[int] = set()
 		for tid in cycle_ids:
-			if tid in task_ids:
-				idx = task_ids[tid]
-				indices_to_remove.add(idx)
-				rejected_reasons.append(
-					f"Decision (create_task '{tid}'): circular dependency detected"
-				)
+			idx = task_ids[tid]
+			indices_to_remove.add(idx)
+			rejected_reasons.append(
+				f"Decision (create_task '{tid}'): circular dependency detected"
+			)
 
 		if indices_to_remove:
 			validated = [d for i, d in enumerate(validated) if i not in indices_to_remove]
