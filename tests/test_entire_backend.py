@@ -108,3 +108,97 @@ class TestNotImplementedStubs:
 	async def test_api_request(self, backend: EntireBackend) -> None:
 		with pytest.raises(NotImplementedError):
 			await backend._api_request("GET", "/health")
+
+
+class TestPersistEnvironments:
+	def test_persist_flag_stored_on_config(self) -> None:
+		"""persist_environments flag is accessible from backend config."""
+		config = _make_config(persist_environments=True)
+		backend = EntireBackend(config)
+		assert backend._config.persist_environments is True
+
+	def test_persist_flag_default_false(self) -> None:
+		"""persist_environments defaults to False."""
+		backend = EntireBackend(_make_config())
+		assert backend._config.persist_environments is False
+
+
+class TestEnvironmentTracking:
+	def test_environments_dict_tracks_by_worker_id(self) -> None:
+		"""_environments dict can track worker_id -> env_id mappings."""
+		backend = EntireBackend(_make_config())
+		backend._environments["w-1"] = "env-abc"
+		backend._environments["w-2"] = "env-def"
+		assert len(backend._environments) == 2
+		assert backend._environments["w-1"] == "env-abc"
+
+	@pytest.mark.asyncio
+	async def test_cleanup_stub_raises_with_tracked_envs(self) -> None:
+		"""cleanup() raises NotImplementedError (will destroy tracked envs when implemented)."""
+		backend = EntireBackend(_make_config())
+		backend._environments["w-1"] = "env-abc"
+		with pytest.raises(NotImplementedError):
+			await backend.cleanup()
+
+
+class TestControllerWiring:
+	"""Verify ContinuousController wires EntireBackend when backend.type=='entire'."""
+
+	@pytest.mark.asyncio
+	async def test_entire_backend_wired_in_controller(self) -> None:
+		"""_init_components creates EntireBackend when backend.type is 'entire'."""
+		from autodev.continuous_controller import ContinuousController
+
+		cfg = MissionConfig()
+		cfg.target.name = "test"
+		cfg.target.path = "/tmp/test"
+		cfg.backend.type = "entire"
+		cfg.backend.entire.api_key = "ek-test-123"
+
+		mock_db = MagicMock()
+		controller = ContinuousController(cfg, mock_db)
+
+		mock_backend = MagicMock()
+		mock_backend.initialize = AsyncMock()
+
+		with patch(
+			"autodev.backends.entire.EntireBackend",
+			return_value=mock_backend,
+		) as mock_cls:
+			# After backend+green branch setup, isinstance check fails for
+			# non-Local/Container backends, raising NotImplementedError.
+			with pytest.raises(NotImplementedError, match="Continuous mode requires"):
+				await controller._init_components()
+
+		mock_cls.assert_called_once_with(
+			config=cfg.backend.entire,
+			max_output_mb=cfg.backend.max_output_mb,
+		)
+		mock_backend.initialize.assert_awaited_once()
+		assert controller._backend is mock_backend
+
+	@pytest.mark.asyncio
+	async def test_entire_backend_skips_green_branch(self) -> None:
+		"""Entire backend sets _green_branch to None."""
+		from autodev.continuous_controller import ContinuousController
+
+		cfg = MissionConfig()
+		cfg.target.name = "test"
+		cfg.target.path = "/tmp/test"
+		cfg.backend.type = "entire"
+		cfg.backend.entire.api_key = "ek-test-123"
+
+		mock_db = MagicMock()
+		controller = ContinuousController(cfg, mock_db)
+
+		mock_backend = MagicMock()
+		mock_backend.initialize = AsyncMock()
+
+		with patch(
+			"autodev.backends.entire.EntireBackend",
+			return_value=mock_backend,
+		):
+			with pytest.raises(NotImplementedError):
+				await controller._init_components()
+
+		assert controller._green_branch is None
