@@ -19,3 +19,13 @@
 19:11:16 INFO autodev.swarm.controller: Planner waiting 120s: All 4 agents started ~3.5 minutes ago -- far too early to judge progress. They need time to read the spec, implement, and test. No stagnation signals at cycle 3.
 19:13:16 INFO autodev.swarm.planner: Cycle 3: 1 decisions (wait), 1 ok, 0 failed
 19:13:47 INFO autodev.swarm.controller: Auto-committed task 'Create program.md + LLM evaluator + tests': b814db71
+19:13:47 INFO autodev.swarm.controller: Auto-committed task 'Add IntelligenceConfig + pipeline wiring + tests': 930d1508
+19:13:47 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+19:13:47 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+19:13:47 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+19:13:47 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+19:14:21 INFO autodev.swarm.planner: Parsed 2 decisions from planner (cycle 4)
+19:14:21 INFO autodev.swarm.controller: Auto-assigned spawn 'llm-eval-test-fix' to unclaimed task 76f941968cb2 (Create auth gateway + tests)
+19:14:21 INFO autodev.swarm.controller: Spawned agent llm-eval-test-fix (debugger) for task 76f941968cb2
+19:14:21 INFO autodev.swarm.controller: Planner waiting 90s: auth-vault-impl and auth-browser-impl are 6 minutes in -- reasonable time for implementation tasks. Let them work.
+19:15:51 INFO autodev.swarm.planner: Cycle 4: 2 decisions (spawn, wait), 2 ok, 0 failed

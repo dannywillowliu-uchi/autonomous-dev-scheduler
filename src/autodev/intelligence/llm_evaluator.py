@@ -1,4 +1,8 @@
-"""LLM-based evaluator for intelligence findings using claude --print."""
+"""LLM-powered evaluator for intelligence findings.
+
+Uses Claude via subprocess to make binary integrate/skip decisions
+guided by the program.md steering document and enriched project context.
+Falls back to the keyword evaluator on failure."""
 
 from __future__ import annotations
 
@@ -6,25 +10,23 @@ import asyncio
 import json
 import logging
 import re
-import subprocess as _subprocess
 from pathlib import Path
 
-from autodev.intelligence.evaluator import evaluate_findings, generate_proposals
 from autodev.intelligence.models import AdaptationProposal, Finding
 from autodev.intelligence.utils import find_claude_binary
 
 logger = logging.getLogger(__name__)
 
-EVALUATOR_PROMPT = """\
+_PROMPT_TEMPLATE = """\
 You are evaluating intelligence findings for an autonomous development system.
 Read the program document below, then evaluate each finding.
 
 <program>
-{program}
+{enriched_program}
 </program>
 
 <findings>
-{findings}
+{findings_json}
 </findings>
 
 For each finding, decide: integrate or skip.
@@ -92,7 +94,7 @@ def _build_enriched_program(program_md: str, project_path: Path) -> str:
 	return enriched
 
 
-async def evaluate_findings_llm(
+async def evaluate_findings(
 	findings: list[Finding],
 	project_path: Path,
 	program_path: Path | None = None,
@@ -121,7 +123,7 @@ async def evaluate_findings_llm(
 		for f in findings
 	]
 
-	prompt = EVALUATOR_PROMPT.format(
+	prompt = _PROMPT_TEMPLATE.format(
 		program=enriched,
 		findings=json.dumps(findings_data, indent=2),
 	)
