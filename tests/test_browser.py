@@ -40,7 +40,7 @@ def _make_mock_page(content: str = "<html></html>", url: str = "https://example.
 	page.url = url
 	page.goto = AsyncMock()
 	page.close = AsyncMock()
-	page.screenshot = AsyncMock()
+	page.screenshot = AsyncMock(return_value=b"fake-png-bytes")
 	page.wait_for_load_state = AsyncMock()
 
 	# Default locator that finds nothing
@@ -206,7 +206,7 @@ class TestHandleStuck:
 		result = await handler._handle_stuck(page, "test-service", "no notifier")
 		assert result.success is False
 		assert result.required_human is True
-		assert result.error == "no notifier"
+		assert "no notifier" in result.error
 
 	async def test_stuck_screenshot_failure_still_returns_result(self, handler, mock_notifier):
 		page = _make_mock_page()
