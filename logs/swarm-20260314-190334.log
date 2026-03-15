@@ -73,3 +73,72 @@
 00:11:41 INFO autodev.swarm.planner: Parsed 1 decisions from planner (cycle 13)
 00:11:41 INFO autodev.swarm.controller: Spawned agent final-verify (tester) for task 07971cb16fb6
 00:11:41 INFO autodev.swarm.planner: Cycle 13: 1 decisions (spawn), 1 ok, 0 failed
+00:14:41 INFO autodev.swarm.controller: Auto-committed task 'Final integration verification': a35b5937
+00:14:41 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+00:15:07 INFO autodev.swarm.planner: Parsed 1 decisions from planner (cycle 14)
+00:15:07 INFO autodev.swarm.controller: Planner waiting 5s: Mission complete. All 11 spec items verified by final-verify agent: 2949 tests pass, ruff clean. The 2 'failed' tasks were completed by other agents (browser-fix confirmed browser.py done, inbox-auth-complete confirmed inbox auth done). No active agents, no pending tasks. Controller should terminate.
+00:15:12 INFO autodev.swarm.planner: Cycle 14: 1 decisions (wait), 1 ok, 0 failed
+00:15:12 INFO autodev.swarm.planner: Planner stopping: termination condition met
+00:15:12 INFO autodev.swarm.controller: Completion report written to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-report.md
+00:15:12 INFO autodev.swarm.controller: Trace review written to /Users/dannyliu/personal_projects/autonomous-development/.autodev-traces/2026-03-15_02-03-34/REVIEW.md
+00:15:12 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+00:15:12 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+00:15:12 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+00:15:12 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+00:15:12 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+00:15:12 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+00:15:12 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+00:15:12 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+00:15:12 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+00:15:12 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+00:15:12 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+00:15:12 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+00:15:12 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+00:15:12 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+00:15:12 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+00:15:12 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+00:15:12 INFO autodev.swarm.controller: Appended 24 trace recommendations to learnings
+00:15:12 WARNING autodev.swarm.controller: Failed to record metrics
+Traceback (most recent call last):
+  File "/Users/dannyliu/personal_projects/autonomous-development/src/autodev/swarm/controller.py", line 1272, in _record_metrics
+    # Failed tasks
+AttributeError: type object 'AgentStatus' has no attribute 'COMPLETED'
+00:15:12 INFO autodev.swarm.controller: Swarm controller cleaned up
+00:15:12 INFO autodev.swarm.planner: Driving planner stopped after 14 cycles
+Swarm mode: autonomous-development
+Objective: Implement the LLM evaluator and auth gateway for autonomous-development.
+
+Read the full spec at docs/superpowers/specs/2026-03-14-llm-evaluator-auth-gateway-design.md before starting.
+
+Implementation priorities (in order):
+
+1. SHARED UTILITY: Factor _find_claude_binary() from src/autodev/intelligence/spec_generator.py into a new src/autodev/intelligence/utils.py. Update spec_generator.py to import from utils.py. Verify spec_generator tests still pass.
+
+2. PROGRAM.MD: Create docs/program.md with the steering document content from the spec. This is the human-edited file that guides the LLM evaluator.
+
+3. LLM EVALUATOR: Create src/autodev/intelligence/llm_evaluator.py with evaluate_findings(findings, project_path, program_path) function. Reads program.md, enriches with CLAUDE.md Architecture section and git log in-memory (never writes back). Sends all findings in a single claude --print call using _find_claude_binary() from utils.py. Parses JSON response with robust extraction (strip markdown fences, extract first [...] block). Falls back to keyword evaluator on failure. Returns list[AdaptationProposal].
+
+4. INTELLIGENCE CONFIG: Add IntelligenceConfig dataclass to config.py with evaluator_mode field (default "llm"). Add intelligence field to MissionConfig. Load from [intelligence] TOML section.
+
+5. PIPELINE WIRING: Restructure call chain: scanner.py run_scan() returns raw findings only (no evaluation). auto_update.py chooses evaluator based on config.intelligence.evaluator_mode. Keep safety cap max_daily_modifications=15 (configurable, 0 to disable). Remove per-launch rate check from _auto_launch().
+
+6. KEYCHAIN VAULT: Create src/autodev/auth/__init__.py and src/autodev/auth/vault.py with KeychainVault class. store() passes secret via stdin (not CLI args). get() returns None if not found. delete() and list_services() (using find-generic-password, not dump-keychain). All use asyncio.create_subprocess_exec with security CLI.
+
+7. HEADLESS AUTH BROWSER: Create src/autodev/auth/browser.py with HeadlessAuthHandler class. Lazy Playwright initialization (only on first use). run_auth_flow(url, service, flow_type, timeout_s=300). Detects OAuth, CLI login, API key pages. _handle_stuck sends screenshot to Telegram. Add playwright as optional dependency in pyproject.toml.
+
+8. AUTH GATEWAY: Create src/autodev/auth/gateway.py with AuthGateway class. Per-service asyncio.Lock for concurrency control. authenticate(service, purpose, url, signup_ok, force_refresh). Checks vault first, runs browser flow if needed, stores result. Telegram approval for signups and spend.
+
+9. INBOX AUTH PROTOCOL: In swarm/controller.py add handle_auth_request() that processes auth_request messages from workers via team inbox. Writes auth_response to worker inbox. In swarm/worker_prompt.py add auth request instructions. Planner recognizes auth_request message type.
+
+10. NOTIFIER UPDATES: In notifier.py add send_auth_request(), send_auth_help() (with screenshot), send_signup_request(), send_spend_request() methods.
+
+11. TESTS: Unit tests for llm_evaluator (mock subprocess, JSON extraction, fallback), vault (mock security CLI, stdin secret passing), browser (mock Playwright, flow detection, Telegram fallback), gateway (vault hit, vault miss, locking, signup/spend approval), controller auth (inbox protocol). All existing tests must continue to pass.
+
+Use .venv/bin/python for all Python commands.
+Run .venv/bin/python -m pytest tests/ -q to verify changes.
+Run .venv/bin/ruff check src/ tests/ to verify linting.
+
+Planner model: opus
+Max agents: unbounded
+Live dashboard: http://127.0.0.1:8080?token=Et40Yrhc9biTeCqT7VqpU0FNQPNkBb8HajxD8l6pZaE
+Swarm completed.

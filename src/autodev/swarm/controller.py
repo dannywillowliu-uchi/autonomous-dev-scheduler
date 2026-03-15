@@ -85,6 +85,12 @@ class SwarmController:
 		self._agent_outputs: dict[str, str] = {}  # agent_id -> accumulated output
 		self._agent_spawn_times: dict[str, str] = {}  # agent_id -> ISO timestamp
 
+		if config.backend.type == "entire":
+			logger.warning(
+				"Entire.io backend is not yet supported in swarm mode. "
+				"Agents will be spawned locally."
+			)
+
 	@property
 	def team_name(self) -> str:
 		return self._team_name
