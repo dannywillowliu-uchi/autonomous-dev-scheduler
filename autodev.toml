@@ -2,31 +2,33 @@
 name = "autonomous-development"
 path = "/Users/dannyliu/personal_projects/autonomous-development"
 branch = "main"
-objective = """Implement the self-recursion loop for autonomous-development.
+objective = """Implement the LLM evaluator and auth gateway for autonomous-development.
 
-Read the full spec at docs/superpowers/specs/2026-03-12-self-recursion-loop-design.md before starting.
+Read the full spec at docs/superpowers/specs/2026-03-14-llm-evaluator-auth-gateway-design.md before starting.
 
 Implementation priorities (in order):
 
-1. WEB SOURCE SCANNERS: Create src/autodev/intelligence/web_sources.py with WebSourceScanner class. Add scanners for Anthropic blog, OpenAI blog, DeepMind blog, GitHub trending, and ArXiv cs.AI. Each scanner fetches the page via httpx, parses entries, scores relevance using AUTOMATION_KEYWORDS from claude_code.py. Return list[Finding] with source and trust_level fields. Add trust_level field to Finding in intelligence/models.py.
+1. SHARED UTILITY: Factor _find_claude_binary() from src/autodev/intelligence/spec_generator.py into a new src/autodev/intelligence/utils.py. Update spec_generator.py to import from utils.py. Verify spec_generator tests still pass.
 
-2. SOURCE REGISTRATION: In intelligence/sources.py, register WebSourceScanner alongside existing ClaudeCodeScanner. Update run_scan() to call web_scanner.scan() and extend all_findings. Respect source trust levels (high/medium/low).
+2. PROGRAM.MD: Create docs/program.md with the steering document content from the spec. This is the human-edited file that guides the LLM evaluator.
 
-3. SPEC GENERATOR: Create src/autodev/intelligence/spec_generator.py with SpecGenerator class. generate_spec(proposal) fetches source material, reads relevant project modules, sends to LLM with structured prompt asking for problem statement, file changes, testing requirements, risk assessment. Returns markdown spec.
+3. LLM EVALUATOR: Create src/autodev/intelligence/llm_evaluator.py with evaluate_findings(findings, project_path, program_path) function. Reads program.md, enriches with CLAUDE.md Architecture section and git log in-memory (never writes back). Sends all findings in a single claude --print call using _find_claude_binary() from utils.py. Parses JSON response with robust extraction (strip markdown fences, extract first [...] block). Falls back to keyword evaluator on failure. Returns list[AdaptationProposal].
 
-4. SPEC INTEGRATION: In auto_update.py, replace _generate_objective() with _generate_spec() that uses SpecGenerator. Write generated specs to docs/superpowers/specs/auto-{date}-{slug}.md. Pass spec content as the swarm objective.
+4. INTELLIGENCE CONFIG: Add IntelligenceConfig dataclass to config.py with evaluator_mode field (default "llm"). Add intelligence field to MissionConfig. Load from [intelligence] TOML section.
 
-5. SCHEDULER: Create src/autodev/scheduler.py with AutoUpdateScheduler class. run_forever() loop: scan, evaluate, execute, sleep, repeat. Configurable interval (default 24h). Graceful shutdown via stop(). Exception handling per cycle.
+5. PIPELINE WIRING: Restructure call chain: scanner.py run_scan() returns raw findings only (no evaluation). auto_update.py chooses evaluator based on config.intelligence.evaluator_mode. Keep safety cap max_daily_modifications=15 (configurable, 0 to disable). Remove per-launch rate check from _auto_launch().
 
-6. SCHEDULER CLI: In cli.py, add --daemon and --interval flags to auto-update command. --daemon runs the scheduler loop, --interval sets hours between cycles (default 24).
+6. KEYCHAIN VAULT: Create src/autodev/auth/__init__.py and src/autodev/auth/vault.py with KeychainVault class. store() passes secret via stdin (not CLI args). get() returns None if not found. delete() and list_services() (using find-generic-password, not dump-keychain). All use asyncio.create_subprocess_exec with security CLI.
 
-7. METRICS TRACKER: Create src/autodev/metrics.py with SwarmMetrics dataclass and MetricsTracker class. record_run() appends to .autodev-metrics.tsv. get_trend(last_n) analyzes trends across recent runs. correlate_with_modifications() compares metrics before/after self-modifications using experiments.tsv.
+7. HEADLESS AUTH BROWSER: Create src/autodev/auth/browser.py with HeadlessAuthHandler class. Lazy Playwright initialization (only on first use). run_auth_flow(url, service, flow_type, timeout_s=300). Detects OAuth, CLI login, API key pages. _handle_stuck sends screenshot to Telegram. Add playwright as optional dependency in pyproject.toml.
 
-8. METRICS RECORDING HOOK: In controller.py cleanup (after _generate_completion_report), instantiate MetricsTracker and call record_run() with metrics parsed from the completion report.
+8. AUTH GATEWAY: Create src/autodev/auth/gateway.py with AuthGateway class. Per-service asyncio.Lock for concurrency control. authenticate(service, purpose, url, signup_ok, force_refresh). Checks vault first, runs browser flow if needed, stores result. Telegram approval for signups and spend.
 
-9. METRICS CLI: In cli.py, add autodev metrics command with --trend and --correlate flags.
+9. INBOX AUTH PROTOCOL: In swarm/controller.py add handle_auth_request() that processes auth_request messages from workers via team inbox. Writes auth_response to worker inbox. In swarm/worker_prompt.py add auth request instructions. Planner recognizes auth_request message type.
 
-10. TESTS: Unit tests for web scanners (mock httpx), spec generator (mock LLM), scheduler (mock pipeline), metrics tracker (TSV recording, trend calc, correlation). All existing tests must continue to pass.
+10. NOTIFIER UPDATES: In notifier.py add send_auth_request(), send_auth_help() (with screenshot), send_signup_request(), send_spend_request() methods.
+
+11. TESTS: Unit tests for llm_evaluator (mock subprocess, JSON extraction, fallback), vault (mock security CLI, stdin secret passing), browser (mock Playwright, flow detection, Telegram fallback), gateway (vault hit, vault miss, locking, signup/spend approval), controller auth (inbox protocol). All existing tests must continue to pass.
 
 Use .venv/bin/python for all Python commands.
 Run .venv/bin/python -m pytest tests/ -q to verify changes.
