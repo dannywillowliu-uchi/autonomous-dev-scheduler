@@ -310,14 +310,19 @@ class TestEvaluateFindingsLlm:
 		program_path.write_text("# Program")
 
 		findings = [_make_finding(id=f"f{i}") for i in range(50)]
-		decisions = [{"finding_id": f"f{i}", "decision": "skip", "reasoning": "No", "proposed_action": "", "target_modules": []} for i in range(50)]
+		decisions = [
+			{"finding_id": f"f{i}", "decision": "skip", "reasoning": "No",
+			 "proposed_action": "", "target_modules": []}
+			for i in range(50)
+		]
 		llm_output = json.dumps(decisions)
 
 		mock_proc = AsyncMock()
 		mock_proc.communicate.return_value = (f"```json\n{llm_output}\n```".encode(), b"")
 		mock_proc.returncode = 0
 
-		with patch("autodev.intelligence.llm_evaluator.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+		patch_target = "autodev.intelligence.llm_evaluator.asyncio.create_subprocess_exec"
+		with patch(patch_target, return_value=mock_proc) as mock_exec:
 			await evaluate_findings(findings, tmp_path)
 
 		# Should be called once for git log in _build_enriched_program, once for claude

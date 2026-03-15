@@ -564,17 +564,17 @@ class SwarmController:
 		# Delegate to AuthGateway
 		result: dict[str, Any] = {"service": service, "success": False}
 		try:
-			from autodev.auth.vault import KeychainVault
-			from autodev.auth.gateway import AuthGateway
 			from autodev.auth.browser import HeadlessAuthHandler
+			from autodev.auth.gateway import AuthGateway
+			from autodev.auth.vault import KeychainVault
 
 			vault = KeychainVault()
 			notifier_inst = None
 			try:
-				from autodev.notifier import TelegramNotifier as TN
+				from autodev.notifier import TelegramNotifier
 				tg = self._config.notifications.telegram
 				if tg.bot_token and tg.chat_id:
-					notifier_inst = TN(tg.bot_token, tg.chat_id)
+					notifier_inst = TelegramNotifier(tg.bot_token, tg.chat_id)
 			except Exception:
 				pass
 

@@ -54,3 +54,17 @@
 23:46:11 INFO autodev.swarm.planner: Parsed 1 decisions from planner (cycle 8)
 23:46:11 INFO autodev.swarm.controller: Planner waiting 120s: Both browser-fix and inbox-auth-impl just spawned 30s ago. They need time to work.
 23:48:11 INFO autodev.swarm.planner: Cycle 8: 1 decisions (wait), 1 ok, 0 failed
+23:48:41 INFO autodev.swarm.controller: Auto-committed task 'Fix headless auth browser + tests (simplified)': 4ae08cc2
+23:49:12 INFO autodev.swarm.planner: Parsed 1 decisions from planner (cycle 9)
+23:49:12 INFO autodev.swarm.controller: Planner waiting 120s: inbox-auth-impl is only 3 minutes in on attempt 2. Let it work. browser-fix confirmed headless auth browser is already complete. All other spec items (1-8, 10) are done.
+23:51:12 INFO autodev.swarm.planner: Cycle 9: 1 decisions (wait), 1 ok, 0 failed
+23:52:28 INFO autodev.swarm.planner: Parsed 1 decisions from planner (cycle 10)
+23:52:28 INFO autodev.swarm.controller: Planner waiting 90s: inbox-auth-impl is actively working on controller + worker_prompt auth protocol (6m24s, attempt 2). Let it finish before spawning final verification.
+00:06:22 INFO autodev.swarm.planner: Cycle 10: 1 decisions (wait), 1 ok, 0 failed
+00:07:56 INFO autodev.swarm.planner: Parsed 2 decisions from planner (cycle 11)
+00:07:56 INFO autodev.swarm.controller: Created task 18554f76945a: Complete inbox auth protocol + notifier auth methods + verify
+00:07:56 INFO autodev.swarm.controller: Spawned agent inbox-auth-complete (implementer) for task 18554f76945a
+00:07:56 INFO autodev.swarm.planner: Cycle 11: 2 decisions (create_task, spawn), 2 ok, 0 failed
+00:08:46 INFO autodev.swarm.planner: Parsed 1 decisions from planner (cycle 12)
+00:08:46 INFO autodev.swarm.controller: Planner waiting 120s: inbox-auth-complete just started 30s ago, working on the last implementation task. Let it work before intervening.
+00:10:46 INFO autodev.swarm.planner: Cycle 12: 1 decisions (wait), 1 ok, 0 failed
