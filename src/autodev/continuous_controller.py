@@ -742,14 +742,6 @@ class ContinuousController:
 				warm_count=self.config.scheduler.parallel.warm_clones,
 			)
 			self._backend = backend
-		elif self.config.backend.type == "entire":
-			from autodev.backends.entire import EntireBackend
-			backend = EntireBackend(
-				config=self.config.backend.entire,
-				max_output_mb=self.config.backend.max_output_mb,
-			)
-			await backend.initialize()
-			self._backend = backend
 		else:
 			pool_dir = (
 				self.config.scheduler.parallel.pool_dir
@@ -769,11 +761,7 @@ class ContinuousController:
 			self._backend = backend
 
 		# Green branch manager
-		if self.config.backend.type == "entire":
-			logger.info("Skipping green branch setup -- not supported with Entire.io backend")
-			self._green_branch = None
-		else:
-			self._green_branch = GreenBranchManager(self.config, self.db, trace_logger=self._trace_logger)
+		self._green_branch = GreenBranchManager(self.config, self.db, trace_logger=self._trace_logger)
 		if isinstance(self._backend, (LocalBackend, ContainerBackend)):
 			gb_workspace = await self._backend.provision_workspace(
 				"green-branch-mgr", source_repo, self.config.target.branch,

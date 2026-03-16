@@ -72,7 +72,7 @@ class TestHandleAuthRequest:
 			mock_gateway.authenticate.return_value = fake_result
 
 			with patch("autodev.auth.vault.KeychainVault", return_value=mock_vault), \
-				patch("autodev.auth.browser.HeadlessAuthHandler", return_value=mock_browser), \
+				patch("autodev.auth.browser.AuthHandler", return_value=mock_browser), \
 				patch("autodev.auth.gateway.AuthGateway", return_value=mock_gateway):
 
 				result = await ctrl.handle_auth_request(
@@ -117,7 +117,7 @@ class TestHandleAuthRequest:
 			mock_gateway.authenticate.return_value = fake_result
 
 			with patch("autodev.auth.vault.KeychainVault", return_value=MagicMock()), \
-				patch("autodev.auth.browser.HeadlessAuthHandler", return_value=mock_browser), \
+				patch("autodev.auth.browser.AuthHandler", return_value=mock_browser), \
 				patch("autodev.auth.gateway.AuthGateway", return_value=mock_gateway):
 
 				result = await ctrl.handle_auth_request(
@@ -152,7 +152,7 @@ class TestHandleAuthRequest:
 			mock_gateway.authenticate.side_effect = RuntimeError("browser crashed")
 
 			with patch("autodev.auth.vault.KeychainVault", return_value=MagicMock()), \
-				patch("autodev.auth.browser.HeadlessAuthHandler", return_value=mock_browser), \
+				patch("autodev.auth.browser.AuthHandler", return_value=mock_browser), \
 				patch("autodev.auth.gateway.AuthGateway", return_value=mock_gateway):
 
 				result = await ctrl.handle_auth_request(
@@ -186,7 +186,7 @@ class TestHandleAuthRequest:
 			)
 
 			with patch("autodev.auth.vault.KeychainVault", return_value=MagicMock()), \
-				patch("autodev.auth.browser.HeadlessAuthHandler", return_value=mock_browser), \
+				patch("autodev.auth.browser.AuthHandler", return_value=mock_browser), \
 				patch("autodev.auth.gateway.AuthGateway", return_value=mock_gateway):
 
 				await ctrl.handle_auth_request(

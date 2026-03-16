@@ -206,28 +206,13 @@ class ContainerConfig:
 
 
 @dataclass
-class EntireConfig:
-	"""Entire.io cloud backend settings."""
-
-	api_key: str = ""  # ENTIRE_API_KEY env var fallback
-	api_base_url: str = "https://api.entire.io"
-	org_id: str = ""
-	environment_template: str = ""  # pre-configured env template ID
-	startup_timeout: int = 120
-	machine_type: str = ""  # e.g. "small", "medium", "large"
-	region: str = ""  # e.g. "us-east-1"
-	persist_environments: bool = False  # keep envs alive between tasks
-
-
-@dataclass
 class BackendConfig:
 	"""Worker backend settings."""
 
-	type: str = "local"  # local/ssh/container/entire
+	type: str = "local"  # local/ssh/container
 	max_output_mb: int = 50  # max stdout size per worker in MB
 	ssh_hosts: list[SSHHostConfig] = field(default_factory=list)
 	container: ContainerConfig = field(default_factory=ContainerConfig)
-	entire: EntireConfig = field(default_factory=EntireConfig)
 
 
 @dataclass
@@ -786,21 +771,6 @@ def _build_container(data: dict[str, Any]) -> ContainerConfig:
 	return cc
 
 
-def _build_entire(data: dict[str, Any]) -> EntireConfig:
-	ec = EntireConfig()
-	for key in ("api_key", "api_base_url", "org_id", "environment_template", "machine_type", "region"):
-		if key in data:
-			setattr(ec, key, str(data[key]))
-	if "startup_timeout" in data:
-		ec.startup_timeout = int(data["startup_timeout"])
-	if "persist_environments" in data:
-		ec.persist_environments = bool(data["persist_environments"])
-	# Env var fallback for API key
-	if not ec.api_key:
-		ec.api_key = os.environ.get("ENTIRE_API_KEY", "")
-	return ec
-
-
 def _build_backend(data: dict[str, Any]) -> BackendConfig:
 	bc = BackendConfig()
 	if "type" in data:
@@ -821,8 +791,6 @@ def _build_backend(data: dict[str, Any]) -> BackendConfig:
 			bc.ssh_hosts.append(host)
 	if "container" in data:
 		bc.container = _build_container(data["container"])
-	if "entire" in data:
-		bc.entire = _build_entire(data["entire"])
 	return bc
 
 
@@ -1241,10 +1209,12 @@ def build_claude_cmd(
 	Centralizes all claude CLI flag construction so MCP config, model,
 	and other flags are applied consistently across all spawn points.
 	"""
+	from autodev.intelligence.utils import find_claude_binary
+	claude_bin = find_claude_binary()
 	if resume_session:
-		cmd: list[str] = ["claude", "--resume", resume_session, "-p", "--output-format", output_format]
+		cmd: list[str] = [claude_bin, "--resume", resume_session, "-p", "--output-format", output_format]
 	else:
-		cmd = ["claude", "-p", "--output-format", output_format]
+		cmd = [claude_bin, "-p", "--output-format", output_format]
 	cmd.extend(["--model", model])
 	if budget is not None:
 		cmd.extend(["--max-budget-usd", str(budget)])
@@ -1468,17 +1438,7 @@ def validate_config(config: MissionConfig) -> list[tuple[str, str]]:
 			if not ccd.exists():
 				issues.append(("error", f"backend.container.claude_config_dir does not exist: {ccd}"))
 
-	# 6. Entire.io backend checks
-	if config.backend.type == "entire":
-		ec = config.backend.entire
-		if not ec.api_key:
-			issues.append(("error", "backend.entire.api_key must be set (or set ENTIRE_API_KEY env var)"))
-		if not ec.api_base_url:
-			issues.append(("error", "backend.entire.api_base_url must not be empty"))
-		if not ec.environment_template:
-			issues.append(("warning", "backend.entire.environment_template is empty (will use platform defaults)"))
-
-	# 7. Suspicious values
+	# 6. Suspicious values
 	if config.scheduler.session_timeout < 60:
 		issues.append(("warning", f"session_timeout is very low: {config.scheduler.session_timeout}s"))
 	if config.scheduler.parallel.num_workers > 8:

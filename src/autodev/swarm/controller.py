@@ -87,12 +87,6 @@ class SwarmController:
 		self._agent_tool_calls: dict[str, list[dict]] = {}  # agent_id -> tool calls
 		self._agent_final_results: dict[str, str] = {}  # agent_id -> stream-json result text
 
-		if config.backend.type == "entire":
-			logger.warning(
-				"Entire.io backend is not yet supported in swarm mode. "
-				"Agents will be spawned locally."
-			)
-
 	async def _notify(self, message: str) -> None:
 		"""Send a Telegram notification if configured."""
 		try:

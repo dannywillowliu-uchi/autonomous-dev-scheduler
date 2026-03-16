@@ -1,0 +1,19 @@
+=== Swarm daemon starting at Sun Mar 15 21:51:36 PDT 2026 ===
+21:51:36 INFO autodev.swarm.controller: Swarm controller initialized for team autodev-autonomous-development
+21:51:37 INFO httpx: HTTP Request: POST https://api.telegram.org/bot8685447637:AAGCWVSvkG9QrpUalBgVwhwi9KL0NvbCUrs/sendMessage "HTTP/1.1 200 OK"
+21:51:37 INFO autodev.swarm.planner: Driving planner started
+21:53:10 INFO autodev.swarm.planner: Parsed 8 decisions from planner (cycle 1)
+21:53:10 INFO autodev.swarm.controller: Created task d677d1f37c29: Delete dead code: checkpoint.py and adaptive_concurrency.py
+21:53:10 INFO autodev.swarm.controller: Created task 845ddadf899b: Delete EntireConfig plumbing + fix build_claude_cmd
+21:53:10 INFO autodev.swarm.controller: Resolved spawn task_id 'task_1' -> d677d1f37c29 (Delete dead code: checkpoint.py and adaptive_concurrency.py)
+21:53:10 INFO autodev.swarm.controller: Spawned agent dead-code-cleaner (implementer) for task d677d1f37c29
+21:53:10 INFO autodev.swarm.controller: Resolved spawn task_id 'task_2' -> 845ddadf899b (Delete EntireConfig plumbing + fix build_claude_cmd)
+21:53:10 INFO autodev.swarm.controller: Spawned agent entire-config-remover (implementer) for task 845ddadf899b
+21:53:10 INFO autodev.swarm.controller: Created task 74d72f114400: Deduplicate _extract_json_array + fix auth import
+21:53:10 INFO autodev.swarm.controller: Resolved spawn task_id 'task_3' -> 74d72f114400 (Deduplicate _extract_json_array + fix auth import)
+21:53:10 INFO autodev.swarm.controller: Spawned agent small-fixes (implementer) for task 74d72f114400
+21:53:10 INFO autodev.swarm.controller: Created task 1db4facf76be: Audit codebase for additional bugs and dead code
+21:53:10 INFO autodev.swarm.controller: Resolved spawn task_id 'task_4' -> 1db4facf76be (Audit codebase for additional bugs and dead code)
+21:53:10 INFO autodev.swarm.controller: Spawned agent codebase-auditor (researcher) for task 1db4facf76be
+21:54:14 WARNING autodev.swarm.controller: Trace streaming error for entire-config-remover: Separator is not found, and chunk exceed the limit
+21:55:00 WARNING autodev.swarm.controller: Trace streaming error for codebase-auditor: Separator is found, but chunk is longer than limit

@@ -35,6 +35,7 @@ UNIT_EVENT_TYPES: frozenset[str] = frozenset({
 	UNIT_EVENT_AUDIT_COMPLETED,
 	UNIT_EVENT_DESIGN_COMPLETED,
 	UNIT_EVENT_SPECULATION_COMPLETED,
+	UNIT_EVENT_DEGRADATION_TRANSITION,
 })
 
 EVENT_TO_STATUS: dict[str, str] = {
@@ -52,6 +53,7 @@ EVENT_TO_STATUS: dict[str, str] = {
 	UNIT_EVENT_AUDIT_COMPLETED: "completed",
 	UNIT_EVENT_DESIGN_COMPLETED: "completed",
 	UNIT_EVENT_SPECULATION_COMPLETED: "completed",
+	UNIT_EVENT_DEGRADATION_TRANSITION: "running",
 }
 
 # Evaluator round-scoring weights (test_improvement, lint_improvement, completion_rate, no_regression)

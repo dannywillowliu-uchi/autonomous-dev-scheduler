@@ -14,6 +14,7 @@ from pathlib import Path
 
 from autodev.intelligence.models import AdaptationProposal, Finding
 from autodev.intelligence.utils import find_claude_binary
+from autodev.json_utils import extract_json_from_text
 
 logger = logging.getLogger(__name__)
 
@@ -45,25 +46,9 @@ Return a JSON array wrapped in ```json fences:
 
 def _extract_json_array(text: str) -> list[dict]:
 	"""Extract a JSON array from LLM output, handling markdown fences and preamble."""
-	fence_match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
-	if fence_match:
-		candidate = fence_match.group(1).strip()
-		try:
-			parsed = json.loads(candidate)
-			if isinstance(parsed, list):
-				return parsed
-		except json.JSONDecodeError:
-			pass
-
-	bracket_match = re.search(r"\[.*\]", text, re.DOTALL)
-	if bracket_match:
-		try:
-			parsed = json.loads(bracket_match.group(0))
-			if isinstance(parsed, list):
-				return parsed
-		except json.JSONDecodeError:
-			pass
-
+	result = extract_json_from_text(text, expect_array=True)
+	if isinstance(result, list):
+		return result
 	raise ValueError("No valid JSON array found in LLM output")
 
 
