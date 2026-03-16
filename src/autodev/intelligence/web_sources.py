@@ -18,11 +18,22 @@ logger = logging.getLogger(__name__)
 
 # X/Twitter accounts to monitor via Playwright scraping
 X_ACCOUNTS: list[dict[str, str]] = [
-	{
-		"handle": "bcherny",
-		"trust_level": "high",
-		"description": "Boris Cherny, creator of Claude Code at Anthropic",
-	},
+	# Claude Code / Anthropic
+	{"handle": "bcherny", "trust_level": "high", "description": "Boris Cherny, creator of Claude Code"},
+	{"handle": "AnthropicAI", "trust_level": "high", "description": "Anthropic official"},
+	{"handle": "alexalbert__", "trust_level": "high", "description": "Alex Albert, Anthropic prompt engineering lead"},
+	# Google / DeepMind
+	{"handle": "GoogleDeepMind", "trust_level": "high", "description": "Google DeepMind official"},
+	{"handle": "JeffDean", "trust_level": "high", "description": "Jeff Dean, Google Chief Scientist"},
+	{"handle": "GeminiApp", "trust_level": "high", "description": "Gemini official"},
+	# OpenAI
+	{"handle": "OpenAI", "trust_level": "high", "description": "OpenAI official"},
+	{"handle": "sama", "trust_level": "high", "description": "Sam Altman, OpenAI CEO"},
+	# Agentic AI builders / thought leaders
+	{"handle": "karpathy", "trust_level": "medium", "description": "Andrej Karpathy, AI research, autoresearch"},
+	{"handle": "swyx", "trust_level": "medium", "description": "swyx, AI Engineer community"},
+	{"handle": "simonw", "trust_level": "medium", "description": "Simon Willison, LLM tooling"},
+	{"handle": "HamelHusain", "trust_level": "medium", "description": "Hamel Husain, AI engineering"},
 ]
 
 
