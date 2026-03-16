@@ -25,7 +25,7 @@
     "[config-backend-impl] (report) Completed: (1) Added EntireConfig dataclass to config.py with api_key, api_base_url, org_id, environment_template, startup_timeout, machine_type, region, persist_environments fields. (2) Added entire field to BackendConfig. (3) Added _build_entire() TOML loader with ENTIRE_API_KEY env var fallback. (4) Wired into _build_backend(). (5) Added entire backend validation in validate_config() (section 6). (6) Created backends/entire.py with EntireBackend skeleton (all methods raise NotImplementedError). All 2949 tests pass (1 skipped), ruff clean."
   ],
   "cost_usd": 0.0,
-  "wall_minutes": 631.1101953097328,
+  "wall_minutes": 644.6331686729168,
   "test_history": [],
   "completion_history": [
     0,

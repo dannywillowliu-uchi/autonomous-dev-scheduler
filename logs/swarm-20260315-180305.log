@@ -49,3 +49,33 @@
 18:28:05 INFO autodev.swarm.planner: Parsed 1 decisions from planner (cycle 8)
 18:28:05 INFO autodev.swarm.controller: Planner waiting 120s: final-verifier has only been running ~30s. Full pytest + ruff + bandit suite needs 2-3 minutes. All 7 spec items are confirmed implemented with 3115 tests passing. Let it finish.
 18:30:05 INFO autodev.swarm.planner: Cycle 8: 1 decisions (wait), 1 ok, 0 failed
+18:30:35 INFO autodev.swarm.controller: Auto-committed task 'Final full-suite verification after context + CLI implementation': 9b4ef54b
+18:31:32 INFO autodev.swarm.planner: Parsed 2 decisions from planner (cycle 9)
+18:31:32 INFO autodev.swarm.controller: Adjusted swarm config: {'max_agents': 0}
+18:31:32 INFO autodev.swarm.controller: Planner waiting 0s: Mission complete. All spec items implemented: DB tables, stream-json parsing, output rewrite, format switch, planner visibility, CLI command, and tests. Final verification confirmed by final-verifier agent. No remaining work.
+18:31:32 INFO autodev.swarm.planner: Cycle 9: 2 decisions (adjust, wait), 2 ok, 0 failed
+18:32:59 INFO autodev.swarm.planner: Parsed 0 decisions from planner (cycle 10)
+18:32:59 INFO autodev.swarm.planner: Cycle 10: 0 decisions (), 0 ok, 0 failed
+18:34:13 INFO autodev.swarm.planner: Parsed 1 decisions from planner (cycle 11)
+18:34:13 INFO autodev.swarm.controller: Planner waiting 30s: Mission is complete. All 7 spec items implemented and verified (3115 tests pass, ruff clean). No further work needed. Waiting for controller to detect all-tasks-done state.
+18:34:43 INFO autodev.swarm.planner: Cycle 11: 1 decisions (wait), 1 ok, 0 failed
+18:35:50 INFO autodev.swarm.planner: Parsed 0 decisions from planner (cycle 12)
+18:35:50 INFO autodev.swarm.planner: Cycle 12: 0 decisions (), 0 ok, 0 failed
+18:37:02 INFO autodev.swarm.planner: Parsed 1 decisions from planner (cycle 13)
+18:37:02 INFO autodev.swarm.controller: Planner waiting 5s: Mission is complete. All 7 spec items implemented and verified: DB tables, stream-json parsing, output rewrite, format switch, planner visibility, CLI command, and tests. 3115 tests pass, ruff lint clean, all 15 tool_tracking tests pass. No further agents needed.
+18:37:07 INFO autodev.swarm.planner: Cycle 13: 1 decisions (wait), 1 ok, 0 failed
+18:38:28 INFO autodev.swarm.planner: Parsed 2 decisions from planner (cycle 14)
+18:38:28 INFO autodev.swarm.controller: Adjusted swarm config: {'max_agents': 0}
+18:38:28 WARNING autodev.swarm.controller: ESCALATION: Mission complete. All 7 spec items (DB tables, stream-json parsing, _stream_agent_output rewrite, output format switch, planner visibility, CLI command, tests) are implemented and verified. Final-verifier confirmed 3115 tests pass with clean ruff. The pending task 1cc001112043 is redundant -- it duplicates verification already performed by final-verifier. Safe to stop the swarm.
+18:38:28 INFO autodev.swarm.planner: Cycle 14: 2 decisions (adjust, escalate), 2 ok, 0 failed
+18:39:40 INFO autodev.swarm.planner: Parsed 1 decisions from planner (cycle 15)
+18:39:40 INFO autodev.swarm.controller: Planner waiting 5s: Mission complete. All 7 spec items implemented and verified: DB tables, stream-JSON parsing, rewritten _stream_agent_output, output format switch, planner visibility, CLI command, and 15 tests. Final-verifier confirmed 3115 tests pass with clean lint. No further work needed.
+18:39:45 INFO autodev.swarm.planner: Cycle 15: 1 decisions (wait), 1 ok, 0 failed
+18:40:58 INFO autodev.swarm.planner: Parsed 2 decisions from planner (cycle 16)
+18:40:58 INFO autodev.swarm.controller: Adjusted swarm config: {'max_agents': 0}
+18:40:58 INFO autodev.swarm.controller: Planner waiting 0s: Mission complete. All spec items implemented: DB tables, stream-json parsing, _stream_agent_output rewrite, output format switch, planner visibility in context.py, CLI tool-usage command, and test_tool_tracking.py with 15 passing tests. Final verification passed. Swarm should stop.
+18:40:58 INFO autodev.swarm.planner: Cycle 16: 2 decisions (adjust, wait), 2 ok, 0 failed
+18:42:17 INFO autodev.swarm.planner: Parsed 2 decisions from planner (cycle 17)
+18:42:17 INFO autodev.swarm.controller: Adjusted swarm config: {'max_agents': 1}
+18:42:17 INFO autodev.swarm.controller: Spawned agent final-close-verifier (tester) for task 1cc001112043
+18:42:17 INFO autodev.swarm.planner: Cycle 17: 2 decisions (spawn, adjust), 2 ok, 0 failed
