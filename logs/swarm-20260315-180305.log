@@ -1,0 +1,11 @@
+18:03:06 INFO autodev.swarm.controller: Swarm controller initialized for team autodev-autonomous-development
+18:03:06 INFO autodev.swarm.planner: Driving planner started
+18:06:21 INFO autodev.swarm.planner: Parsed 8 decisions from planner (cycle 1)
+18:06:21 INFO autodev.swarm.controller: Created task fcb82cf385b4: Add tool_calls and mcp_status tables to db.py
+18:06:21 INFO autodev.swarm.controller: Spawned agent db-impl (implementer) for task fcb82cf385b4
+18:06:21 INFO autodev.swarm.controller: Created task d1d5aeb41651: Add stream-json parsing and tool tracking to controller.py
+18:06:21 INFO autodev.swarm.controller: Spawned agent controller-impl (implementer) for task d1d5aeb41651
+18:06:21 INFO autodev.swarm.controller: Created task d3889dc035ec: Add tool failure visibility to context.py and tool-usage CLI command
+18:06:21 INFO autodev.swarm.controller: Spawned agent context-cli-impl (implementer) for task d3889dc035ec
+18:06:21 INFO autodev.swarm.controller: Created task efa5047347f1: Write test_tool_tracking.py with comprehensive tests
+18:06:21 INFO autodev.swarm.controller: Spawned agent test-writer (tester) for task efa5047347f1

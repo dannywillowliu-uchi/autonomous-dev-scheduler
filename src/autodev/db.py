@@ -591,6 +591,31 @@ CREATE TABLE IF NOT EXISTS agent_traces (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_traces_run ON agent_traces(run_id);
 CREATE INDEX IF NOT EXISTS idx_agent_traces_agent ON agent_traces(agent_name);
+
+CREATE TABLE IF NOT EXISTS tool_calls (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	run_id TEXT NOT NULL,
+	agent_id TEXT NOT NULL,
+	agent_name TEXT NOT NULL,
+	tool_name TEXT NOT NULL,
+	mcp_server TEXT NOT NULL DEFAULT '',
+	success INTEGER NOT NULL DEFAULT 1,
+	error_message TEXT NOT NULL DEFAULT '',
+	timestamp TEXT NOT NULL,
+	duration_ms REAL NOT NULL DEFAULT 0.0
+);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_run ON tool_calls(run_id);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_agent ON tool_calls(agent_id);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_tool ON tool_calls(tool_name);
+
+CREATE TABLE IF NOT EXISTS mcp_status (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	run_id TEXT NOT NULL,
+	agent_id TEXT NOT NULL,
+	server_name TEXT NOT NULL,
+	status TEXT NOT NULL,
+	timestamp TEXT NOT NULL
+);
 """
 
 
@@ -3340,6 +3365,124 @@ class Database:
 				"files_changed": json.loads(r["files_changed"]),
 				"trace_path": r["trace_path"],
 				"output_tail": r["output_tail"],
+			}
+			for r in rows
+		]
+
+	# -- Tool Call Tracking --
+
+	def record_tool_call(
+		self,
+		run_id: str,
+		agent_id: str,
+		agent_name: str,
+		tool_name: str,
+		mcp_server: str = "",
+		success: bool = True,
+		error_message: str = "",
+		timestamp: str = "",
+		duration_ms: float = 0.0,
+	) -> None:
+		"""Record a single tool call."""
+		self.conn.execute(
+			"INSERT INTO tool_calls "
+			"(run_id, agent_id, agent_name, tool_name, mcp_server, success, error_message, timestamp, duration_ms) "
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			(run_id, agent_id, agent_name, tool_name, mcp_server, int(success), error_message, timestamp, duration_ms),
+		)
+		self.conn.commit()
+
+	def get_tool_usage(
+		self,
+		run_id: str | None = None,
+		agent_id: str | None = None,
+		limit: int = 100,
+	) -> list[dict[str, Any]]:
+		"""Return tool calls with optional filters, most recent first."""
+		clauses: list[str] = []
+		params: list[Any] = []
+		if run_id:
+			clauses.append("run_id = ?")
+			params.append(run_id)
+		if agent_id:
+			clauses.append("agent_id = ?")
+			params.append(agent_id)
+		where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+		params.append(limit)
+		rows = self.conn.execute(
+			f"SELECT * FROM tool_calls{where} ORDER BY timestamp DESC LIMIT ?",
+			params,
+		).fetchall()
+		return [
+			{
+				"id": r["id"],
+				"run_id": r["run_id"],
+				"agent_id": r["agent_id"],
+				"agent_name": r["agent_name"],
+				"tool_name": r["tool_name"],
+				"mcp_server": r["mcp_server"],
+				"success": bool(r["success"]),
+				"error_message": r["error_message"],
+				"timestamp": r["timestamp"],
+				"duration_ms": r["duration_ms"],
+			}
+			for r in rows
+		]
+
+	def get_tool_failure_summary(self, run_id: str | None = None) -> list[dict[str, Any]]:
+		"""Return tool failure counts grouped by tool_name, ordered by count desc."""
+		if run_id:
+			rows = self.conn.execute(
+				"SELECT tool_name, COUNT(*) as failure_count, MAX(error_message) as last_error "
+				"FROM tool_calls WHERE success = 0 AND run_id = ? "
+				"GROUP BY tool_name ORDER BY failure_count DESC",
+				(run_id,),
+			).fetchall()
+		else:
+			rows = self.conn.execute(
+				"SELECT tool_name, COUNT(*) as failure_count, MAX(error_message) as last_error "
+				"FROM tool_calls WHERE success = 0 "
+				"GROUP BY tool_name ORDER BY failure_count DESC",
+			).fetchall()
+		return [
+			{
+				"tool_name": r["tool_name"],
+				"failure_count": r["failure_count"],
+				"last_error": r["last_error"],
+			}
+			for r in rows
+		]
+
+	def record_mcp_status(
+		self,
+		run_id: str,
+		agent_id: str,
+		server_name: str,
+		status: str,
+		timestamp: str,
+	) -> None:
+		"""Record MCP server connection status."""
+		self.conn.execute(
+			"INSERT INTO mcp_status (run_id, agent_id, server_name, status, timestamp) "
+			"VALUES (?, ?, ?, ?, ?)",
+			(run_id, agent_id, server_name, status, timestamp),
+		)
+		self.conn.commit()
+
+	def get_mcp_status(self, run_id: str) -> list[dict[str, Any]]:
+		"""Return MCP server statuses for a run."""
+		rows = self.conn.execute(
+			"SELECT * FROM mcp_status WHERE run_id = ? ORDER BY timestamp DESC",
+			(run_id,),
+		).fetchall()
+		return [
+			{
+				"id": r["id"],
+				"run_id": r["run_id"],
+				"agent_id": r["agent_id"],
+				"server_name": r["server_name"],
+				"status": r["status"],
+				"timestamp": r["timestamp"],
 			}
 			for r in rows
 		]

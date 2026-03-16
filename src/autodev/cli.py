@@ -198,6 +198,13 @@ def build_parser() -> argparse.ArgumentParser:
 	)
 	metrics.add_argument("--config", default=DEFAULT_CONFIG, help="Config file path")
 
+	# autodev tool-usage
+	tool_usage = sub.add_parser("tool-usage", help="Show tool usage summary")
+	tool_usage.add_argument("--config", default=DEFAULT_CONFIG)
+	tool_usage.add_argument("--run-id", default=None, help="Filter by run ID")
+	tool_usage.add_argument("--failures-only", action="store_true", help="Show only failed tool calls")
+	tool_usage.add_argument("--top", type=int, default=20, help="Show top N most-used tools")
+
 	return parser
 
 
@@ -1429,6 +1436,34 @@ def cmd_metrics(args: argparse.Namespace) -> int:
 	return 0
 
 
+def cmd_tool_usage(args: argparse.Namespace) -> int:
+	"""Show tool usage summary from swarm runs."""
+	db_path = _get_db_path(args.config)
+	db = Database(str(db_path))
+
+	if args.failures_only:
+		failures = db.get_tool_failure_summary(run_id=args.run_id)
+		if not failures:
+			print("No tool failures found.")
+			return 0
+		print(f"{'Tool':<40} {'Failures':>8}  Last Error")
+		print("-" * 80)
+		for f in failures:
+			print(f"{f['tool_name']:<40} {f['failure_count']:>8}  {f['last_error'][:60]}")
+		return 0
+
+	usage = db.get_tool_usage(run_id=args.run_id, limit=args.top)
+	if not usage:
+		print("No tool usage data found.")
+		return 0
+	print(f"{'Tool':<40} {'Server':<15} {'Status':>7} {'Duration':>10}")
+	print("-" * 80)
+	for u in usage:
+		status = "OK" if u["success"] else "FAIL"
+		print(f"{u['tool_name']:<40} {u.get('mcp_server', ''):<15} {status:>7} {u.get('duration_ms', 0):>8.0f}ms")
+	return 0
+
+
 COMMANDS = {
 	"status": cmd_status,
 	"history": cmd_history,
@@ -1454,6 +1489,7 @@ COMMANDS = {
 	"a2a": cmd_a2a,
 	"validate-config": cmd_validate_config,
 	"metrics": cmd_metrics,
+	"tool-usage": cmd_tool_usage,
 }
 
 

@@ -253,7 +253,7 @@ class ContextSynthesizer:
 
 		return reports
 
-	def render_for_planner(self, state: SwarmState) -> str:
+	def render_for_planner(self, state: SwarmState, run_id: str | None = None) -> str:
 		"""Render SwarmState as a structured text block for the planner prompt."""
 		sections = []
 
@@ -467,6 +467,15 @@ class ContextSynthesizer:
 			if work_lines:
 				sections.append("## Completed Work Summary\n" + "\n".join(work_lines))
 
+		# Tool failures and MCP issues (requires run_id)
+		if run_id:
+			tool_failures = self._render_tool_failures(run_id)
+			if tool_failures:
+				sections.append(tool_failures)
+			mcp_issues = self._render_mcp_status(run_id)
+			if mcp_issues:
+				sections.append(mcp_issues)
+
 		# Meta
 		meta_parts = [
 			f"Cycle: {state.cycle_number}",
@@ -481,6 +490,29 @@ class ContextSynthesizer:
 		sections.append("## Meta\n" + " | ".join(meta_parts))
 
 		return "\n\n".join(sections)
+
+	def _render_tool_failures(self, run_id: str) -> str:
+		"""Render tool failure summary for planner visibility."""
+		failures = self._db.get_tool_failure_summary(run_id=run_id)
+		if not failures:
+			return ""
+		lines = ["## Tool Failures This Run"]
+		for f in failures:
+			lines.append(f"- {f['tool_name']}: {f['failure_count']} failures. Last error: {f['last_error'][:100]}")
+		return "\n".join(lines)
+
+	def _render_mcp_status(self, run_id: str) -> str:
+		"""Render MCP server connection issues for planner visibility."""
+		statuses = self._db.get_mcp_status(run_id=run_id)
+		if not statuses:
+			return ""
+		failed = [s for s in statuses if s["status"] != "connected"]
+		if not failed:
+			return ""
+		lines = ["## MCP Server Issues"]
+		for s in failed:
+			lines.append(f"- {s['server_name']}: {s['status']}")
+		return "\n".join(lines)
 
 	@staticmethod
 	def _count_task_statuses(tasks: list[SwarmTask]) -> dict[str, int]:

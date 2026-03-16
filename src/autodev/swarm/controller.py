@@ -84,6 +84,8 @@ class SwarmController:
 		self._trace_tasks: dict[str, asyncio.Task] = {}  # agent_id -> streaming task
 		self._agent_outputs: dict[str, str] = {}  # agent_id -> accumulated output
 		self._agent_spawn_times: dict[str, str] = {}  # agent_id -> ISO timestamp
+		self._agent_tool_calls: dict[str, list[dict]] = {}  # agent_id -> tool calls
+		self._agent_final_results: dict[str, str] = {}  # agent_id -> stream-json result text
 
 		if config.backend.type == "entire":
 			logger.warning(
@@ -727,6 +729,7 @@ class SwarmController:
 			setting_sources=setting_sources,
 			permission_mode="auto",
 			max_turns=200,
+			output_format="stream-json",
 		)
 		env = claude_subprocess_env(self._config)
 		env["AUTODEV_TEAM_NAME"] = self._team_name
@@ -757,13 +760,17 @@ class SwarmController:
 	async def _stream_agent_output(
 		self, agent_id: str, agent_name: str, proc: asyncio.subprocess.Process
 	) -> None:
-		"""Stream agent stdout/stderr to a trace file, avoiding pipe deadlocks."""
+		"""Stream agent stdout/stderr to a trace file, parsing stream-json events."""
 		self._trace_dir.mkdir(parents=True, exist_ok=True)
 		trace_path = self._trace_dir / f"{agent_name}-{agent_id[:8]}.log"
+		tool_calls: list[dict] = []
+		pending_tool_uses: dict[str, dict] = {}  # tool_use_id -> {name, start_time, mcp_server}
+
 		try:
 			with open(trace_path, "w") as f:
 				f.write(f"# Agent: {agent_name} ({agent_id})\n")
-				f.write(f"# Started: {self._agent_spawn_times.get(agent_id, '')}\n\n")
+				f.write(f"# Started: {self._agent_spawn_times.get(agent_id, '')}\n")
+				f.write("# Format: stream-json\n\n")
 
 				async def read_stream(stream: asyncio.StreamReader, prefix: str) -> None:
 					while True:
@@ -773,7 +780,14 @@ class SwarmController:
 						decoded = line.decode(errors="replace")
 						f.write(f"{prefix}{decoded}")
 						f.flush()
+
 						if prefix == "[OUT] ":
+							decoded_stripped = decoded.strip()
+							if decoded_stripped:
+								self._parse_stream_event(
+									decoded_stripped, agent_id, agent_name,
+									pending_tool_uses, tool_calls,
+								)
 							self._agent_outputs[agent_id] = (
 								self._agent_outputs.get(agent_id, "") + decoded
 							)
@@ -785,8 +799,92 @@ class SwarmController:
 					tasks.append(asyncio.create_task(read_stream(proc.stderr, "[ERR] ")))
 				if tasks:
 					await asyncio.gather(*tasks)
+
 		except Exception as e:
 			logger.warning("Trace streaming error for %s: %s", agent_name, e)
+
+		self._agent_tool_calls[agent_id] = tool_calls
+
+	def _parse_stream_event(
+		self,
+		line: str,
+		agent_id: str,
+		agent_name: str,
+		pending_tool_uses: dict[str, dict],
+		tool_calls: list[dict],
+	) -> None:
+		"""Parse a single stream-json event line for tool tracking."""
+		try:
+			event = json.loads(line)
+		except json.JSONDecodeError:
+			return
+
+		event_type = event.get("type")
+
+		# Init event: capture MCP server status
+		if event_type == "system" and event.get("subtype") == "init":
+			for server in event.get("mcp_servers", []):
+				self._db.record_mcp_status(
+					run_id=self._run_id,
+					agent_id=agent_id,
+					server_name=server["name"],
+					status=server["status"],
+					timestamp=_now_iso(),
+				)
+
+		# Tool use: record start
+		if event_type == "assistant":
+			for content in event.get("message", {}).get("content", []):
+				if content.get("type") == "tool_use":
+					tool_id = content["id"]
+					tool_name = content["name"]
+					pending_tool_uses[tool_id] = {
+						"name": tool_name,
+						"start_time": time.monotonic(),
+						"mcp_server": tool_name.split("__")[1] if "__" in tool_name else "",
+					}
+
+		# Tool result: record completion
+		if event_type == "user":
+			for content in event.get("message", {}).get("content", []):
+				if content.get("type") == "tool_result":
+					tool_id = content.get("tool_use_id", "")
+					if tool_id in pending_tool_uses:
+						info = pending_tool_uses.pop(tool_id)
+						duration = (time.monotonic() - info["start_time"]) * 1000
+						result_text = ""
+						if isinstance(content.get("content"), str):
+							result_text = content["content"]
+						elif isinstance(content.get("content"), list):
+							result_text = " ".join(
+								c.get("text", "") for c in content["content"]
+								if isinstance(c, dict)
+							)
+						is_error = content.get("is_error", False)
+						error_msg = result_text[:500] if is_error else ""
+
+						call = {
+							"tool_name": info["name"],
+							"mcp_server": info["mcp_server"],
+							"success": not is_error,
+							"error_message": error_msg,
+							"timestamp": _now_iso(),
+							"duration_ms": duration,
+						}
+						tool_calls.append(call)
+
+						self._db.record_tool_call(
+							run_id=self._run_id,
+							agent_id=agent_id,
+							agent_name=agent_name,
+							**call,
+						)
+
+		# Final result: extract text output
+		if event_type == "result":
+			result_text = event.get("result", "")
+			if result_text:
+				self._agent_final_results[agent_id] = result_text
 
 	# -- Agent Monitoring --
 
@@ -808,8 +906,11 @@ class SwarmController:
 					except (asyncio.TimeoutError, Exception):
 						pass
 
-				# Use output accumulated by the streaming task, fall back to pipe read
-				output = self._agent_outputs.pop(agent_id, "")
+				# Try final result text first (from stream-json "result" event),
+				# fall back to raw accumulated output, then pipe read
+				output = self._agent_final_results.pop(agent_id, "")
+				if not output:
+					output = self._agent_outputs.pop(agent_id, "")
 				if not output:
 					try:
 						stdout_bytes = await proc.stdout.read() if proc.stdout else b""
