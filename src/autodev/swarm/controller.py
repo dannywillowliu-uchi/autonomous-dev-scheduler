@@ -93,6 +93,18 @@ class SwarmController:
 				"Agents will be spawned locally."
 			)
 
+	async def _notify(self, message: str) -> None:
+		"""Send a Telegram notification if configured."""
+		try:
+			from autodev.notifier import TelegramNotifier
+			tg = self._config.notifications.telegram
+			if tg.bot_token and tg.chat_id:
+				notifier = TelegramNotifier(tg.bot_token, tg.chat_id)
+				await notifier.send(message)
+				await notifier.close()
+		except Exception:
+			pass
+
 	@property
 	def team_name(self) -> str:
 		return self._team_name
@@ -151,6 +163,8 @@ class SwarmController:
 
 		self._running = True
 		logger.info("Swarm controller initialized for team %s", self._team_name)
+		objective = self._config.target.objective[:200]
+		await self._notify(f"[autodev] Swarm started: {objective}")
 
 	def build_state(self, core_test_results: dict[str, Any] | None = None) -> SwarmState:
 		"""Build current swarm state snapshot for the planner."""
@@ -952,8 +966,15 @@ class SwarmController:
 					task.result_summary = result.get("summary", "")
 					task.completed_at = _now_iso()
 					task.attempt_count += 1
-					if task.status == TaskStatus.FAILED:
+					if task.status == TaskStatus.COMPLETED:
+						asyncio.create_task(self._notify(
+							f"[autodev] Task completed: {task.title[:80]}"
+						))
+					elif task.status == TaskStatus.FAILED:
 						task.claimed_by = None
+						asyncio.create_task(self._notify(
+							f"[autodev] Task FAILED: {task.title[:80]}\n{result.get('summary', '')[:200]}"
+						))
 
 				# Collect diff info for planner visibility
 				files_changed = await self._get_git_changed_files()
@@ -1516,6 +1537,14 @@ class SwarmController:
 		await self._generate_completion_report()
 		await self._run_trace_review()
 		await self._record_metrics()
+		completed = [t for t in self._tasks.values() if t.status == TaskStatus.COMPLETED]
+		failed = [t for t in self._tasks.values() if t.status == TaskStatus.FAILED]
+		duration = int((time.monotonic() - self._start_time) / 60)
+		await self._notify(
+			f"[autodev] Swarm finished ({duration}m)\n"
+			f"Completed: {len(completed)}, Failed: {len(failed)}\n"
+			f"Cost: ${self._total_cost_usd:.2f}"
+		)
 		logger.info("Swarm controller cleaned up")
 
 	async def _record_metrics(self) -> None:
