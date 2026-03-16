@@ -72,6 +72,7 @@ class DrivingPlanner:
 		self._consecutive_parse_failures = 0
 		self._evaluator = CycleEvaluator()
 		self._task_failure_counts: dict[str, list[str]] = {}
+		self._daemon_idling = False
 
 		from pathlib import Path
 
@@ -96,7 +97,10 @@ class DrivingPlanner:
 
 			# Main loop
 			while self._running:
-				await asyncio.sleep(self._config.planner_cooldown)
+				if self._daemon_idling:
+					await asyncio.sleep(60)  # Check inbox every 60s when idle
+				else:
+					await asyncio.sleep(self._config.planner_cooldown)
 
 				# Monitor agents, collect events
 				events = await self._controller.monitor_agents()
@@ -120,8 +124,8 @@ class DrivingPlanner:
 				# Grade the cycle (evaluator runs every iteration, not just planning cycles)
 				self._evaluator.grade_cycle(state)
 
-				# Check if we should plan
-				if self._should_plan(state, events):
+				# Check if we should plan (skip LLM when daemon is idling)
+				if not self._daemon_idling and self._should_plan(state, events):
 					decisions = await self._plan_cycle(state)
 					decisions = self._validate_decisions(decisions, state)
 					results = await self._controller.execute_decisions(decisions)
@@ -461,9 +465,14 @@ class DrivingPlanner:
 		]
 		if not active and not pending and state.tasks:
 			if self._config.daemon_mode:
-				logger.info("Daemon mode: all tasks complete, idling for new directives")
+				if not self._daemon_idling:
+					logger.info("Daemon mode: all tasks complete, idling for new directives")
+					self._daemon_idling = True
 				return False
 			return True
+		if self._daemon_idling:
+			self._daemon_idling = False
+			logger.info("Daemon mode: new work detected, resuming")
 		return False
 
 	async def _initial_plan(
