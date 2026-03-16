@@ -49,3 +49,4 @@
 22:03:55 INFO autodev.swarm.planner: Parsed 2 decisions from planner (cycle 4)
 22:03:55 INFO autodev.swarm.controller: Planner waiting 90s: Waiting for verify-entire-config (confirming EntireConfig deletion landed correctly) and codebase-auditor (finishing bug audit from directive item 6). Both are doing useful, non-overlapping work. verify-entire-config is ~2min in, codebase-auditor is ~10min in and should be wrapping up.
 22:05:25 INFO autodev.swarm.planner: Cycle 4: 2 decisions (kill, wait), 2 ok, 0 failed
+22:05:55 INFO autodev.swarm.controller: Auto-committed task 'DB tables for tool call tracking': 54c21e83
