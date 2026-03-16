@@ -79,7 +79,7 @@ def _load_inbox_messages(team_name: str | None) -> list[dict]:
 		except (json.JSONDecodeError, OSError):
 			pass
 
-	messages.sort(key=lambda m: m.get("timestamp", ""), reverse=True)
+	messages.sort(key=lambda m: str(m.get("timestamp", "")), reverse=True)
 	return messages
 
 
