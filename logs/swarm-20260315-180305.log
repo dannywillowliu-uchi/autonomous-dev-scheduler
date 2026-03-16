@@ -40,3 +40,12 @@
 18:23:53 INFO autodev.swarm.planner: Parsed 1 decisions from planner (cycle 6)
 18:23:53 INFO autodev.swarm.controller: Planner waiting 90s: context-cli-careful is only 2.5 minutes into attempt 3 on items 5+6. Two prior agents failed on this task, so this debugger-role agent was spawned specifically to handle it more carefully. Interrupting now would waste its progress and repeat the kill-respawn pattern that already failed twice. Let it work.
 18:25:23 INFO autodev.swarm.planner: Cycle 6: 1 decisions (wait), 1 ok, 0 failed
+18:25:53 INFO autodev.swarm.controller: Auto-committed task 'Add tool failure visibility to context.py and tool-usage CLI command': 94d260a1
+18:25:53 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+18:26:43 INFO autodev.swarm.planner: Parsed 1 decisions from planner (cycle 7)
+18:26:43 INFO autodev.swarm.controller: Auto-assigned spawn 'final-verifier' to unclaimed task 3422567ae053 (Final full-suite verification after context + CLI implementation)
+18:26:43 INFO autodev.swarm.controller: Spawned agent final-verifier (tester) for task 3422567ae053
+18:26:43 INFO autodev.swarm.planner: Cycle 7: 1 decisions (spawn), 1 ok, 0 failed
+18:28:05 INFO autodev.swarm.planner: Parsed 1 decisions from planner (cycle 8)
+18:28:05 INFO autodev.swarm.controller: Planner waiting 120s: final-verifier has only been running ~30s. Full pytest + ruff + bandit suite needs 2-3 minutes. All 7 spec items are confirmed implemented with 3115 tests passing. Let it finish.
+18:30:05 INFO autodev.swarm.planner: Cycle 8: 1 decisions (wait), 1 ok, 0 failed
