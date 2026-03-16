@@ -15,3 +15,4 @@
 18:10:22 INFO autodev.swarm.planner: Parsed 1 decisions from planner (cycle 2)
 18:10:22 INFO autodev.swarm.controller: Planner waiting 90s: All 3 agents are early in execution (3 min). db-impl reported completion via inbox, controller-impl and context-cli-impl are tackling complex multi-file work. Too early to intervene -- let them finish before assessing.
 18:11:52 INFO autodev.swarm.planner: Cycle 2: 1 decisions (wait), 1 ok, 0 failed
+18:12:22 INFO autodev.swarm.controller: Auto-committed task 'Add tool_calls and mcp_status tables to db.py': 56e7f39c
