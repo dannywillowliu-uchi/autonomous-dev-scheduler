@@ -733,6 +733,10 @@ def _build_continuous(data: dict[str, Any]) -> ContinuousConfig:
 		cc.layer_drain_timeout_per_unit = int(data["layer_drain_timeout_per_unit"])
 	if "reconcile_interval" in data:
 		cc.reconcile_interval = int(data["reconcile_interval"])
+	if "max_retry_attempts" in data:
+		cc.max_retry_attempts = int(data["max_retry_attempts"])
+	if "worker_fixup_timeout" in data:
+		cc.worker_fixup_timeout = int(data["worker_fixup_timeout"])
 	return cc
 
 
@@ -753,6 +757,10 @@ def _build_green_branch(data: dict[str, Any]) -> GreenBranchConfig:
 		gc.push_branch = str(data["push_branch"])
 	if "push_batch_size" in data:
 		gc.push_batch_size = int(data["push_batch_size"])
+	if "batch_merge_min_size" in data:
+		gc.batch_merge_min_size = int(data["batch_merge_min_size"])
+	if "batch_merge_wait_seconds" in data:
+		gc.batch_merge_wait_seconds = int(data["batch_merge_wait_seconds"])
 	return gc
 
 
@@ -1011,6 +1019,8 @@ def _build_swarm(data: dict[str, Any]) -> SwarmConfig:
 		sc.inherit_global_capabilities = bool(data["inherit_global_capabilities"])
 	if "allowed_mcps" in data:
 		sc.allowed_mcps = [str(m) for m in data["allowed_mcps"]]
+	if "two_step_planning" in data:
+		sc.two_step_planning = bool(data["two_step_planning"])
 	return sc
 
 
@@ -1100,7 +1110,7 @@ def _build_degradation(data: dict[str, Any]) -> DegradationConfig:
 	dc = DegradationConfig()
 	float_keys = (
 		"budget_fraction_threshold", "conflict_rate_threshold", "reduced_worker_fraction",
-		"rate_limit_window_seconds", "safe_stop_timeout_seconds",
+		"rate_limit_window_seconds", "safe_stop_timeout_seconds", "cost_per_merge_threshold",
 	)
 	for key in float_keys:
 		if key in data:
@@ -1237,7 +1247,7 @@ def build_claude_cmd(
 		cmd.extend(["--max-budget-usd", str(budget)])
 	if max_turns is not None:
 		cmd.extend(["--max-turns", str(max_turns)])
-	if permission_mode == "auto":
+	if permission_mode in ("auto", "bypassPermissions"):
 		cmd.append("--dangerously-skip-permissions")
 	elif permission_mode:
 		cmd.extend(["--permission-mode", permission_mode])

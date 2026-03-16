@@ -363,7 +363,7 @@ class TelegramNotifier:
 			priority=NotificationPriority.HIGH,
 		)
 
-	async def send_auth_help(self, service: str, screenshot_path: str) -> None:
+	async def send_auth_help(self, service: str, reason: str, screenshot_path: str) -> None:
 		"""Send a screenshot when auth flow is stuck, using Telegram sendPhoto."""
 		try:
 			client = await self._ensure_client()
@@ -373,7 +373,7 @@ class TelegramNotifier:
 					url,
 					data={
 						"chat_id": self._chat_id,
-						"caption": f"Auth help needed for {service}",
+						"caption": f"Auth help needed for {service}: {reason}",
 					},
 					files={"photo": ("screenshot.png", f, "image/png")},
 				)

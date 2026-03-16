@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -120,7 +121,10 @@ class TestTryServiceAccount:
 
 	@pytest.mark.asyncio
 	async def test_google_creds_missing_file(self, handler):
-		with patch.dict(os.environ, {"GOOGLE_APPLICATION_CREDENTIALS": "/nonexistent/sa.json"}):
+		with (
+			patch.dict(os.environ, {"GOOGLE_APPLICATION_CREDENTIALS": "/nonexistent/sa.json"}),
+			patch("autodev.auth.browser.Path.home", return_value=Path("/fake/home")),
+		):
 			result = await handler._try_service_account("google-cloud")
 		assert result.success is False
 

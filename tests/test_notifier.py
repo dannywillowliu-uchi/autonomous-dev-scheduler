@@ -514,7 +514,7 @@ class TestAuthNotifications:
 		mock_response = httpx.Response(200)
 		with patch("autodev.notifier.httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
 			mock_post.return_value = mock_response
-			await notifier.send_auth_help("google", str(screenshot))
+			await notifier.send_auth_help("google", "OAuth stuck", str(screenshot))
 			mock_post.assert_called_once()
 			call_args = mock_post.call_args
 			assert "sendPhoto" in call_args[0][0]
@@ -530,12 +530,12 @@ class TestAuthNotifications:
 		screenshot.write_bytes(b"fake-png-data")
 		with patch("autodev.notifier.httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
 			mock_post.side_effect = httpx.HTTPError("network error")
-			await notifier.send_auth_help("google", str(screenshot))
+			await notifier.send_auth_help("google", "OAuth stuck", str(screenshot))
 
 	@pytest.mark.asyncio
 	async def test_send_auth_help_missing_file(self, notifier: TelegramNotifier) -> None:
 		"""send_auth_help handles missing file gracefully."""
-		await notifier.send_auth_help("google", "/nonexistent/screenshot.png")
+		await notifier.send_auth_help("google", "test reason", "/nonexistent/screenshot.png")
 
 	@pytest.mark.asyncio
 	async def test_send_signup_request_approved(self, notifier: TelegramNotifier) -> None:
