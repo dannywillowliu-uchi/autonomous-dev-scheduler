@@ -53,3 +53,7 @@
 17:04:06 INFO autodev.swarm.planner: Parsed 1 decisions from planner (cycle 7)
 17:04:06 INFO autodev.swarm.controller: Planner waiting 120s: integration-final and test-gap-filler just spawned 30s ago. Both are working on the two remaining deliverables (integration wiring + test suite). Previous agents failed but these are fresh attempts. Give them time.
 17:06:06 INFO autodev.swarm.planner: Cycle 7: 1 decisions (wait), 1 ok, 0 failed
+17:06:36 INFO autodev.swarm.controller: Auto-committed task 'Wire all integrations into planner.py': 9a7d0fbb
+17:07:16 INFO autodev.swarm.planner: Parsed 1 decisions from planner (cycle 8)
+17:07:16 INFO autodev.swarm.controller: Planner waiting 90s: test-gap-filler is only 3.5min in, working on the last remaining task (comprehensive test suite). All 6/7 implementation tasks are complete. Let it finish.
+17:08:46 INFO autodev.swarm.planner: Cycle 8: 1 decisions (wait), 1 ok, 0 failed

@@ -129,3 +129,119 @@ class TestPromptEngineeringImprovements:
 	def test_cycle_prompt_mentions_file_conflicts(self) -> None:
 		"""Step-by-step block should ask about file conflicts."""
 		assert "file conflict" in CYCLE_PROMPT_TEMPLATE.lower() or "file conflicts" in CYCLE_PROMPT_TEMPLATE.lower()
+
+
+# --- Behavioral tests for two-step planning flow ---
+
+
+def _make_planner(**config_overrides: object) -> DrivingPlanner:
+	ctrl = MagicMock()
+	ctrl._config = MagicMock()
+	ctrl._config.target.resolved_path = "/tmp/test"
+	sc = SwarmConfig()
+	for k, v in config_overrides.items():
+		setattr(sc, k, v)
+	return DrivingPlanner(ctrl, sc)
+
+
+class TestTwoStepPlanBehavior:
+	"""Behavioral tests for the _two_step_plan method."""
+
+	@pytest.mark.asyncio
+	async def test_analysis_then_decision_flow(self) -> None:
+		"""Valid analysis followed by valid decisions -- both parsed correctly."""
+		planner = _make_planner()
+
+		analysis_json = json.dumps({
+			"status": "on_track",
+			"priorities": [{"focus": "finish tests", "reason": "coverage low", "impact": "high"}],
+			"risks": ["test flakiness"],
+			"resource_recommendation": "maintain",
+		})
+		decisions_json = json.dumps([
+			{
+				"type": "spawn",
+				"payload": {"role": "implementer", "name": "a1", "prompt": "Write tests for auth module"},
+				"priority": 1,
+			},
+		])
+
+		call_count = 0
+
+		async def mock_call_llm(prompt: str) -> str:
+			nonlocal call_count
+			call_count += 1
+			if call_count == 1:
+				return analysis_json
+			return decisions_json
+
+		planner._call_llm = mock_call_llm  # type: ignore[assignment]
+
+		result = await planner._two_step_plan("## State\nAll good")
+		assert result is not None
+		assert len(result) == 1
+		assert result[0].type == DecisionType.SPAWN
+		assert call_count == 2
+
+	@pytest.mark.asyncio
+	async def test_analysis_parse_failure_falls_back(self) -> None:
+		"""Invalid analysis JSON causes fallback (returns None)."""
+		planner = _make_planner()
+
+		async def mock_call_llm(prompt: str) -> str:
+			return "This is not valid JSON at all, just random text"
+
+		planner._call_llm = mock_call_llm  # type: ignore[assignment]
+
+		result = await planner._two_step_plan("## State\nSome state")
+		assert result is None
+
+	@pytest.mark.asyncio
+	async def test_analysis_invalid_status_falls_back(self) -> None:
+		"""Analysis with status 'banana' triggers fallback (returns None)."""
+		planner = _make_planner()
+
+		analysis_json = json.dumps({
+			"status": "banana",
+			"priorities": [],
+			"risks": [],
+			"resource_recommendation": "maintain",
+		})
+
+		async def mock_call_llm(prompt: str) -> str:
+			return analysis_json
+
+		planner._call_llm = mock_call_llm  # type: ignore[assignment]
+
+		result = await planner._two_step_plan("## State\nSome state")
+		assert result is None
+
+	@pytest.mark.asyncio
+	async def test_two_step_disabled_uses_single_call(self) -> None:
+		"""two_step_planning=False skips analysis step, makes only one LLM call."""
+		planner = _make_planner(two_step_planning=False)
+
+		# Mock controller methods used by _plan_cycle
+		planner._controller.render_state.return_value = "## State"
+		planner._controller.get_scaling_recommendation.return_value = {}
+
+		decisions_json = json.dumps([
+			{"type": "wait", "payload": {"duration": 30}},
+		])
+
+		call_count = 0
+
+		async def mock_call_llm(prompt: str) -> str:
+			nonlocal call_count
+			call_count += 1
+			return decisions_json
+
+		planner._call_llm = mock_call_llm  # type: ignore[assignment]
+
+		state = SwarmState(mission_objective="Test")
+		result = await planner._plan_cycle(state)
+
+		# Only one LLM call (single-call cycle prompt), no analysis step
+		assert call_count == 1
+		assert len(result) == 1
+		assert result[0].type == DecisionType.WAIT
