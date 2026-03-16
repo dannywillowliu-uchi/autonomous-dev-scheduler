@@ -14,3 +14,13 @@
 22:21:40 INFO autodev.swarm.controller: Spawned agent verify-state (debugger) for task 589b9b444ab4
 22:21:40 INFO autodev.swarm.controller: Planner waiting 90s: Wait for verify-state agent to complete health check before spawning the Telegram implementer. Need to know if controller.py/planner.py are in a clean state.
 22:23:10 INFO autodev.swarm.planner: Cycle 2: 2 decisions (spawn, wait), 2 ok, 0 failed
+22:24:10 INFO autodev.swarm.controller: Auto-committed task 'Fix Telegram notification issues (3 items)': 407e805c
+22:24:10 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:24:10 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:24:10 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:24:10 INFO httpx: HTTP Request: POST https://api.telegram.org/bot8685447637:AAGCWVSvkG9QrpUalBgVwhwi9KL0NvbCUrs/sendMessage "HTTP/1.1 200 OK"
+22:25:10 INFO autodev.swarm.planner: Parsed 4 decisions from planner (cycle 3)
+22:25:10 INFO autodev.swarm.controller: Spawned agent commit-telegram-fix (general) for task None
+22:25:10 INFO autodev.swarm.controller: Spawned agent investigate-test-delta (researcher) for task None
+22:25:10 INFO autodev.swarm.controller: Created task cf168220802f: Final directive close-out verification
+22:25:10 INFO autodev.swarm.controller: Planner waiting 90s: Give commit-telegram-fix and investigate-test-delta agents time to complete their work before making further decisions. Both tasks should finish within 2-3 minutes.
