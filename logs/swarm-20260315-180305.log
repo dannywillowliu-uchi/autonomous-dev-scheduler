@@ -79,3 +79,53 @@
 18:42:17 INFO autodev.swarm.controller: Adjusted swarm config: {'max_agents': 1}
 18:42:17 INFO autodev.swarm.controller: Spawned agent final-close-verifier (tester) for task 1cc001112043
 18:42:17 INFO autodev.swarm.planner: Cycle 17: 2 decisions (spawn, adjust), 2 ok, 0 failed
+18:44:18 INFO autodev.swarm.controller: Auto-committed task 'Final full-suite verification after items 5+6': 5345abfd
+18:44:47 INFO autodev.swarm.planner: Parsed 0 decisions from planner (cycle 18)
+18:44:47 INFO autodev.swarm.planner: Cycle 18: 0 decisions (), 0 ok, 0 failed
+18:44:47 INFO autodev.swarm.planner: Planner stopping: termination condition met
+18:44:47 INFO autodev.swarm.controller: Completion report written to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-report.md
+18:44:47 INFO autodev.swarm.controller: Trace review written to /Users/dannyliu/personal_projects/autonomous-development/.autodev-traces/2026-03-16_01-03-06/REVIEW.md
+18:44:47 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+18:44:47 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+18:44:47 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+18:44:47 INFO autodev.swarm.controller: Appended 10 trace recommendations to learnings
+18:44:47 WARNING autodev.swarm.controller: Failed to record metrics
+Traceback (most recent call last):
+  File "/Users/dannyliu/personal_projects/autonomous-development/src/autodev/swarm/controller.py", line 1436, in _record_metrics
+AttributeError: type object 'AgentStatus' has no attribute 'COMPLETED'
+18:44:47 INFO autodev.swarm.controller: Swarm controller cleaned up
+18:44:47 INFO autodev.swarm.planner: Driving planner stopped after 18 cycles
+Swarm mode: autonomous-development
+Objective: Implement tool call tracking for swarm agents.
+
+Read the full spec at docs/superpowers/specs/2026-03-15-tool-call-tracking-design.md before starting.
+
+Implementation priorities (in order):
+
+1. DB TABLES: In db.py, add tool_calls and mcp_status tables with CREATE TABLE IF NOT EXISTS migrations. Add methods: record_tool_call(), get_tool_usage(), get_tool_failure_summary(), record_mcp_status(), get_mcp_status(). All use existing conn pattern.
+
+2. STREAM-JSON PARSING: In swarm/controller.py, add _parse_stream_event() method that handles init (MCP status), assistant (tool_use start), user (tool_result completion), and result (final text) events. Track pending tool uses with timestamps for duration calculation. Extract MCP server name from tool names (mcp__server__tool -> server).
+
+3. REWRITE _stream_agent_output: Switch from text line parsing to JSON line parsing. Each stdout line is a JSON object. Parse with _parse_stream_event(). Still write raw lines to trace files. Store tool calls in self._agent_tool_calls dict. Add self._agent_final_results dict for stream-json result text.
+
+4. SWITCH OUTPUT FORMAT: Change build_claude_cmd call in _spawn_agent() to pass output_format="stream-json". Update monitor_agents() to extract AD_RESULT from self._agent_final_results first, falling back to self._agent_outputs.
+
+5. PLANNER VISIBILITY: In swarm/context.py, add _render_tool_failures() and _render_mcp_status() methods. Include in build_state() so the planner sees tool failures and broken MCP servers in its state text.
+
+6. CLI COMMAND: In cli.py, add autodev tool-usage command with --run-id, --failures-only, --top flags. Shows tool usage summary from DB.
+
+7. TESTS: test_tool_tracking.py covering stream event parsing (init, tool_use, tool_result, result, invalid JSON), DB methods (record, query, summary), MCP status capture, AD_RESULT extraction from stream-json. All existing tests must pass.
+
+Use .venv/bin/python for all Python commands.
+Run .venv/bin/python -m pytest tests/ -q to verify changes.
+Run .venv/bin/ruff check src/ tests/ to verify linting.
+Run .venv/bin/bandit -r src/ -lll -q to verify security.
+
+Use .venv/bin/python for all Python commands.
+Run .venv/bin/python -m pytest tests/ -q to verify changes.
+Run .venv/bin/ruff check src/ tests/ to verify linting.
+
+Planner model: opus
+Max agents: unbounded
+Live dashboard: http://127.0.0.1:8080?token=Iv3EpH4ZvHDr4M8-KVyfoWLBk6zBkQrO_Kh7q6YbZRI
+Swarm completed.
