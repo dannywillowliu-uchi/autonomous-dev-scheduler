@@ -1,4 +1,4 @@
-"""Web source scanners for blogs, GitHub trending, and arXiv listings."""
+"""Web source scanners for blogs, GitHub trending, arXiv, and X/Twitter profiles."""
 
 from __future__ import annotations
 
@@ -14,6 +14,16 @@ from autodev.intelligence.claude_code import AUTOMATION_KEYWORDS
 from autodev.intelligence.models import Finding
 
 logger = logging.getLogger(__name__)
+
+
+# X/Twitter accounts to monitor via Playwright scraping
+X_ACCOUNTS: list[dict[str, str]] = [
+	{
+		"handle": "bcherny",
+		"trust_level": "high",
+		"description": "Boris Cherny, creator of Claude Code at Anthropic",
+	},
+]
 
 
 @dataclass
@@ -78,6 +88,9 @@ class WebSourceScanner:
 			elif cfg.source_type == "papers":
 				tasks.append(self._scan_arxiv(client, cfg.trust_level))
 
+		# X/Twitter profile scanning (sequential, uses Playwright)
+		tasks.append(self._scan_x_accounts())
+
 		results = await asyncio.gather(*tasks, return_exceptions=True)
 		findings: list[Finding] = []
 		for result in results:
@@ -85,6 +98,94 @@ class WebSourceScanner:
 				logger.warning("Web source scan failed: %s", result)
 				continue
 			findings.extend(result)
+		return findings
+
+	async def _scan_x_accounts(self) -> list[Finding]:
+		"""Scrape X/Twitter profiles using Playwright for recent tweets."""
+		if not X_ACCOUNTS:
+			return []
+
+		findings: list[Finding] = []
+		try:
+			from playwright.async_api import async_playwright
+		except ImportError:
+			logger.warning("Playwright not installed, skipping X account scanning")
+			return []
+
+		pw = None
+		browser = None
+		try:
+			pw = await async_playwright().start()
+			browser = await pw.chromium.launch(headless=True)
+
+			for account in X_ACCOUNTS:
+				handle = account["handle"]
+				trust = account.get("trust_level", "high")
+				try:
+					page = await browser.new_page()
+					await page.goto(
+						f"https://x.com/{handle}",
+						timeout=30000,
+						wait_until="networkidle",
+					)
+					# Wait for tweets to render
+					await page.wait_for_timeout(3000)
+
+					# Extract tweets from article elements
+					articles = await page.query_selector_all("article")
+					for article in articles[:10]:
+						try:
+							text_el = await article.query_selector(
+								"[data-testid='tweetText']"
+							)
+							if not text_el:
+								continue
+							text = await text_el.inner_text()
+							if not text or len(text) < 10:
+								continue
+
+							# Extract tweet URL from time link
+							time_link = await article.query_selector("time")
+							tweet_url = f"https://x.com/{handle}"
+							tweet_date = ""
+							if time_link:
+								parent = await time_link.evaluate_handle(
+									"el => el.closest('a')"
+								)
+								if parent:
+									href = await parent.get_attribute("href")
+									if href:
+										tweet_url = f"https://x.com{href}"
+								tweet_date = await time_link.get_attribute(
+									"datetime"
+								) or ""
+
+							score = _score_relevance(text)
+							findings.append(Finding(
+								source=f"x_{handle}",
+								title=text[:120],
+								url=tweet_url,
+								summary=text[:300],
+								published_at=tweet_date or datetime.now(
+									timezone.utc
+								).isoformat(),
+								relevance_score=max(score, 0.5),
+								trust_level=trust,
+							))
+						except Exception:
+							continue
+					await page.close()
+				except Exception as exc:
+					logger.warning("X scan failed for @%s: %s", handle, exc)
+		except Exception as exc:
+			logger.warning("Playwright X scanning failed: %s", exc)
+		finally:
+			if browser:
+				await browser.close()
+			if pw:
+				await pw.stop()
+
+		logger.info("X scan: %d tweets from %d accounts", len(findings), len(X_ACCOUNTS))
 		return findings
 
 	async def _scan_blog(
