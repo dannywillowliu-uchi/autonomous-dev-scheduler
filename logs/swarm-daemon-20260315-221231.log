@@ -1,0 +1,16 @@
+=== Swarm daemon starting at Sun Mar 15 22:12:31 PDT 2026 ===
+22:12:31 INFO autodev.swarm.controller: Swarm controller initialized for team autodev-autonomous-development
+22:12:32 INFO httpx: HTTP Request: POST https://api.telegram.org/bot8685447637:AAGCWVSvkG9QrpUalBgVwhwi9KL0NvbCUrs/sendMessage "HTTP/1.1 200 OK"
+22:12:32 INFO autodev.swarm.planner: Driving planner started
+22:14:43 INFO autodev.swarm.planner: Parsed 3 decisions from planner (cycle 1)
+22:14:43 INFO autodev.swarm.controller: Created task 589b9b444ab4: Fix Telegram notification issues (3 items)
+22:14:43 INFO autodev.swarm.controller: Spawned agent telegram-fix (implementer) for task 589b9b444ab4
+22:14:43 INFO autodev.swarm.controller: Planner waiting 120s: Let the telegram-fix agent complete its work. These are focused changes in 2 files, should take 5-10 minutes.
+22:14:51 WARNING autodev.swarm.controller: Trace streaming error for telegram-fix: Separator is found, but chunk is longer than limit
+22:20:44 INFO autodev.swarm.controller: Re-queued task 589b9b444ab4 (Fix Telegram notification issues (3 items)), attempt 1/3
+22:20:44 INFO httpx: HTTP Request: POST https://api.telegram.org/bot8685447637:AAGCWVSvkG9QrpUalBgVwhwi9KL0NvbCUrs/sendMessage "HTTP/1.1 400 Bad Request"
+22:21:40 INFO autodev.swarm.planner: Parsed 2 decisions from planner (cycle 2)
+22:21:40 INFO autodev.swarm.controller: Auto-assigned spawn 'verify-state' to unclaimed task 589b9b444ab4 (Fix Telegram notification issues (3 items))
+22:21:40 INFO autodev.swarm.controller: Spawned agent verify-state (debugger) for task 589b9b444ab4
+22:21:40 INFO autodev.swarm.controller: Planner waiting 90s: Wait for verify-state agent to complete health check before spawning the Telegram implementer. Need to know if controller.py/planner.py are in a clean state.
+22:23:10 INFO autodev.swarm.planner: Cycle 2: 2 decisions (spawn, wait), 2 ok, 0 failed

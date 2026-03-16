@@ -75,6 +75,7 @@ class DrivingPlanner:
 		self._evaluator = CycleEvaluator()
 		self._task_failure_counts: dict[str, list[str]] = {}
 		self._daemon_idling = False
+		self._last_directive_text: str | None = None
 
 		from autodev.swarm.learnings import SwarmLearnings
 		self._learnings = SwarmLearnings(
@@ -130,6 +131,10 @@ class DrivingPlanner:
 					if has_directive:
 						self._daemon_idling = False
 						logger.info("Daemon mode: new directive received, resuming planning")
+						directive_preview = (self._last_directive_text or "")[:200]
+						asyncio.create_task(self._controller._notify(
+							f"[autodev] New directive received: {directive_preview}"
+						))
 						decisions = await self._plan_cycle(state)
 						decisions = self._validate_decisions(decisions, state)
 						results = await self._controller.execute_decisions(decisions)
@@ -425,7 +430,8 @@ class DrivingPlanner:
 			messages = json.loads(inbox_path.read_text())
 			for msg in messages:
 				if msg.get("type") == "directive":
-					logger.info("Found directive: %s", msg.get("text", "")[:100])
+					self._last_directive_text = msg.get("text", "")
+					logger.info("Found directive: %s", self._last_directive_text[:100])
 					return True
 		except Exception:
 			pass
@@ -493,6 +499,9 @@ class DrivingPlanner:
 				if not self._daemon_idling:
 					logger.info("Daemon mode: all tasks complete, idling for new directives")
 					self._daemon_idling = True
+					asyncio.create_task(self._controller._notify(
+						"[autodev] Swarm idling -- waiting for new directives"
+					))
 				return False
 			return True
 		if self._daemon_idling:

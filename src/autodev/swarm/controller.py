@@ -86,6 +86,7 @@ class SwarmController:
 		self._agent_spawn_times: dict[str, str] = {}  # agent_id -> ISO timestamp
 		self._agent_tool_calls: dict[str, list[dict]] = {}  # agent_id -> tool calls
 		self._agent_final_results: dict[str, str] = {}  # agent_id -> stream-json result text
+		self._start_notified = False
 
 	async def _notify(self, message: str) -> None:
 		"""Send a Telegram notification if configured."""
@@ -157,8 +158,10 @@ class SwarmController:
 
 		self._running = True
 		logger.info("Swarm controller initialized for team %s", self._team_name)
-		objective = self._config.target.objective[:200]
-		await self._notify(f"[autodev] Swarm started: {objective}")
+		if not self._start_notified:
+			objective = self._config.target.objective[:200]
+			await self._notify(f"[autodev] Swarm started: {objective}")
+			self._start_notified = True
 
 	def build_state(self, core_test_results: dict[str, Any] | None = None) -> SwarmState:
 		"""Build current swarm state snapshot for the planner."""

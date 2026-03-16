@@ -50,3 +50,142 @@
 22:03:55 INFO autodev.swarm.controller: Planner waiting 90s: Waiting for verify-entire-config (confirming EntireConfig deletion landed correctly) and codebase-auditor (finishing bug audit from directive item 6). Both are doing useful, non-overlapping work. verify-entire-config is ~2min in, codebase-auditor is ~10min in and should be wrapping up.
 22:05:25 INFO autodev.swarm.planner: Cycle 4: 2 decisions (kill, wait), 2 ok, 0 failed
 22:05:55 INFO autodev.swarm.controller: Auto-committed task 'DB tables for tool call tracking': 54c21e83
+22:05:55 INFO autodev.swarm.controller: Auto-committed task 'Delete EntireConfig plumbing + fix build_claude_cmd': a5b8dc31
+22:05:55 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:05:55 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:05:55 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:05:56 INFO httpx: HTTP Request: POST https://api.telegram.org/bot8685447637:AAGCWVSvkG9QrpUalBgVwhwi9KL0NvbCUrs/sendMessage "HTTP/1.1 200 OK"
+22:05:56 INFO httpx: HTTP Request: POST https://api.telegram.org/bot8685447637:AAGCWVSvkG9QrpUalBgVwhwi9KL0NvbCUrs/sendMessage "HTTP/1.1 200 OK"
+22:07:20 INFO autodev.swarm.planner: Parsed 1 decisions from planner (cycle 5)
+22:07:20 INFO autodev.swarm.controller: Planner waiting 90s: Codebase-auditor is the only remaining substantive work (human directive item 6). It has been running 12m45s and needs time to finish its scan. All 7/7 spec items and 5/6 directive items are verified complete with 3115 tests passing. Do NOT spawn new agents until auditor results are in.
+22:08:50 INFO autodev.swarm.planner: Cycle 5: 1 decisions (wait), 1 ok, 0 failed
+22:09:20 INFO autodev.swarm.controller: Re-queued task 1db4facf76be (Audit codebase for additional bugs and dead code), attempt 1/3
+22:09:21 INFO httpx: HTTP Request: POST https://api.telegram.org/bot8685447637:AAGCWVSvkG9QrpUalBgVwhwi9KL0NvbCUrs/sendMessage "HTTP/1.1 400 Bad Request"
+22:10:30 INFO autodev.swarm.planner: Parsed 2 decisions from planner (cycle 6)
+22:10:30 INFO autodev.swarm.controller: Auto-assigned spawn 'final-closeout-verifier' to unclaimed task 1db4facf76be (Audit codebase for additional bugs and dead code)
+22:10:30 INFO autodev.swarm.controller: Spawned agent final-closeout-verifier (reviewer) for task 1db4facf76be
+22:10:30 INFO autodev.swarm.controller: Planner waiting 90s: Allow the closeout verifier to check auditor changes and run the verification suite before making further decisions.
+22:12:00 INFO autodev.swarm.planner: Cycle 6: 2 decisions (spawn, wait), 2 ok, 0 failed
+22:12:30 ERROR autodev.swarm.planner: Planner loop error: 'PivotRecommendation' object has no attribute 'metric'
+Traceback (most recent call last):
+  File "/Users/dannyliu/personal_projects/autonomous-development/src/autodev/swarm/planner.py", line 139, in run
+    decisions = self._validate_decisions(decisions, state)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/dannyliu/personal_projects/autonomous-development/src/autodev/swarm/planner.py", line 554, in _plan_cycle
+    state_text += f"\n\n## Scaling Signal\nScale UP: {up} more agents recommended (pending >> active)"
+                                           ^^^^^^^^
+AttributeError: 'PivotRecommendation' object has no attribute 'metric'
+22:12:30 INFO autodev.swarm.controller: Killed agent final-closeout-verifier: swarm shutdown
+22:12:30 INFO autodev.swarm.controller: Completion report written to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-report.md
+22:12:30 INFO autodev.swarm.controller: Trace review written to /Users/dannyliu/personal_projects/autonomous-development/.autodev-traces/2026-03-16_04-51-36/REVIEW.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+22:12:30 INFO autodev.swarm.controller: Appended 35 trace recommendations to learnings
+22:12:30 WARNING autodev.swarm.controller: Failed to record metrics
+Traceback (most recent call last):
+  File "/Users/dannyliu/personal_projects/autonomous-development/src/autodev/swarm/planner.py", line 139, in run
+    decisions = self._validate_decisions(decisions, state)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/dannyliu/personal_projects/autonomous-development/src/autodev/swarm/planner.py", line 554, in _plan_cycle
+    state_text += f"\n\n## Scaling Signal\nScale UP: {up} more agents recommended (pending >> active)"
+                                           ^^^^^^^^
+AttributeError: 'PivotRecommendation' object has no attribute 'metric'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/dannyliu/personal_projects/autonomous-development/src/autodev/swarm/controller.py", line 1566, in _record_metrics
+    run_id=self._run_id,
+                    ^^^^
+AttributeError: type object 'AgentStatus' has no attribute 'COMPLETED'
+22:12:31 INFO httpx: HTTP Request: POST https://api.telegram.org/bot8685447637:AAGCWVSvkG9QrpUalBgVwhwi9KL0NvbCUrs/sendMessage "HTTP/1.1 200 OK"
+22:12:31 INFO autodev.swarm.controller: Swarm controller cleaned up
+22:12:31 INFO autodev.swarm.planner: Driving planner stopped after 7 cycles
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/dannyliu/personal_projects/autonomous-development/src/autodev/__main__.py", line 6, in <module>
+    main()
+    ~~~~^^
+  File "/Users/dannyliu/personal_projects/autonomous-development/src/autodev/cli.py", line 1528, in main
+    return handler(args)
+  File "/Users/dannyliu/personal_projects/autonomous-development/src/autodev/cli.py", line 1150, in cmd_swarm
+    asyncio.run(_run())
+    ~~~~~~~~~~~^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.2/Frameworks/Python.framework/Versions/3.14/lib/python3.14/asyncio/runners.py", line 204, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.2/Frameworks/Python.framework/Versions/3.14/lib/python3.14/asyncio/runners.py", line 127, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.2/Frameworks/Python.framework/Versions/3.14/lib/python3.14/asyncio/base_events.py", line 719, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/dannyliu/personal_projects/autonomous-development/src/autodev/cli.py", line 1148, in _run
+    await planner.run(core_test_runner=core_test_runner)
+  File "/Users/dannyliu/personal_projects/autonomous-development/src/autodev/swarm/planner.py", line 139, in run
+    decisions = self._validate_decisions(decisions, state)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/dannyliu/personal_projects/autonomous-development/src/autodev/swarm/planner.py", line 554, in _plan_cycle
+    state_text += f"\n\n## Scaling Signal\nScale UP: {up} more agents recommended (pending >> active)"
+                                           ^^^^^^^^
+AttributeError: 'PivotRecommendation' object has no attribute 'metric'
+Swarm mode: autonomous-development
+Objective: Implement tool call tracking for swarm agents.
+
+Read the full spec at docs/superpowers/specs/2026-03-15-tool-call-tracking-design.md before starting.
+
+Implementation priorities (in order):
+
+1. DB TABLES: In db.py, add tool_calls and mcp_status tables with CREATE TABLE IF NOT EXISTS migrations. Add methods: record_tool_call(), get_tool_usage(), get_tool_failure_summary(), record_mcp_status(), get_mcp_status(). All use existing conn pattern.
+
+2. STREAM-JSON PARSING: In swarm/controller.py, add _parse_stream_event() method that handles init (MCP status), assistant (tool_use start), user (tool_result completion), and result (final text) events. Track pending tool uses with timestamps for duration calculation. Extract MCP server name from tool names (mcp__server__tool -> server).
+
+3. REWRITE _stream_agent_output: Switch from text line parsing to JSON line parsing. Each stdout line is a JSON object. Parse with _parse_stream_event(). Still write raw lines to trace files. Store tool calls in self._agent_tool_calls dict. Add self._agent_final_results dict for stream-json result text.
+
+4. SWITCH OUTPUT FORMAT: Change build_claude_cmd call in _spawn_agent() to pass output_format="stream-json". Update monitor_agents() to extract AD_RESULT from self._agent_final_results first, falling back to self._agent_outputs.
+
+5. PLANNER VISIBILITY: In swarm/context.py, add _render_tool_failures() and _render_mcp_status() methods. Include in build_state() so the planner sees tool failures and broken MCP servers in its state text.
+
+6. CLI COMMAND: In cli.py, add autodev tool-usage command with --run-id, --failures-only, --top flags. Shows tool usage summary from DB.
+
+7. TESTS: test_tool_tracking.py covering stream event parsing (init, tool_use, tool_result, result, invalid JSON), DB methods (record, query, summary), MCP status capture, AD_RESULT extraction from stream-json. All existing tests must pass.
+
+Use .venv/bin/python for all Python commands.
+Run .venv/bin/python -m pytest tests/ -q to verify changes.
+Run .venv/bin/ruff check src/ tests/ to verify linting.
+Run .venv/bin/bandit -r src/ -lll -q to verify security.
+
+Use .venv/bin/python for all Python commands.
+Run .venv/bin/python -m pytest tests/ -q to verify changes.
+Run .venv/bin/ruff check src/ tests/ to verify linting.
+
+Planner model: opus
+Max agents: unbounded
