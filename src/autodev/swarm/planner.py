@@ -11,6 +11,7 @@ import json
 import logging
 from collections import deque
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from autodev.swarm.evaluator import CycleEvaluator
@@ -124,8 +125,17 @@ class DrivingPlanner:
 				# Grade the cycle (evaluator runs every iteration, not just planning cycles)
 				self._evaluator.grade_cycle(state)
 
-				# Check if we should plan (skip LLM when daemon is idling)
-				if not self._daemon_idling and self._should_plan(state, events):
+				# Check for new directives in inbox (even when idling)
+				if self._daemon_idling:
+					has_directive = self._check_inbox_for_directives(state)
+					if has_directive:
+						self._daemon_idling = False
+						logger.info("Daemon mode: new directive received, resuming planning")
+						decisions = await self._plan_cycle(state)
+						decisions = self._validate_decisions(decisions, state)
+						results = await self._controller.execute_decisions(decisions)
+						self._log_cycle(decisions, results)
+				elif self._should_plan(state, events):
 					decisions = await self._plan_cycle(state)
 					decisions = self._validate_decisions(decisions, state)
 					results = await self._controller.execute_decisions(decisions)
@@ -403,6 +413,25 @@ class DrivingPlanner:
 		self._completion_history.append(completed)
 		self._failure_history.append(failed)
 		self._cost_history.append(state.total_cost_usd)
+
+	def _check_inbox_for_directives(self, state: SwarmState) -> bool:
+		"""Check if the team inbox has new directive messages."""
+		try:
+			inbox_path = (
+				Path.home() / ".claude" / "teams"
+				/ self._controller.team_name / "inboxes" / "team-lead.json"
+			)
+			if not inbox_path.exists():
+				return False
+			import json
+			messages = json.loads(inbox_path.read_text())
+			for msg in messages:
+				if msg.get("type") == "directive":
+					logger.info("Found directive: %s", msg.get("text", "")[:100])
+					return True
+		except Exception:
+			pass
+		return False
 
 	def _should_plan(
 		self, state: SwarmState, events: list[dict[str, Any]]
