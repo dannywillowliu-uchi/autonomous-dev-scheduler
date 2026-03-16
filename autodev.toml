@@ -39,8 +39,8 @@ setup_command = "uv sync --extra dev"
 setup_timeout = 120
 
 [notifications.telegram]
-bot_token = "REDACTED_TOKEN"
-chat_id = "7050177799"
+bot_token = ""
+chat_id = ""
 on_heartbeat = true
 on_merge_fail = true
 on_mission_end = true
