@@ -6,8 +6,14 @@ Autonomous development framework. Spawns a driving planner that continuously dis
 
 Before ANY commit, run:
 ```
-.venv/bin/python -m pytest -q && .venv/bin/ruff check src/ tests/
+.venv/bin/python -m pytest -q && .venv/bin/ruff check src/ tests/ && .venv/bin/bandit -r src/ -lll -q
 ```
+
+## Review Requirements
+
+- **Worker agents**: Every worker's output MUST be reviewed before it is accepted. After a worker completes a task, a separate review agent (or the planner) must verify the changes are correct, secure, and consistent with the codebase before committing. Workers should NOT self-approve.
+- **Planner decisions**: The planner's task decomposition and agent assignments must be validated by the decision validation gate before execution. Two-step planning (analysis -> gate -> decisions) is enabled by default to catch reasoning errors before they become costly agent spawns.
+- **No unreviewed commits**: Code that has not been verified by at least one entity other than its author (whether agent or human) should not be committed to main.
 
 ## Architecture
 
