@@ -2211,7 +2211,7 @@ class TestRunFixupSession:
 
 		mgr._run_command.assert_awaited_once()
 		cmd = mgr._run_command.call_args[0][0]
-		assert cmd[0] == "claude"
+		assert cmd[0].endswith("claude")
 		assert "-p" in cmd
 		assert "--output-format" in cmd
 		assert "text" in cmd
@@ -2250,7 +2250,7 @@ class TestRunFixupSession:
 			await mgr._zfc_generate_fixup_strategies("test failure", 3)
 
 		cmd_args = mock_exec.call_args[0]
-		assert cmd_args[0] == "claude"
+		assert cmd_args[0].endswith("claude")
 		assert "--mcp-config" in cmd_args
 		assert "/tmp/mcp.json" in cmd_args
 		assert "--max-turns" in cmd_args

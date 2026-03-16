@@ -818,7 +818,8 @@ class TestBuildClaudeCmd:
 		"""Basic command with just model."""
 		cfg = _build_cmd_config()
 		cmd = build_claude_cmd(cfg, model="sonnet")
-		assert cmd == ["claude", "-p", "--output-format", "text", "--model", "sonnet"]
+		assert cmd[0].endswith("claude")
+		assert cmd[1:] == ["-p", "--output-format", "text", "--model", "sonnet"]
 
 	def test_with_budget(self) -> None:
 		cmd = build_claude_cmd(_build_cmd_config(), model="opus", budget=5.0)

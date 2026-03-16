@@ -295,7 +295,7 @@ class TestInvokePlannerLlm:
 
 		mock_exec.assert_called_once()
 		call_args = mock_exec.call_args
-		assert call_args[0][0] == "claude"
+		assert call_args[0][0].endswith("claude")
 		assert call_args[0][1] == "-p"
 		assert call_args[1].get("stdin") is not None
 		comm_call = mock_proc.communicate.call_args

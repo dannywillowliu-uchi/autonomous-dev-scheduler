@@ -17,3 +17,18 @@
 21:53:10 INFO autodev.swarm.controller: Spawned agent codebase-auditor (researcher) for task 1db4facf76be
 21:54:14 WARNING autodev.swarm.controller: Trace streaming error for entire-config-remover: Separator is not found, and chunk exceed the limit
 21:55:00 WARNING autodev.swarm.controller: Trace streaming error for codebase-auditor: Separator is found, but chunk is longer than limit
+21:55:40 INFO autodev.swarm.controller: Auto-committed task 'Delete dead code: checkpoint.py and adaptive_concurrency.py': c07d983e
+21:55:40 INFO httpx: HTTP Request: POST https://api.telegram.org/bot8685447637:AAGCWVSvkG9QrpUalBgVwhwi9KL0NvbCUrs/sendMessage "HTTP/1.1 400 Bad Request"
+21:57:39 INFO autodev.swarm.planner: Parsed 8 decisions from planner (cycle 2)
+21:57:39 WARNING autodev.swarm.planner: Validation gate rejected: Decision #5 (create_task): duplicate task ('tests for tool call tracking' ~87% similar to 'db tables for tool call tracking')
+21:57:39 INFO autodev.swarm.planner: Validation gate: 7/8 decisions passed, 1 rejected
+21:57:39 INFO autodev.swarm.controller: Planner waiting 90s: Current cleanup agents (entire-config-remover, codebase-auditor) are only 2.5 minutes old. Let them finish before assessing state. small-fixes already completed.
+21:59:09 INFO autodev.swarm.controller: Created task 3bb4504c87c7: DB tables for tool call tracking
+21:59:09 INFO autodev.swarm.controller: Created task 373b5a895c7e: Stream-JSON parsing and output rewrite in controller.py
+21:59:09 INFO autodev.swarm.controller: Created task d257485deea6: Planner visibility for tool failures and MCP status
+21:59:09 INFO autodev.swarm.controller: Created task 5184ecb13dab: CLI tool-usage command
+21:59:09 INFO autodev.swarm.controller: Spawned agent db-tool-tracking (implementer) for task 3bb4504c87c7
+21:59:09 INFO autodev.swarm.controller: Spawned agent spec-researcher (researcher) for task 373b5a895c7e
+21:59:09 INFO autodev.swarm.planner: Cycle 2: 7 decisions (wait, create_task, create_task, create_task, create_task, spawn, spawn), 7 ok, 0 failed
+21:59:22 WARNING autodev.swarm.controller: Trace streaming error for spec-researcher: Separator is found, but chunk is longer than limit
+21:59:39 WARNING autodev.swarm.controller: AD_RESULT JSON parse failed: Expecting value: line 1 column 1 (char 0)

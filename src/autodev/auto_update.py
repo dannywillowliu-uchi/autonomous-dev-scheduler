@@ -312,7 +312,6 @@ class AutoUpdatePipeline:
 			if isinstance(result, dict) and "result" in result:
 				inner = result["result"]
 				if isinstance(inner, str):
-					import re
 					json_match = re.search(r"\{[^{}]*\"approved\"[^{}]*\}", inner)
 					if json_match:
 						return json.loads(json_match.group())

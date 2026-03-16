@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections import deque
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -74,8 +75,6 @@ class DrivingPlanner:
 		self._evaluator = CycleEvaluator()
 		self._task_failure_counts: dict[str, list[str]] = {}
 		self._daemon_idling = False
-
-		from pathlib import Path
 
 		from autodev.swarm.learnings import SwarmLearnings
 		self._learnings = SwarmLearnings(
@@ -423,7 +422,6 @@ class DrivingPlanner:
 			)
 			if not inbox_path.exists():
 				return False
-			import json
 			messages = json.loads(inbox_path.read_text())
 			for msg in messages:
 				if msg.get("type") == "directive":
@@ -437,8 +435,6 @@ class DrivingPlanner:
 		self, state: SwarmState, events: list[dict[str, Any]]
 	) -> bool:
 		"""Decide whether to run a planning cycle."""
-		import time
-
 		# Enforce minimum interval between cycles, with exponential backoff
 		# on consecutive parse failures to avoid burning credits
 		elapsed = time.monotonic() - self._last_plan_time
@@ -508,7 +504,6 @@ class DrivingPlanner:
 		self, state: SwarmState
 	) -> list[PlannerDecision]:
 		"""Generate the initial task decomposition and agent spawns."""
-		import time
 		self._last_plan_time = time.monotonic()
 		self._cycle_count += 1
 		state_text = self._controller.render_state(state)
@@ -534,7 +529,6 @@ class DrivingPlanner:
 		self, state: SwarmState
 	) -> list[PlannerDecision]:
 		"""Run one planning cycle."""
-		import time
 		self._last_plan_time = time.monotonic()
 		self._cycle_count += 1
 		state_text = self._controller.render_state(state)
@@ -810,8 +804,6 @@ class DrivingPlanner:
 
 	def _write_state_file(self, state: SwarmState) -> None:
 		"""Write swarm state to a JSON file for the TUI dashboard."""
-		from pathlib import Path
-
 		state_path = Path(self._controller._config.target.resolved_path) / ".autodev-swarm-state.json"
 		try:
 			data = {
