@@ -25,6 +25,7 @@ def build_worker_prompt(
 	config: MissionConfig,
 	swarm_config: SwarmConfig,
 	capabilities: CapabilityManifest | None = None,
+	goal_context: str = "",
 ) -> str:
 	"""Build a full worker prompt with swarm communication context."""
 	sections = [task_prompt]
@@ -34,6 +35,7 @@ def build_worker_prompt(
 	sections.append(_inbox_section(agent, team_name))
 	sections.append(_file_conflict_section(agent, agents, tasks))
 	sections.append(_skills_section(config))
+	sections.append(_goal_fitness_section(goal_context))
 	sections.append(_verification_section(config))
 	sections.append(_capabilities_section(capabilities))
 	sections.append(_auth_request_section(agent, team_name))
@@ -181,6 +183,13 @@ def _skills_section(config: MissionConfig) -> str:
 	for s in skills:
 		lines.append(f"- /{s}")
 	return "\n".join(lines)
+
+
+def _goal_fitness_section(goal_context: str) -> str:
+	"""Return a goal fitness section if goal context is provided."""
+	if not goal_context:
+		return ""
+	return f"## Goal Fitness\n\n{goal_context}"
 
 
 def _verification_section(config: MissionConfig) -> str:

@@ -16,6 +16,7 @@ from autodev.swarm.models import (
 )
 from autodev.swarm.worker_prompt import (
 	_file_conflict_section,
+	_goal_fitness_section,
 	_identity_section,
 	_inbox_section,
 	_mcp_section,
@@ -247,3 +248,42 @@ class TestBuildWorkerPrompt:
 		)
 		assert "a2" in prompt
 		assert "tester" in prompt
+
+	def test_includes_goal_context(self, tmp_path: Path) -> None:
+		agent = _make_agent()
+		goal_ctx = "Goal: Quality\nComposite: 0.850 / 1.000\nGap: 0.150"
+		prompt = build_worker_prompt(
+			agent=agent,
+			task_prompt="Improve quality",
+			team_name="autodev-test",
+			agents=[agent],
+			tasks=[],
+			config=_make_config(tmp_path),
+			swarm_config=_make_swarm_config(),
+			goal_context=goal_ctx,
+		)
+		assert "## Goal Fitness" in prompt
+		assert "Composite: 0.850" in prompt
+
+	def test_no_goal_section_when_empty(self, tmp_path: Path) -> None:
+		agent = _make_agent()
+		prompt = build_worker_prompt(
+			agent=agent,
+			task_prompt="Do stuff",
+			team_name="autodev-test",
+			agents=[agent],
+			tasks=[],
+			config=_make_config(tmp_path),
+			swarm_config=_make_swarm_config(),
+		)
+		assert "## Goal Fitness" not in prompt
+
+
+class TestGoalFitnessSection:
+	def test_returns_section_with_content(self) -> None:
+		text = _goal_fitness_section("Goal: X\nScore: 0.5")
+		assert "## Goal Fitness" in text
+		assert "Goal: X" in text
+
+	def test_returns_empty_when_no_context(self) -> None:
+		assert _goal_fitness_section("") == ""

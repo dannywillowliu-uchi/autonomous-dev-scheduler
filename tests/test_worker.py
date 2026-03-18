@@ -8,12 +8,14 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from autodev.backends.base import WorkerBackend, WorkerHandle
-from autodev.config import MissionConfig, ModelsConfig
+from autodev.config import GoalConfig, MissionConfig, ModelsConfig
 from autodev.db import Database
+from autodev.goal import FitnessResult, GoalComponent, GoalSpec
 from autodev.models import Mission, Plan, Round, Worker, WorkUnit
 from autodev.worker import (
 	WorkerAgent,
 	_sanitize_braces,
+	build_goal_context,
 	load_specialist_template,
 	render_architect_prompt,
 	render_editor_prompt,
@@ -1461,3 +1463,102 @@ class TestPipInstallConstraint:
 		unit = WorkUnit(title="X", description="Y")
 		prompt = render_editor_prompt(unit, config, "/tmp/ws", architect_output="Do Z")
 		assert self._PIP_CONSTRAINT in prompt
+
+
+class TestBuildGoalContext:
+	def _make_spec(self, **overrides: object) -> GoalSpec:
+		defaults = dict(
+			name="Test Goal",
+			fitness_command="python measure.py",
+			target_score=1.0,
+		)
+		defaults.update(overrides)
+		return GoalSpec(**defaults)
+
+	def test_basic_output(self) -> None:
+		spec = self._make_spec()
+		fitness = FitnessResult(composite=0.75)
+		ctx = build_goal_context(spec, fitness)
+		assert "Test Goal" in ctx
+		assert "0.750" in ctx
+		assert "python measure.py" in ctx
+		assert "Fitness Protocol" in ctx
+		assert "re-measure fitness" in ctx
+
+	def test_component_breakdown(self) -> None:
+		spec = self._make_spec(components=[
+			GoalComponent(name="tests", command="pytest --tb=no -q", weight=0.6),
+			GoalComponent(name="lint", command="ruff check .", weight=0.4),
+		])
+		fitness = FitnessResult(
+			composite=0.8,
+			components={"tests": 0.9, "lint": 0.65},
+		)
+		ctx = build_goal_context(spec, fitness)
+		assert "tests" in ctx
+		assert "lint" in ctx
+		assert "0.900" in ctx
+		assert "0.650" in ctx
+		assert "pytest --tb=no -q" in ctx
+		assert "ruff check ." in ctx
+
+	def test_constraints_included(self) -> None:
+		spec = self._make_spec(constraints=["No new dependencies", "Keep backwards compat"])
+		fitness = FitnessResult(composite=0.5)
+		ctx = build_goal_context(spec, fitness)
+		assert "No new dependencies" in ctx
+		assert "Keep backwards compat" in ctx
+
+	def test_revert_instruction_default(self) -> None:
+		spec = self._make_spec()
+		fitness = FitnessResult(composite=0.5)
+		ctx = build_goal_context(spec, fitness)
+		assert "revert" in ctx.lower()
+
+	def test_revert_disabled_via_config(self) -> None:
+		spec = self._make_spec()
+		fitness = FitnessResult(composite=0.5)
+		goal_config = GoalConfig(revert_on_regression=False)
+		ctx = build_goal_context(spec, fitness, goal_config=goal_config)
+		assert "REGRESSES" not in ctx
+
+	def test_empty_on_failed_fitness(self) -> None:
+		spec = self._make_spec()
+		fitness = FitnessResult(success=False, error="timeout")
+		ctx = build_goal_context(spec, fitness)
+		assert ctx == ""
+
+
+class TestGoalContextInWorkerPrompts:
+	def test_render_worker_prompt_with_goal(self, config: MissionConfig) -> None:
+		unit = WorkUnit(title="Fix bug", description="Fix it")
+		prompt = render_worker_prompt(
+			unit, config, "/tmp/ws", "mc/unit-x",
+			goal_context="Goal: Perf\nComposite: 0.800 / 1.000",
+		)
+		assert "## Goal Fitness" in prompt
+		assert "Composite: 0.800" in prompt
+
+	def test_render_worker_prompt_without_goal(self, config: MissionConfig) -> None:
+		unit = WorkUnit(title="Fix bug", description="Fix it")
+		prompt = render_worker_prompt(unit, config, "/tmp/ws", "mc/unit-x")
+		assert "## Goal Fitness" not in prompt
+
+	def test_render_retry_prompt_with_goal(self, config: MissionConfig) -> None:
+		unit = WorkUnit(title="Fix bug", description="Fix it")
+		prompt = render_retry_worker_prompt(
+			unit, config, "/tmp/ws", "mc/unit-x",
+			failure_summary="failed", error_output="err", attempt_number=2,
+			goal_context="Goal: Perf\nComposite: 0.500 / 1.000",
+		)
+		assert "## Goal Fitness" in prompt
+		assert "Composite: 0.500" in prompt
+
+	def test_render_mission_prompt_with_goal(self, config: MissionConfig) -> None:
+		unit = WorkUnit(title="Fix bug", description="Fix it")
+		prompt = render_mission_worker_prompt(
+			unit, config, "/tmp/ws", "mc/unit-x",
+			goal_context="Goal: Quality\nComposite: 0.900 / 1.000",
+		)
+		assert "## Goal Fitness" in prompt
+		assert "Composite: 0.900" in prompt

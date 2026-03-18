@@ -8,8 +8,9 @@ import time
 from pathlib import Path
 
 from autodev.backends.base import WorkerBackend, WorkerHandle
-from autodev.config import MissionConfig, build_claude_cmd
+from autodev.config import GoalConfig, MissionConfig, build_claude_cmd
 from autodev.db import Database
+from autodev.goal import FitnessResult, GoalSpec, rank_actions, render_score_summary
 from autodev.models import Handoff, MergeRequest, Worker, WorkUnit, _now_iso
 from autodev.session import parse_mc_result, validate_mc_result
 
@@ -19,6 +20,56 @@ logger = logging.getLogger(__name__)
 def _sanitize_braces(s: str) -> str:
 	"""Escape literal braces so str.format() won't interpret them."""
 	return s.replace("{", "{{").replace("}", "}}")
+
+
+def build_goal_context(
+	spec: GoalSpec,
+	fitness: FitnessResult,
+	goal_config: GoalConfig | None = None,
+) -> str:
+	"""Build goal fitness context string for worker prompts.
+
+	Returns a prompt section containing the fitness command, current scores,
+	and instructions for measuring/reverting fitness.
+	Returns empty string if fitness measurement failed.
+	"""
+	if not fitness.success:
+		return ""
+
+	lines: list[str] = []
+	lines.append(render_score_summary(spec, fitness))
+
+	if spec.fitness_command:
+		lines.append(f"\nFitness command: `{spec.fitness_command}`")
+	if spec.components:
+		lines.append("Component commands:")
+		for comp in spec.components:
+			lines.append(f"  - {comp.name}: `{comp.command}`")
+
+	if spec.constraints:
+		lines.append("\nConstraints:")
+		for c in spec.constraints:
+			lines.append(f"  - {c}")
+
+	ranked = rank_actions(spec, fitness)
+	if ranked:
+		lines.append("\nRanked Actions (by estimated impact):")
+		for i, action in enumerate(ranked, 1):
+			files = f" [files: {', '.join(action.files_hint)}]" if action.files_hint else ""
+			lines.append(f"  {i}. [{action.estimated_impact}] {action.description}{files}")
+
+	lines.append("\n### Fitness Protocol")
+	lines.append("1. Before making changes, record the current fitness score")
+	lines.append("2. After completing changes, re-measure fitness")
+	lines.append("3. Include before/after scores in your AD_RESULT summary")
+
+	revert = True
+	if goal_config is not None:
+		revert = goal_config.revert_on_regression
+	if revert:
+		lines.append("4. If fitness REGRESSES (score decreases), revert your changes and try a different approach")
+
+	return "\n".join(lines)
 
 
 VALID_SPECIALISTS = {"test-writer", "refactorer", "debugger", "simplifier"}
@@ -212,8 +263,11 @@ def render_retry_worker_prompt(
 	lint_errors: int = 0,
 	type_errors: int = 0,
 	context: str = "",
+	goal_context: str = "",
 ) -> str:
 	"""Render the retry prompt template for a worker session with failure context."""
+	if goal_context:
+		context = (context or "") + f"\n\n## Goal Fitness\n{_sanitize_braces(goal_context)}\n"
 	verify_cmd = unit.verification_command or config.target.verification.command
 	return RETRY_WORKER_PROMPT_TEMPLATE.format(
 		target_name=config.target.name,
@@ -245,8 +299,11 @@ def render_worker_prompt(
 	lint_errors: int = 0,
 	type_errors: int = 0,
 	context: str = "",
+	goal_context: str = "",
 ) -> str:
 	"""Render the prompt template for a worker session."""
+	if goal_context:
+		context = (context or "") + f"\n\n## Goal Fitness\n{_sanitize_braces(goal_context)}\n"
 	verify_cmd = unit.verification_command or config.target.verification.command
 	return WORKER_PROMPT_TEMPLATE.format(
 		target_name=config.target.name,
@@ -607,6 +664,7 @@ def render_mission_worker_prompt(
 	overlap_warnings: str = "",
 	specialist_template: str = "",
 	project_root: Path | None = None,
+	goal_context: str = "",
 ) -> str:
 	"""Render constraint-based prompt for mission mode workers."""
 	verify_cmd = unit.verification_command or config.target.verification.command
@@ -626,6 +684,10 @@ def render_mission_worker_prompt(
 				context = (context or "") + snap_section
 		except Exception:
 			pass
+
+	# Append goal context if available
+	if goal_context:
+		context = (context or "") + f"\n\n## Goal Fitness\n{_sanitize_braces(goal_context)}\n"
 
 	if unit.unit_type == "research":
 		template = RESEARCH_WORKER_PROMPT_TEMPLATE
