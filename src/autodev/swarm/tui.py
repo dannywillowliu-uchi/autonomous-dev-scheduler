@@ -245,6 +245,83 @@ def _build_activity_feed(inbox_messages: list[dict], log_events: list[dict]) -> 
 	return Panel(lines, title="Activity Feed", border_style="magenta", padding=(0, 1))
 
 
+def _score_color(ratio: float, goal_met: bool = False) -> str:
+	"""Return color based on score/target ratio."""
+	if goal_met or ratio >= 1.0:
+		return "green"
+	if ratio >= 0.7:
+		return "yellow"
+	return "red"
+
+
+def _build_goal_panel(data: dict) -> Panel | None:
+	"""Build goal fitness score panel. Returns None if no goal data."""
+	goal_spec = data.get("goal_spec")
+	current_score = data.get("current_score")
+	if not goal_spec or not current_score:
+		return None
+
+	text = Text()
+	composite = current_score.get("composite", 0.0)
+	target = goal_spec.get("target_score", 1.0)
+	goal_met = data.get("goal_met", False)
+
+	# Large composite score
+	ratio = composite / target if target > 0 else 0
+	score_style = f"{_score_color(ratio, goal_met)} bold"
+	text.append(f"{composite:.1f}", style=score_style)
+	text.append(f" / {target:.1f}", style="dim")
+	if goal_met:
+		text.append("  MET", style="green bold")
+	text.append("\n")
+
+	# Per-component breakdown as bars
+	components = current_score.get("components", {})
+	spec_components = goal_spec.get("components", [])
+	if components and spec_components:
+		text.append("\n")
+		for comp in spec_components:
+			name = comp.get("name", "?")
+			weight = comp.get("weight", 1.0)
+			score = components.get(name, 0.0)
+
+			comp_ratio = score / target if target > 0 else 0
+			bar_color = _score_color(comp_ratio)
+
+			bar_width = 15
+			filled = max(0, min(int(comp_ratio * bar_width), bar_width))
+			bar = "\u2588" * filled + "\u2591" * (bar_width - filled)
+
+			text.append(f"  {name}", style="bold")
+			text.append(f" (w={weight})\n", style="dim")
+			text.append("  ")
+			text.append(bar, style=bar_color)
+			text.append(f" {score:.1f}\n", style=bar_color)
+
+	# Score trend sparkline
+	score_history = data.get("score_history", [])
+	if score_history and len(score_history) > 1:
+		text.append("\nTrend\n", style="bold")
+		sparkchars = " \u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
+		mn, mx = min(score_history), max(score_history)
+		for v in score_history[-15:]:
+			idx = 0 if mx == mn else int((v - mn) / (mx - mn) * (len(sparkchars) - 1))
+			text.append(sparkchars[idx], style="cyan")
+		text.append(f" ({score_history[-1]:.1f})\n", style="cyan")
+
+	# Last measurement timestamp
+	timestamp = current_score.get("timestamp", "")
+	if timestamp:
+		display_ts = timestamp
+		if "T" in timestamp:
+			display_ts = timestamp.split("T")[1][:8]
+		text.append(f"\nMeasured: {display_ts}", style="dim")
+
+	border_color = "green" if goal_met else "yellow"
+	title = f"Goal: {goal_spec.get('name', '?')}"
+	return Panel(text, title=title, border_style=border_color, padding=(0, 1))
+
+
 def _build_sidebar(data: dict) -> Panel:
 	text = Text()
 
@@ -309,11 +386,22 @@ def _build_layout(data: dict, inbox_messages: list[dict]) -> Layout:
 		Layout(name="tasks", ratio=1),
 	)
 
+	# Conditionally add goal panel to sidebar
+	goal_panel = _build_goal_panel(data)
+	if goal_panel:
+		layout["sidebar"].split_column(
+			Layout(name="goal", ratio=1),
+			Layout(name="signals", ratio=1),
+		)
+		layout["goal"].update(goal_panel)
+		layout["signals"].update(_build_sidebar(data))
+	else:
+		layout["sidebar"].update(_build_sidebar(data))
+
 	layout["header"].update(_build_header(data))
 	layout["agents"].update(_build_agents_table(data.get("agents", [])))
 	layout["tasks"].update(_build_tasks_table(data.get("tasks", [])))
 	layout["feed"].update(_build_activity_feed(inbox_messages, data.get("log_events", [])))
-	layout["sidebar"].update(_build_sidebar(data))
 
 	return layout
 
