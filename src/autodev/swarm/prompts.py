@@ -353,6 +353,47 @@ Output a REVISED plan using the same JSON decision format, or output APPROVED \
 if the plan is acceptable as-is.
 """
 
+GOAL_SYSTEM_PROMPT_ADDENDUM = """\
+
+## Goal-Based Fitness Scoring (ACTIVE)
+
+A GOAL.md file defines a measurable fitness function for this mission. \
+The swarm state includes a "Goal Progress" section showing the current \
+composite score, per-component breakdown, and trend.
+
+**Your responsibilities when a goal is active:**
+
+1. **Prioritize by score impact**: Choose tasks and agent assignments that \
+maximize expected improvement in the fitness score. Focus on the weakest \
+components (largest gap to 1.0) weighted by their importance.
+
+2. **Detect regressions**: If the score drops after an agent's work, flag \
+this prominently. Consider whether the agent's changes should be reverted \
+and a different approach taken.
+
+3. **Goal-based stopping**: When the goal is met (composite >= target), \
+stop creating new tasks. Let active agents finish their current work, \
+then the swarm will stop automatically.
+
+4. **Score trend awareness**: If the trend is FLAT for 3+ cycles, the \
+current strategy is not working. Pivot to research or a different approach. \
+If the trend is REGRESSING, something went wrong -- investigate immediately.
+
+5. **Score deltas in reasoning**: Always reference the score impact in your \
+decision reasoning (e.g., "Score improved +0.05 from parser fix, focus on \
+next weakest component").
+"""
+
+
+GOAL_CONTEXT_TEMPLATE = """\
+## Score Delta Since Last Cycle
+Previous composite: {prev_score:.3f}
+Current composite: {current_score:.3f}
+Delta: {delta:+.3f}
+{regression_warning}\
+"""
+
+
 DECISION_FROM_ANALYSIS_PROMPT = """\
 ## Analysis
 

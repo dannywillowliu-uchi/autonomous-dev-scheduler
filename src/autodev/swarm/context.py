@@ -23,6 +23,7 @@ from autodev.swarm.models import (
 if TYPE_CHECKING:
 	from autodev.config import MissionConfig
 	from autodev.db import Database
+	from autodev.goal import FitnessResult, GoalSpec
 	from autodev.swarm.capabilities import CapabilityManifest
 
 logger = logging.getLogger(__name__)
@@ -174,6 +175,11 @@ class ContextSynthesizer:
 		self._start_time: float | None = None
 		self._metric_history: dict[str, list[float]] = {}
 		self._stagnation_window = 5  # cycles to look back
+		# Goal fitness tracking
+		self._goal_spec: GoalSpec | None = None
+		self._goal_loaded = False
+		self._score_history: list[float] = []
+		self._max_score_history = 50
 
 	def build_state(
 		self,
@@ -198,7 +204,10 @@ class ContextSynthesizer:
 		stagnation = self._detect_stagnation(tasks, core_test_results, dead_agent_history)
 		files_in_flight = self._get_files_in_flight(agents, tasks)
 
-		return SwarmState(
+		# Goal fitness evaluation
+		goal_spec, current_fitness, goal_met = self._evaluate_goal_fitness()
+
+		state = SwarmState(
 			mission_objective=self._config.target.objective,
 			agents=agents,
 			tasks=tasks,
@@ -217,7 +226,12 @@ class ContextSynthesizer:
 			dead_agent_history=dead_agent_history or [],
 			recent_file_changes=recent_file_changes or {},
 			agent_costs=agent_costs or {},
+			goal_spec=goal_spec,
+			current_fitness=current_fitness,
+			score_history=list(self._score_history),
+			goal_met=goal_met,
 		)
+		return state
 
 	def get_agent_reports(self) -> dict[str, dict[str, Any]]:
 		"""Get the latest structured report from each agent.
@@ -270,6 +284,10 @@ class ContextSynthesizer:
 				"Treat these as highest priority and act on them immediately.\n"
 				+ "\n".join(dir_lines)
 			)
+
+		# Goal progress (when GOAL.md is active)
+		if state.goal_spec and state.current_fitness:
+			sections.append(self._render_goal_progress(state))
 
 		# Task progress summary
 		task_counts = self._count_task_statuses(state.tasks)
@@ -646,6 +664,111 @@ class ContextSynthesizer:
 				parts.append(f"  Discovery: {text}")
 			lines.append("\n".join(parts))
 		return lines
+
+	def _load_goal_spec(self) -> None:
+		"""Load GOAL.md from the target project root if present."""
+		if self._goal_loaded:
+			return
+		self._goal_loaded = True
+		goal_config = getattr(self._config, "goal", None)
+		if goal_config and not goal_config.enabled and not goal_config.auto_detect:
+			return
+		goal_filename = goal_config.goal_file if goal_config else "GOAL.md"
+		goal_path = Path(self._config.target.resolved_path) / goal_filename
+		if not goal_path.exists():
+			return
+		try:
+			from autodev.goal import parse_goal_file
+			self._goal_spec = parse_goal_file(goal_path)
+			logger.info("Loaded GOAL.md: %s (target=%.3f)", self._goal_spec.name, self._goal_spec.target_score)
+		except Exception as e:
+			logger.warning("Failed to parse GOAL.md: %s", e)
+
+	def _evaluate_goal_fitness(
+		self,
+	) -> tuple[GoalSpec | None, FitnessResult | None, bool]:
+		"""Run fitness evaluation if GOAL.md is present.
+
+		Returns (goal_spec, current_fitness, goal_met).
+		"""
+		self._load_goal_spec()
+		if self._goal_spec is None:
+			return None, None, False
+
+		goal_config = getattr(self._config, "goal", None)
+		timeout = goal_config.fitness_timeout if goal_config else 60
+
+		try:
+			from autodev.goal import check_stopping, run_fitness
+			cwd = Path(self._config.target.resolved_path)
+			result = run_fitness(self._goal_spec, cwd, timeout=timeout)
+			if result.success:
+				self._score_history.append(result.composite)
+				if len(self._score_history) > self._max_score_history:
+					self._score_history = self._score_history[-self._max_score_history:]
+			met = check_stopping(self._goal_spec, result)
+			return self._goal_spec, result, met
+		except Exception as e:
+			logger.warning("Fitness evaluation failed: %s", e)
+			return self._goal_spec, None, False
+
+	@staticmethod
+	def _render_goal_progress(state: SwarmState) -> str:
+		"""Render the Goal Progress section for the planner context."""
+		spec = state.goal_spec
+		fitness = state.current_fitness
+		if not spec or not fitness:
+			return ""
+
+		lines = ["## Goal Progress"]
+		lines.append(f"**Goal**: {spec.name}")
+		if spec.description:
+			lines.append(f"Description: {spec.description}")
+		lines.append(f"**Composite Score**: {fitness.composite:.3f} / {spec.target_score:.3f}")
+		gap = spec.target_score - fitness.composite
+		lines.append(f"**Gap**: {gap:.3f}")
+
+		if state.goal_met:
+			lines.append("**STATUS: GOAL MET** -- target score reached!")
+
+		if not fitness.success:
+			lines.append(f"**Fitness Error**: {fitness.error}")
+
+		# Per-component breakdown
+		if fitness.components:
+			lines.append("**Components**:")
+			for comp in spec.components:
+				score = fitness.components.get(comp.name, 0.0)
+				bar_len = int(min(score, 1.0) * 20)
+				bar = "#" * bar_len + "." * (20 - bar_len)
+				lines.append(f"  - {comp.name} (w={comp.weight}): [{bar}] {score:.3f}")
+
+		# Trend from score history
+		history = state.score_history
+		if len(history) >= 2:
+			recent_delta = history[-1] - history[-2]
+			if len(history) >= 3:
+				avg_delta = (history[-1] - history[-3]) / 2
+			else:
+				avg_delta = recent_delta
+
+			if avg_delta > 0.01:
+				trend = "IMPROVING"
+			elif avg_delta < -0.01:
+				trend = "REGRESSING"
+			else:
+				trend = "FLAT"
+			lines.append(
+				f"**Trend**: {trend} (last delta: {recent_delta:+.3f}, "
+				f"recent avg: {avg_delta:+.3f})"
+			)
+			lines.append(f"Score history (last 5): {[f'{s:.3f}' for s in history[-5:]]}")
+
+		# Constraints
+		if spec.constraints:
+			lines.append("**Constraints**: " + "; ".join(spec.constraints))
+
+		return "\n".join(lines)
 
 	def _get_recent_completions(self, tasks: list[SwarmTask]) -> list[dict[str, Any]]:
 		"""Get tasks completed since last cycle."""

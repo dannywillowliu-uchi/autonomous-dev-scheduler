@@ -27,6 +27,8 @@ from autodev.swarm.prompts import (
 	ANALYSIS_PROMPT_TEMPLATE,
 	CYCLE_PROMPT_TEMPLATE,
 	DECISION_FROM_ANALYSIS_PROMPT,
+	GOAL_CONTEXT_TEMPLATE,
+	GOAL_SYSTEM_PROMPT_ADDENDUM,
 	INITIAL_PLANNING_PROMPT,
 	SYSTEM_PROMPT,
 )
@@ -76,6 +78,8 @@ class DrivingPlanner:
 		self._task_failure_counts: dict[str, list[str]] = {}
 		self._daemon_idling = False
 		self._last_directive_text: str | None = None
+		self._prev_fitness_score: float | None = None
+		self._goal_met_announced = False
 
 		from autodev.swarm.learnings import SwarmLearnings
 		self._learnings = SwarmLearnings(
@@ -418,6 +422,57 @@ class DrivingPlanner:
 		self._failure_history.append(failed)
 		self._cost_history.append(state.total_cost_usd)
 
+		# Log goal fitness score
+		if state.current_fitness and state.current_fitness.success:
+			logger.info(
+				"Fitness score: %.3f / %.3f (goal_met=%s)",
+				state.current_fitness.composite,
+				state.goal_spec.target_score if state.goal_spec else 0,
+				state.goal_met,
+			)
+
+	def _inject_goal_delta(self, state_text: str, state: SwarmState) -> str:
+		"""Append goal score delta information to the state text."""
+		if not state.current_fitness or not state.current_fitness.success:
+			return state_text
+
+		current_score = state.current_fitness.composite
+		prev_score = self._prev_fitness_score
+		self._prev_fitness_score = current_score
+
+		if prev_score is not None:
+			delta = current_score - prev_score
+			regression_warning = ""
+			if delta < -0.01:
+				regression_warning = (
+					"**WARNING: Score REGRESSED!** Investigate what caused "
+					"the drop and consider reverting recent changes.\n"
+				)
+			goal_delta = GOAL_CONTEXT_TEMPLATE.format(
+				prev_score=prev_score,
+				current_score=current_score,
+				delta=delta,
+				regression_warning=regression_warning,
+			)
+			state_text += "\n\n" + goal_delta
+
+		# Skip new task creation when goal is met
+		if state.goal_met:
+			state_text += (
+				"\n\n## GOAL MET\n"
+				"The target score has been reached. Do NOT create new tasks. "
+				"Let active agents finish, then the swarm will stop."
+			)
+
+		return state_text
+
+	def _get_system_prompt(self, state: SwarmState | None = None) -> str:
+		"""Build the system prompt, including goal addendum if active."""
+		prompt = SYSTEM_PROMPT
+		if state and state.goal_spec:
+			prompt += GOAL_SYSTEM_PROMPT_ADDENDUM
+		return prompt
+
 	def _check_inbox_for_directives(self, state: SwarmState) -> bool:
 		"""Check if the team inbox has new directive messages."""
 		try:
@@ -483,6 +538,21 @@ class DrivingPlanner:
 			)
 			return True
 
+		# Goal-based stopping: target score reached and no active agents
+		if state.goal_met:
+			active = [a for a in state.agents if a.status == AgentStatus.WORKING]
+			if not active:
+				logger.info(
+					"Stopping: goal met (score %.3f >= target %.3f) and no active agents",
+					state.current_fitness.composite if state.current_fitness else 0,
+					state.goal_spec.target_score if state.goal_spec else 0,
+				)
+				return True
+			# Goal met but agents still working -- let them finish
+			if not self._goal_met_announced:
+				self._goal_met_announced = True
+				logger.info("Goal met! Waiting for %d active agent(s) to finish.", len(active))
+
 		active = [
 			a for a in state.agents if a.status == AgentStatus.WORKING
 		]
@@ -531,7 +601,7 @@ class DrivingPlanner:
 			max_agents_hint=max_hint,
 		)
 
-		response = await self._call_llm(prompt)
+		response = await self._call_llm(prompt, state=state)
 		return self._parse_decisions(response)
 
 	async def _plan_cycle(
@@ -541,6 +611,9 @@ class DrivingPlanner:
 		self._last_plan_time = time.monotonic()
 		self._cycle_count += 1
 		state_text = self._controller.render_state(state)
+
+		# Inject goal score delta if goal is active
+		state_text = self._inject_goal_delta(state_text, state)
 
 		pivots = analyze_stagnation(
 			cycle_number=self._cycle_count,
@@ -576,17 +649,17 @@ class DrivingPlanner:
 
 		# Two-step planning: analysis then decisions
 		if self._config.two_step_planning:
-			result = await self._two_step_plan(state_text)
+			result = await self._two_step_plan(state_text, state)
 			if result is not None:
 				return result
 			# Fall through to single-call on failure
 
 		prompt = CYCLE_PROMPT_TEMPLATE.format(state_text=state_text)
-		response = await self._call_llm(prompt)
+		response = await self._call_llm(prompt, state=state)
 		return self._parse_decisions(response)
 
 	async def _two_step_plan(
-		self, state_text: str
+		self, state_text: str, state: SwarmState | None = None,
 	) -> list[PlannerDecision] | None:
 		"""Two-step planning: analysis call then decision call.
 
@@ -594,7 +667,7 @@ class DrivingPlanner:
 		"""
 		# Step 1: Analysis
 		analysis_prompt = ANALYSIS_PROMPT_TEMPLATE.format(state_text=state_text)
-		analysis_response = await self._call_llm(analysis_prompt)
+		analysis_response = await self._call_llm(analysis_prompt, state=state)
 		analysis = self._parse_analysis(analysis_response)
 
 		# Gate: validate analysis is coherent
@@ -616,7 +689,7 @@ class DrivingPlanner:
 			state_summary=state_text[:2000],
 			decision_types_reference="(See system prompt for decision type reference)",
 		)
-		response = await self._call_llm(decision_prompt)
+		response = await self._call_llm(decision_prompt, state=state)
 		return self._parse_decisions(response)
 
 	def _parse_analysis(self, response: str) -> dict[str, Any] | None:
@@ -660,12 +733,13 @@ class DrivingPlanner:
 
 		return None
 
-	async def _call_llm(self, prompt: str) -> str:
+	async def _call_llm(self, prompt: str, state: SwarmState | None = None) -> str:
 		"""Call the planner LLM via Claude Code subprocess."""
 		from autodev.config import build_claude_cmd, claude_subprocess_env
 
 		config = self._controller._config
-		full_prompt = SYSTEM_PROMPT + "\n\n" + prompt
+		system = self._get_system_prompt(state)
+		full_prompt = system + "\n\n" + prompt
 
 		cmd = build_claude_cmd(
 			config,
@@ -860,6 +934,16 @@ class DrivingPlanner:
 				"failure_history": self._failure_history[-20:],
 				"log_events": self._log_events[-30:],
 			}
+			# Add goal fitness data if active
+			if state.goal_spec and state.current_fitness:
+				data["goal"] = {
+					"name": state.goal_spec.name,
+					"target": state.goal_spec.target_score,
+					"composite": state.current_fitness.composite,
+					"components": state.current_fitness.components,
+					"goal_met": state.goal_met,
+					"score_history": state.score_history[-20:],
+				}
 			state_path.write_text(json.dumps(data, indent=2))
 		except Exception as e:
 			logger.debug("Failed to write state file: %s", e)

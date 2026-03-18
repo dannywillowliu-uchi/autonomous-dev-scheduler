@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from autodev.models import _new_id, _now_iso
 
 if TYPE_CHECKING:
+	from autodev.goal import FitnessResult, GoalSpec
 	from autodev.swarm.capabilities import CapabilityManifest
 
 
@@ -166,3 +167,8 @@ class SwarmState:
 	dead_agent_history: list[SwarmAgent] = field(default_factory=list)
 	recent_file_changes: dict[str, list[str]] = field(default_factory=dict)
 	agent_costs: dict[str, float] = field(default_factory=dict)
+	# Goal-based fitness tracking (active when GOAL.md is present)
+	goal_spec: GoalSpec | None = None
+	current_fitness: FitnessResult | None = None
+	score_history: list[float] = field(default_factory=list)
+	goal_met: bool = False

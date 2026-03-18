@@ -1452,6 +1452,18 @@ class SwarmController:
 			"",
 		]
 
+		# Goal fitness summary
+		if self._context._goal_spec is not None:
+			lines.append("## Goal Fitness")
+			lines.append(f"- Goal: {self._context._goal_spec.name}")
+			lines.append(f"- Target: {self._context._goal_spec.target_score:.3f}")
+			if self._context._score_history:
+				final_score = self._context._score_history[-1]
+				lines.append(f"- Final score: {final_score:.3f}")
+				if final_score >= self._context._goal_spec.target_score:
+					lines.append("- **GOAL MET**")
+			lines.append("")
+
 		# Per-agent cost breakdown
 		if self._agent_costs:
 			lines.append("## Agent Cost Breakdown")
