@@ -58,6 +58,10 @@ def build_parser() -> argparse.ArgumentParser:
 		help="Maximum number of chained missions (default: 3)",
 	)
 	mission.add_argument(
+		"--goal", default=None,
+		help="Path to GOAL.md file (auto-detects in target root if not specified)",
+	)
+	mission.add_argument(
 		"--no-dashboard", action="store_true",
 		help="Disable the live dashboard (enabled by default)",
 	)
@@ -76,6 +80,10 @@ def build_parser() -> argparse.ArgumentParser:
 		help="Disable the live dashboard",
 	)
 	swarm.add_argument("--dashboard-port", type=int, default=8080, help="Dashboard port")
+	swarm.add_argument(
+		"--goal", default=None,
+		help="Path to GOAL.md file (auto-detects in target root if not specified)",
+	)
 
 	# autodev swarm-tui
 	swarm_tui = sub.add_parser("swarm-tui", help="Live TUI dashboard for swarm monitoring")
@@ -197,6 +205,18 @@ def build_parser() -> argparse.ArgumentParser:
 		help="Number of recent runs for trend analysis (default: 10)",
 	)
 	metrics.add_argument("--config", default=DEFAULT_CONFIG, help="Config file path")
+
+	# autodev goal-status
+	goal_status = sub.add_parser("goal-status", help="Show GOAL.md fitness status")
+	goal_status.add_argument("--config", default=DEFAULT_CONFIG, help="Config file path")
+	goal_status.add_argument(
+		"--goal", default=None,
+		help="Path to GOAL.md file (auto-detects in target root if not specified)",
+	)
+	goal_status.add_argument(
+		"--timeout", type=int, default=60,
+		help="Fitness command timeout in seconds (default: 60)",
+	)
 
 	# autodev tool-usage
 	tool_usage = sub.add_parser("tool-usage", help="Show tool usage summary")
@@ -415,6 +435,10 @@ def cmd_mission(args: argparse.Namespace) -> int:
 	"""Run the continuous mission mode (outer loop)."""
 	config = load_config(args.config)
 	db_path = _get_db_path(args.config)
+
+	if args.goal:
+		config.goal.enabled = True
+		config.goal.goal_file = args.goal
 
 	if args.workers is not None:
 		config.scheduler.parallel.num_workers = args.workers
@@ -1069,6 +1093,10 @@ def cmd_swarm(args: argparse.Namespace) -> int:
 	config = load_config(args.config)
 	db_path = _get_db_path(args.config)
 
+	if args.goal:
+		config.goal.enabled = True
+		config.goal.goal_file = args.goal
+
 	if not config.target.objective:
 		print("Error: target.objective must be set in config.")
 		return 1
@@ -1464,6 +1492,79 @@ def cmd_tool_usage(args: argparse.Namespace) -> int:
 	return 0
 
 
+def _resolve_goal_path(args: argparse.Namespace, config: MissionConfig) -> Path | None:
+	"""Resolve GOAL.md path from --goal flag, config, or auto-detection."""
+	if getattr(args, "goal", None):
+		p = Path(args.goal)
+		if not p.is_absolute():
+			p = Path.cwd() / p
+		return p.resolve()
+	goal_path = config.target.resolved_path / config.goal.goal_file
+	if goal_path.exists():
+		return goal_path
+	return None
+
+
+def cmd_goal_status(args: argparse.Namespace) -> int:
+	"""Show GOAL.md fitness status."""
+	from autodev.goal import check_stopping, parse_goal_file, run_fitness
+
+	config = load_config(args.config)
+	goal_path = _resolve_goal_path(args, config)
+
+	if goal_path is None or not goal_path.exists():
+		print("Error: no GOAL.md found. Specify --goal or place GOAL.md in target root.")
+		return 1
+
+	try:
+		spec = parse_goal_file(goal_path)
+	except ValueError as e:
+		print(f"Error parsing {goal_path}: {e}")
+		return 1
+
+	timeout = getattr(args, "timeout", 60)
+	cwd = config.target.resolved_path
+	result = run_fitness(spec, cwd, timeout=timeout)
+
+	print(f"Goal: {spec.name}")
+	if spec.description:
+		print(f"  {spec.description[:100]}")
+	print()
+
+	if not result.success:
+		print(f"Fitness evaluation failed: {result.error}")
+		return 1
+
+	print(f"Composite score: {result.composite:.3f} / {spec.target_score:.3f}")
+	gap = spec.target_score - result.composite
+	pct = (result.composite / spec.target_score * 100) if spec.target_score > 0 else 0
+	print(f"Progress: {pct:.1f}% (gap: {gap:.3f})")
+	print()
+
+	if result.components:
+		print("Components:")
+		for comp in spec.components:
+			score = result.components.get(comp.name, 0.0)
+			bar_len = int(score * 20)
+			bar = "#" * bar_len + "." * (20 - bar_len)
+			print(f"  {comp.name:<20} (w={comp.weight:<4}) [{bar}] {score:.3f}")
+		print()
+
+	stopped = check_stopping(
+		spec, result,
+		max_iterations=config.goal.max_iterations,
+	)
+	if stopped:
+		if result.composite >= spec.target_score:
+			print("Status: TARGET MET")
+		else:
+			print("Status: STOPPING CONDITION MET")
+	else:
+		print("Status: IN PROGRESS")
+
+	return 0
+
+
 COMMANDS = {
 	"status": cmd_status,
 	"history": cmd_history,
@@ -1490,6 +1591,7 @@ COMMANDS = {
 	"validate-config": cmd_validate_config,
 	"metrics": cmd_metrics,
 	"tool-usage": cmd_tool_usage,
+	"goal-status": cmd_goal_status,
 }
 
 
