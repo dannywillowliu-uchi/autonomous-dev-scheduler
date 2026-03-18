@@ -516,6 +516,21 @@ class SecurityConfig:
 
 
 @dataclass
+class GoalConfig:
+	"""GOAL.md fitness function settings."""
+
+	enabled: bool = False
+	goal_file: str = "GOAL.md"
+	auto_detect: bool = True
+	fitness_timeout: int = 60
+	revert_on_regression: bool = True
+	min_improvement: float = 0.01
+	target_score: float = 1.0
+	max_iterations: int = 0  # 0 = unlimited
+	log_file: str = ".goal-iterations.jsonl"
+
+
+@dataclass
 class MissionConfig:
 	"""Top-level autodev configuration."""
 
@@ -553,6 +568,7 @@ class MissionConfig:
 	speculation: SpeculationConfig = field(default_factory=SpeculationConfig)
 	core_tests: CoreTestsConfig = field(default_factory=CoreTestsConfig)
 	intelligence: IntelligenceConfig = field(default_factory=IntelligenceConfig)
+	goal: GoalConfig = field(default_factory=GoalConfig)
 
 
 def _build_dashboard(data: dict[str, Any]) -> DashboardConfig:
@@ -1071,6 +1087,29 @@ def _build_intelligence(data: dict[str, Any]) -> IntelligenceConfig:
 	return ic
 
 
+def _build_goal(data: dict[str, Any]) -> GoalConfig:
+	gc = GoalConfig()
+	if "enabled" in data:
+		gc.enabled = bool(data["enabled"])
+	if "goal_file" in data:
+		gc.goal_file = str(data["goal_file"])
+	if "auto_detect" in data:
+		gc.auto_detect = bool(data["auto_detect"])
+	if "fitness_timeout" in data:
+		gc.fitness_timeout = int(data["fitness_timeout"])
+	if "revert_on_regression" in data:
+		gc.revert_on_regression = bool(data["revert_on_regression"])
+	if "min_improvement" in data:
+		gc.min_improvement = float(data["min_improvement"])
+	if "target_score" in data:
+		gc.target_score = float(data["target_score"])
+	if "max_iterations" in data:
+		gc.max_iterations = int(data["max_iterations"])
+	if "log_file" in data:
+		gc.log_file = str(data["log_file"])
+	return gc
+
+
 def _build_episodic_memory(data: dict[str, Any]) -> EpisodicMemoryConfig:
 	ec = EpisodicMemoryConfig()
 	if "enabled" in data:
@@ -1390,6 +1429,13 @@ def load_config(path: str | Path) -> MissionConfig:
 		mc.core_tests = _build_core_tests(data["core_tests"])
 	if "intelligence" in data:
 		mc.intelligence = _build_intelligence(data["intelligence"])
+	if "goal" in data:
+		mc.goal = _build_goal(data["goal"])
+	# Auto-detect GOAL.md if auto_detect is enabled and goal is not explicitly enabled
+	if mc.goal.auto_detect and not mc.goal.enabled:
+		goal_path = mc.target.resolved_path / mc.goal.goal_file
+		if goal_path.exists():
+			mc.goal.enabled = True
 	# Compute resolved extra env keys on this config instance
 	mc._resolved_extra_env_keys = set(mc.security.extra_env_keys) - _ENV_DENYLIST
 	# Allow env vars as fallback for Telegram credentials
