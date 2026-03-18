@@ -48,6 +48,15 @@ from autodev.ema import ExponentialMovingAverage
 from autodev.event_stream import EventStream
 from autodev.feedback import get_worker_context
 from autodev.file_lock_registry import FileLockRegistry
+from autodev.goal import (
+	FitnessResult,
+	GoalSpec,
+	IterationLog,
+	check_stopping,
+	parse_goal_file,
+	render_score_summary,
+	run_fitness,
+)
 from autodev.green_branch import GreenBranchManager, UnitMergeResult
 from autodev.heartbeat import Heartbeat
 from autodev.json_utils import extract_json_from_text
@@ -276,6 +285,12 @@ class ContinuousController:
 			outlier_multiplier=budget.outlier_multiplier,
 			conservatism_base=budget.conservatism_base,
 		)
+
+		# Goal fitness tracking (optional, requires GOAL.md in target project)
+		self._goal_spec: GoalSpec | None = None
+		self._goal_iteration_log: IterationLog | None = None
+		self._goal_fitness_before: FitnessResult | None = None
+		self._goal_epoch_count: int = 0
 
 	def _task_done_callback(self, task: asyncio.Task[None]) -> None:
 		"""Callback for fire-and-forget tasks: discard from tracking set and log exceptions."""
@@ -815,6 +830,9 @@ class ContinuousController:
 			self._planner = DeliberativePlanner(self.config, self.db)
 		else:
 			self._planner = ContinuousPlanner(self.config, self.db)
+
+		# Goal fitness tracking (optional)
+		self._init_goal_tracking()
 
 		# Telegram notifier (optional)
 		tg = self.config.notifications.telegram
@@ -1367,6 +1385,9 @@ class ContinuousController:
 			except Exception as exc:
 				logger.debug("Failed to gather in-flight locked files: %s", exc)
 
+			# Build goal context for the planner
+			goal_ctx = self._build_goal_context()
+
 			try:
 				plan, units, epoch = await self._planner.get_next_units(
 					mission,
@@ -1375,6 +1396,7 @@ class ContinuousController:
 					knowledge_context=knowledge_context,
 					locked_files=locked_files or None,
 					batch_signals=batch_signals,
+					goal_context=goal_ctx,
 				)
 			except Exception as exc:
 				logger.error("Planner failed: %s", exc, exc_info=True)
@@ -1424,6 +1446,10 @@ class ContinuousController:
 			except Exception as exc:
 				logger.error("Failed to insert epoch: %s", exc, exc_info=True)
 
+			# Measure fitness before epoch (if goal tracking is active)
+			if self._goal_spec is not None:
+				self._goal_fitness_before = self._measure_fitness()
+
 			completions = await self._execute_batch(units, epoch, mission)
 
 			await self._process_batch(completions, mission, result)
@@ -1434,6 +1460,54 @@ class ContinuousController:
 					await self._green_branch.maybe_push(force=True)
 				except Exception as exc:
 					logger.warning("Batch push flush failed: %s", exc)
+
+			# Measure fitness after epoch and handle regression (if goal tracking active)
+			if self._goal_spec is not None and self._goal_fitness_before is not None:
+				self._goal_epoch_count += 1
+				fitness_after = self._measure_fitness()
+				if fitness_after is not None:
+					epoch_desc = f"epoch {self._goal_epoch_count}: {len(units)} units"
+					self._record_goal_iteration(self._goal_fitness_before, fitness_after, epoch_desc)
+
+					if fitness_after.success:
+						self._state_changelog.append(
+							f"- {_now_iso()} | fitness {fitness_after.composite:.3f}"
+							f" (delta {fitness_after.composite - self._goal_fitness_before.composite:+.3f})"
+						)
+
+					# Auto-revert on regression
+					if (
+						self.config.goal.revert_on_regression
+						and self._check_goal_regression(self._goal_fitness_before, fitness_after)
+						and self._green_branch is not None
+					):
+						logger.warning(
+							"Fitness regressed: %.3f -> %.3f, reverting epoch changes",
+							self._goal_fitness_before.composite, fitness_after.composite,
+						)
+						self._state_changelog.append(
+							f"- {_now_iso()} | REVERTED epoch {self._goal_epoch_count}"
+							f" (regression {self._goal_fitness_before.composite:.3f} -> {fitness_after.composite:.3f})"
+						)
+						# Revert each merged commit from this epoch
+						for comp in completions:
+							if comp.unit.status == "completed" and comp.unit.commit_hash:
+								try:
+									await self._green_branch._rollback_merge(
+										comp.unit.commit_hash, comp.unit.branch_name or "",
+									)
+								except Exception as exc:
+									logger.warning(
+										"Failed to revert unit %s: %s", comp.unit.id[:8], exc,
+									)
+
+					# Check if goal is met
+					if self._check_goal_met():
+						logger.info("Goal met: %s (score=%.3f)", self._goal_spec.name, fitness_after.composite)
+						result.objective_met = True
+						result.stopped_reason = "goal_met"
+						self.running = False
+						break
 
 			# Run core test suite for correctness feedback
 			core_test_results_str = None
@@ -3039,6 +3113,7 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 				overlap_warnings=overlap_warnings,
 				specialist_template=specialist_template,
 				project_root=self.config.target.resolved_path,
+				goal_context=self._build_worker_goal_context(),
 			)
 
 			budget = self.config.scheduler.budget.max_per_session_usd
@@ -3283,6 +3358,10 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 		if self._degradation.should_stop:
 			return "degradation_safe_stop"
 
+		# Goal fitness target reached
+		if self._check_goal_met():
+			return "goal_met"
+
 		return ""
 
 	def _check_signals(self, mission_id: str) -> str:
@@ -3423,6 +3502,153 @@ OBJECTIVE_CHECK:{{"met": false, "reason": "what still needs to be done"}}"""
 			degradation_status=self._degradation.get_status_dict(),
 			strategy=self._current_strategy,
 		)
+
+	# ------------------------------------------------------------------
+	# Goal fitness tracking
+	# ------------------------------------------------------------------
+
+	def _init_goal_tracking(self) -> None:
+		"""Initialize goal fitness tracking if GOAL.md exists in the target project."""
+		goal_cfg = self.config.goal
+		target_path = self.config.target.resolved_path
+
+		# Check explicit enable or auto-detect
+		goal_file = target_path / goal_cfg.goal_file
+		if goal_cfg.enabled or (goal_cfg.auto_detect and goal_file.exists()):
+			if not goal_file.exists():
+				logger.info("Goal tracking enabled but %s not found -- skipping", goal_file)
+				return
+			try:
+				self._goal_spec = parse_goal_file(goal_file)
+				log_path = target_path / goal_cfg.log_file
+				self._goal_iteration_log = IterationLog(log_path)
+				logger.info(
+					"Goal tracking initialized: %s (target=%.3f)",
+					self._goal_spec.name, self._goal_spec.target_score,
+				)
+			except Exception as exc:
+				logger.warning("Failed to parse %s -- goal tracking disabled: %s", goal_file, exc)
+
+	def _measure_fitness(self) -> FitnessResult | None:
+		"""Run fitness measurement. Returns None if goal tracking is not active."""
+		if self._goal_spec is None:
+			return None
+		target_path = self.config.target.resolved_path
+		timeout = self.config.goal.fitness_timeout
+		try:
+			result = run_fitness(self._goal_spec, target_path, timeout=timeout)
+			if not result.success:
+				logger.warning("Fitness measurement failed: %s", result.error)
+			return result
+		except Exception as exc:
+			logger.warning("Fitness measurement error: %s", exc)
+			return FitnessResult(success=False, error=str(exc))
+
+	def _record_goal_iteration(self, before: FitnessResult, after: FitnessResult, action: str) -> None:
+		"""Record a goal iteration (before/after fitness for an epoch)."""
+		if self._goal_iteration_log is None:
+			return
+		try:
+			self._goal_iteration_log.record(before, after, action)
+		except Exception as exc:
+			logger.warning("Failed to record goal iteration: %s", exc)
+
+	def _check_goal_met(self) -> bool:
+		"""Check if goal target score has been reached."""
+		if self._goal_spec is None:
+			return False
+		latest = self._goal_iteration_log.latest() if self._goal_iteration_log else None
+		if latest is None:
+			return False
+		return check_stopping(
+			self._goal_spec,
+			latest.after,
+			max_iterations=self.config.goal.max_iterations,
+			iteration_count=self._goal_epoch_count,
+		)
+
+	def _goal_score_summary(self) -> str:
+		"""Get a human-readable fitness score summary for MISSION_STATE.md."""
+		if self._goal_spec is None:
+			return ""
+		latest = self._goal_iteration_log.latest() if self._goal_iteration_log else None
+		if latest is None:
+			return ""
+		return render_score_summary(self._goal_spec, latest.after)
+
+	def _check_goal_regression(self, before: FitnessResult, after: FitnessResult) -> bool:
+		"""Check if fitness score regressed after an epoch."""
+		if not before.success or not after.success:
+			return False
+		min_improvement = self.config.goal.min_improvement
+		return after.composite < before.composite - min_improvement
+
+	def _build_goal_context(self) -> str:
+		"""Build goal fitness context string for the planner."""
+		if self._goal_spec is None:
+			return ""
+		sections: list[str] = []
+
+		# Current score summary
+		latest = self._goal_iteration_log.latest() if self._goal_iteration_log else None
+		if latest is not None:
+			sections.append(render_score_summary(self._goal_spec, latest.after))
+		else:
+			sections.append(f"Goal: {self._goal_spec.name} (no measurements yet)")
+			sections.append(f"Target: {self._goal_spec.target_score}")
+
+		# Score history trend
+		if self._goal_iteration_log:
+			trend = self._goal_iteration_log.trend()
+			if trend:
+				trend_str = " -> ".join(f"{s:.3f}" for s in trend[-10:])
+				sections.append(f"Trend: {trend_str}")
+
+		# Constraints
+		if self._goal_spec.constraints:
+			sections.append("Constraints:")
+			for c in self._goal_spec.constraints:
+				sections.append(f"  - {c}")
+
+		# Prioritization instruction
+		sections.append(
+			"\nPrioritize work units by expected fitness score impact. "
+			"Focus on components with the largest gaps first."
+		)
+
+		return "\n".join(sections)
+
+	def _build_worker_goal_context(self) -> str:
+		"""Build goal context for worker prompts (fitness command, constraints, actions)."""
+		if self._goal_spec is None:
+			return ""
+		spec = self._goal_spec
+		sections: list[str] = []
+
+		# Fitness self-check command
+		if spec.fitness_command:
+			sections.append(f"Fitness check command: {spec.fitness_command}")
+			sections.append("Run this after your changes to verify you haven't regressed the fitness score.")
+
+		# Current score
+		latest = self._goal_iteration_log.latest() if self._goal_iteration_log else None
+		if latest is not None:
+			sections.append(f"Current score: {latest.after.composite:.3f} / {spec.target_score:.3f}")
+
+		# Constraints
+		if spec.constraints:
+			sections.append("Constraints:")
+			for c in spec.constraints:
+				sections.append(f"  - {c}")
+
+		# Action catalog
+		if spec.actions:
+			sections.append("Available high-impact actions:")
+			for a in spec.actions:
+				files = f" [files: {', '.join(a.files_hint)}]" if a.files_hint else ""
+				sections.append(f"  - [{a.estimated_impact}] {a.description}{files}")
+
+		return "\n".join(sections)
 
 	def stop(self) -> None:
 		self.running = False

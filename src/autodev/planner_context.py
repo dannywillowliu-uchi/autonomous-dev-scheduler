@@ -205,6 +205,15 @@ def update_mission_state(
 	if core_test_results:
 		lines.append(core_test_results)
 
+	# Goal fitness summary (if provided)
+	if state_changelog:
+		fitness_entries = [e for e in state_changelog if "fitness" in e.lower() or "REVERTED" in e]
+		if fitness_entries:
+			lines.append("## Goal Fitness")
+			for entry in fitness_entries[-5:]:
+				lines.append(entry)
+			lines.append("")
+
 	try:
 		state_path.write_text("\n".join(lines) + "\n")
 	except OSError as exc:

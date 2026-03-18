@@ -137,6 +137,7 @@ class DeliberativePlanner:
 		feedback_context: str = "",
 		knowledge_context: str = "",
 		batch_signals: BatchSignals | None = None,
+		goal_context: str = "",
 		**kwargs: object,
 	) -> tuple[Plan, list[WorkUnit], Epoch]:
 		"""Run planner/critic deliberation loop. Returns same signature as ContinuousPlanner."""
@@ -152,6 +153,14 @@ class DeliberativePlanner:
 
 		# Gather project context for the planner
 		project_context = await self._gather_project_context(mission, knowledge_context)
+
+		# Inject goal fitness context if available
+		if goal_context:
+			project_context = (
+				(project_context + "\n\n### Goal Fitness\n" + goal_context)
+				if project_context
+				else ("### Goal Fitness\n" + goal_context)
+			)
 
 		# Inject project context into planner's feedback
 		enriched_feedback = feedback_context
