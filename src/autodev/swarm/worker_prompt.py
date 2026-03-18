@@ -42,6 +42,7 @@ def build_worker_prompt(
 	sections.append(_skill_creation_section())
 	sections.append(_mcp_section(swarm_config))
 	sections.append(_result_protocol_section())
+	sections.append(_final_reminder())
 	return "\n\n".join(s for s in sections if s)
 
 
@@ -296,13 +297,51 @@ def _mcp_section(swarm_config: SwarmConfig) -> str:
 
 
 def _result_protocol_section() -> str:
-	return """## Reporting Results
+	return """## CRITICAL: Reporting Results (AD_RESULT)
 
-When done, emit your result as the LAST line of output:
+**YOU MUST emit an AD_RESULT line before exiting.** If you do not, the controller \
+will mark your task as FAILED regardless of whether your work succeeded. This is \
+the ONLY way the system knows your task outcome.
+
+Emit this as the **LAST line** of your output (after all other work is done):
+
+**On success:**
 ```
-AD_RESULT:{"status":"completed|failed|blocked","commits":[],"summary":"...","files_changed":[],"discoveries":[],"concerns":[]}
+AD_RESULT:{"status":"completed","commits":[],\
+"summary":"what you did",\
+"files_changed":["src/foo.py"],\
+"discoveries":["key findings"],"concerns":[]}
 ```
 
-- **discoveries**: Findings other agents should know (root causes, patterns, insights)
-- **concerns**: Issues the planner should address (blockers, risks, design questions)
-- **files_changed**: All files you modified (for conflict tracking)"""
+**On failure:**
+```
+AD_RESULT:{"status":"failed","commits":[],\
+"summary":"why it failed","files_changed":[],\
+"discoveries":[],"concerns":["what went wrong"]}
+```
+
+**On blocker:**
+```
+AD_RESULT:{"status":"blocked","commits":[],\
+"summary":"what is blocking","files_changed":[],\
+"discoveries":[],"concerns":["blocker details"]}
+```
+
+Field reference:
+- **status**: REQUIRED. One of: `completed`, `failed`, `blocked`
+- **summary**: Brief description of what you did or why you failed
+- **files_changed**: All files you modified (for conflict tracking)
+- **discoveries**: Findings other agents should know
+- **concerns**: Issues the planner should address
+- **commits**: Any commit hashes you created
+
+**REMINDER: The very last thing you do before exiting MUST be printing the AD_RESULT line.**"""
+
+
+def _final_reminder() -> str:
+	return (
+		"---\n"
+		"**BEFORE YOU EXIT: You MUST print an AD_RESULT line "
+		"as your final output. Without it, your work will be "
+		"recorded as a failure even if you succeeded.**"
+	)
