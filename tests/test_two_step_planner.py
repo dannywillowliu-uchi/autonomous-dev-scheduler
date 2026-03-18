@@ -168,7 +168,7 @@ class TestTwoStepPlanBehavior:
 
 		call_count = 0
 
-		async def mock_call_llm(prompt: str) -> str:
+		async def mock_call_llm(prompt: str, state: object = None) -> str:
 			nonlocal call_count
 			call_count += 1
 			if call_count == 1:
@@ -188,7 +188,7 @@ class TestTwoStepPlanBehavior:
 		"""Invalid analysis JSON causes fallback (returns None)."""
 		planner = _make_planner()
 
-		async def mock_call_llm(prompt: str) -> str:
+		async def mock_call_llm(prompt: str, state: object = None) -> str:
 			return "This is not valid JSON at all, just random text"
 
 		planner._call_llm = mock_call_llm  # type: ignore[assignment]
@@ -208,7 +208,7 @@ class TestTwoStepPlanBehavior:
 			"resource_recommendation": "maintain",
 		})
 
-		async def mock_call_llm(prompt: str) -> str:
+		async def mock_call_llm(prompt: str, state: object = None) -> str:
 			return analysis_json
 
 		planner._call_llm = mock_call_llm  # type: ignore[assignment]
@@ -231,7 +231,7 @@ class TestTwoStepPlanBehavior:
 
 		call_count = 0
 
-		async def mock_call_llm(prompt: str) -> str:
+		async def mock_call_llm(prompt: str, state: object = None) -> str:
 			nonlocal call_count
 			call_count += 1
 			return decisions_json
