@@ -329,6 +329,18 @@ class TraceLogConfig:
 
 
 @dataclass
+class TracingNotesConfig:
+	"""Git notes tracing settings."""
+
+	enabled: bool = False
+	ref: str = "refs/notes/autodev-traces"
+	max_note_bytes: int = 4096
+	include_tool_calls: bool = True
+	include_discoveries: bool = True
+	include_files_changed: bool = True
+
+
+@dataclass
 class HITLGateConfig:
 	"""Configuration for a single HITL approval gate."""
 
@@ -557,6 +569,7 @@ class MissionConfig:
 	security: SecurityConfig = field(default_factory=SecurityConfig)
 	tracing: TracingConfig = field(default_factory=TracingConfig)
 	trace_log: TraceLogConfig = field(default_factory=TraceLogConfig)
+	tracing_notes: TracingNotesConfig = field(default_factory=TracingNotesConfig)
 	hitl: HITLConfig = field(default_factory=HITLConfig)
 	zfc: ZFCConfig = field(default_factory=ZFCConfig)
 	degradation: DegradationConfig = field(default_factory=DegradationConfig)
@@ -921,6 +934,23 @@ def _build_trace_log(data: dict[str, Any]) -> TraceLogConfig:
 	if "max_file_size" in data:
 		tc.max_file_size = int(data["max_file_size"])
 	return tc
+
+
+def _build_tracing_notes(data: dict[str, Any]) -> TracingNotesConfig:
+	tn = TracingNotesConfig()
+	if "enabled" in data:
+		tn.enabled = bool(data["enabled"])
+	if "ref" in data:
+		tn.ref = str(data["ref"])
+	if "max_note_bytes" in data:
+		tn.max_note_bytes = int(data["max_note_bytes"])
+	if "include_tool_calls" in data:
+		tn.include_tool_calls = bool(data["include_tool_calls"])
+	if "include_discoveries" in data:
+		tn.include_discoveries = bool(data["include_discoveries"])
+	if "include_files_changed" in data:
+		tn.include_files_changed = bool(data["include_files_changed"])
+	return tn
 
 
 def _build_security(data: dict[str, Any]) -> SecurityConfig:
@@ -1407,6 +1437,8 @@ def load_config(path: str | Path) -> MissionConfig:
 		mc.tracing = _build_tracing(data["tracing"])
 	if "trace_log" in data:
 		mc.trace_log = _build_trace_log(data["trace_log"])
+	if "tracing_notes" in data:
+		mc.tracing_notes = _build_tracing_notes(data["tracing_notes"])
 	if "hitl" in data:
 		mc.hitl = _build_hitl(data["hitl"])
 	if "zfc" in data:

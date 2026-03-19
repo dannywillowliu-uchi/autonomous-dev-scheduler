@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from autodev.session_trace import attach_git_note, extract_trace_summary
 from autodev.swarm.context import ContextSynthesizer
 from autodev.swarm.models import (
 	AgentRole,
@@ -982,6 +983,24 @@ class SwarmController:
 				commit_hash = None
 				if status == "completed" and task:
 					commit_hash = await self._auto_commit_task(task.title, agent.name)
+
+				# Attach trace note if enabled
+				if commit_hash and self._config.tracing_notes.enabled:
+					try:
+						note = extract_trace_summary(
+							ad_result=result,
+							agent_name=agent.name,
+							task_title=task.title if task else agent.name,
+							config=self._config.tracing_notes,
+						)
+						await attach_git_note(
+							commit_hash=commit_hash,
+							note_content=note,
+							ref=self._config.tracing_notes.ref,
+							cwd=str(self._config.target.resolved_path),
+						)
+					except Exception as exc:
+						logger.warning("Failed to attach trace note: %s", exc)
 
 				# Save trace to DB
 				trace_path = self._trace_dir / f"{agent.name}-{agent_id[:8]}.log"

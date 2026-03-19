@@ -225,6 +225,22 @@ def build_parser() -> argparse.ArgumentParser:
 	tool_usage.add_argument("--failures-only", action="store_true", help="Show only failed tool calls")
 	tool_usage.add_argument("--top", type=int, default=20, help="Show top N most-used tools")
 
+	# autodev traces
+	traces = sub.add_parser("traces", help="Manage git notes-based reasoning traces")
+	traces.add_argument("--config", default=DEFAULT_CONFIG, help="Config file path")
+	traces_sub = traces.add_subparsers(dest="traces_command")
+
+	traces_list = traces_sub.add_parser("list", help="List commits with trace notes")
+	traces_list.add_argument("--limit", type=int, default=20, help="Max notes to list")
+	traces_list.add_argument("--ref", default=None, help="Git notes ref (default from config)")
+
+	traces_show = traces_sub.add_parser("show", help="Show trace note for a commit")
+	traces_show.add_argument("commit", help="Commit hash")
+
+	traces_export = traces_sub.add_parser("export", help="Export all notes as JSON")
+	traces_export.add_argument("--output", default=None, help="Output file (default: stdout)")
+	traces_export.add_argument("--limit", type=int, default=100, help="Max notes to export")
+
 	return parser
 
 
@@ -1565,6 +1581,65 @@ def cmd_goal_status(args: argparse.Namespace) -> int:
 	return 0
 
 
+def cmd_traces(args: argparse.Namespace) -> int:
+	"""Manage git notes-based reasoning traces."""
+	import json as json_mod
+
+	config = load_config(args.config)
+	cwd = str(config.target.resolved_path)
+	ref = getattr(args, "ref", None) or config.tracing_notes.ref
+
+	from autodev.session_trace import get_git_note, list_git_notes
+
+	sub = getattr(args, "traces_command", None)
+	if not sub:
+		print("Usage: autodev traces {list,show,export}")
+		return 1
+
+	if sub == "list":
+		notes = asyncio.run(list_git_notes(ref=ref, cwd=cwd, limit=args.limit))
+		if not notes:
+			print("No trace notes found.")
+			return 0
+		print(f"{'Commit':<12} {'Date':<20}")
+		print("-" * 34)
+		for entry in notes:
+			commit = entry["commit"]
+			# Get commit date
+			result = subprocess.run(
+				["git", "log", "-1", "--format=%ci", commit],
+				capture_output=True, text=True, cwd=cwd,
+			)
+			date = result.stdout.strip() if result.returncode == 0 else "unknown"
+			print(f"{commit[:10]:<12} {date:<20}")
+		return 0
+
+	if sub == "show":
+		content = asyncio.run(get_git_note(commit_hash=args.commit, ref=ref, cwd=cwd))
+		if content is None:
+			print(f"No trace note found for commit {args.commit}")
+			return 1
+		print(content)
+		return 0
+
+	if sub == "export":
+		notes = asyncio.run(list_git_notes(ref=ref, cwd=cwd, limit=args.limit))
+		results = []
+		for entry in notes:
+			commit = entry["commit"]
+			content = asyncio.run(get_git_note(commit_hash=commit, ref=ref, cwd=cwd))
+			results.append({"commit": commit, "note": content})
+		output = json_mod.dumps(results, indent=2)
+		if args.output:
+			Path(args.output).write_text(output + "\n")
+			print(f"Exported {len(results)} notes to {args.output}")
+		else:
+			print(output)
+		return 0
+
+	return 1
+
+
 COMMANDS = {
 	"status": cmd_status,
 	"history": cmd_history,
@@ -1592,6 +1667,7 @@ COMMANDS = {
 	"metrics": cmd_metrics,
 	"tool-usage": cmd_tool_usage,
 	"goal-status": cmd_goal_status,
+	"traces": cmd_traces,
 }
 
 

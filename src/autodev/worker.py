@@ -1068,6 +1068,29 @@ class WorkerAgent:
 				unit.finished_at = _now_iso()
 				await self.db.locked_call("update_work_unit", unit)
 
+				# Attach git note with trace summary if enabled
+				if mc_result and self.config.tracing_notes.enabled:
+					try:
+						from autodev.session_trace import attach_git_note, extract_trace_summary
+
+						note_content = extract_trace_summary(
+							ad_result=mc_result,
+							agent_name=self.worker.id,
+							task_title=unit.title,
+							config=self.config.tracing_notes,
+						)
+						commits = mc_result.get("commits", [])
+						if isinstance(commits, list):
+							for commit in commits:
+								await attach_git_note(
+									commit_hash=str(commit),
+									note_content=note_content,
+									ref=self.config.tracing_notes.ref,
+									cwd=workspace_path,
+								)
+					except Exception:
+						logger.debug("Failed to attach trace note for unit %s", unit.id, exc_info=True)
+
 				# Submit merge request (atomic position assignment)
 				mr = MergeRequest(
 					work_unit_id=unit.id,
