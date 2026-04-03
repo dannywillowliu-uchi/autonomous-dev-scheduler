@@ -26,3 +26,15 @@
 23:54:44 INFO autodev.swarm.controller: Planner waiting 90s: Both active agents (db-tables-implementer on P1, controller-state-assessor on P3+P4) are only ~2 minutes old. They need time to work. No action warranted yet.
 23:56:14 INFO autodev.swarm.controller: Created task 90e30f2f4c5f: P5: Planner visibility - tool failures and MCP status in context
 23:56:14 INFO autodev.swarm.planner: Cycle 3: 2 decisions (wait, create_task), 2 ok, 0 failed
+23:56:44 INFO autodev.swarm.controller: Auto-committed task 'Rewrite _stream_agent_output + switch output format + fix monitor_agents': fa2c7b22
+23:56:45 INFO httpx: HTTP Request: POST https://api.telegram.org/bot8685447637:AAGCWVSvkG9QrpUalBgVwhwi9KL0NvbCUrs/sendMessage "HTTP/1.1 200 OK"
+23:56:46 INFO autodev.swarm.controller: Auto-pushed to origin/main
+23:56:46 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+23:56:46 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+23:56:46 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+23:56:46 INFO autodev.swarm.learnings: Added learning to /Users/dannyliu/personal_projects/autonomous-development/.autodev-swarm-learnings.md
+23:58:14 INFO autodev.swarm.planner: Parsed 2 decisions from planner (cycle 4)
+23:58:14 INFO autodev.swarm.controller: Planner waiting 90s: db-tables-implementer has been running ~5m on P1 (foundation for all other tasks). No evidence it's stuck -- give it time to finish. All downstream work depends on these DB tables.
+23:59:44 INFO autodev.swarm.controller: Auto-assigned spawn 'stream-json-researcher' to unclaimed task d6737f40a6cd (P2: Add _parse_stream_event() method to controller.py)
+23:59:44 INFO autodev.swarm.controller: Spawned agent stream-json-researcher (researcher) for task d6737f40a6cd
+23:59:44 INFO autodev.swarm.planner: Cycle 4: 2 decisions (wait, spawn), 2 ok, 0 failed

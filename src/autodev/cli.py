@@ -1493,7 +1493,7 @@ def cmd_tool_usage(args: argparse.Namespace) -> int:
 		print(f"{'Tool':<40} {'Failures':>8}  Last Error")
 		print("-" * 80)
 		for f in failures:
-			print(f"{f['tool_name']:<40} {f['failure_count']:>8}  {f['last_error'][:60]}")
+			print(f"{f['tool_name']:<40} {f['error_count']:>8}  {f['last_error'][:60]}")
 		return 0
 
 	usage = db.get_tool_usage(run_id=args.run_id, limit=args.top)

@@ -1,32 +1,21 @@
 {
   "version": 1,
   "run_id": "2026-04-03_06-39-00",
-  "timestamp": "2026-04-03T06:56:14.067777+00:00",
+  "timestamp": "2026-04-03T06:59:44.877847+00:00",
   "team_name": "autodev-autonomous-development",
   "config_hash": "ea822f3146b51db1",
   "start_commit": "e6397f519f50faae01d0094d76fcc0fc2a43ce82",
   "total_cost_usd": 0.0,
   "agent_costs": {},
   "agents": {
-    "c44306432529": {
-      "id": "c44306432529",
-      "name": "controller-rewrite",
-      "role": "implementer",
-      "status": "dead",
-      "current_task_id": "3de58b732253",
-      "spawned_at": "2026-04-03T06:42:11.160522+00:00",
-      "tasks_completed": 0,
-      "tasks_failed": 1,
-      "pid": null
-    },
     "e9c1f3dd313c": {
       "id": "e9c1f3dd313c",
       "name": "controller-state-assessor",
       "role": "debugger",
-      "status": "working",
+      "status": "dead",
       "current_task_id": "3de58b732253",
       "spawned_at": "2026-04-03T06:51:24.155678+00:00",
-      "tasks_completed": 0,
+      "tasks_completed": 1,
       "tasks_failed": 0,
       "pid": null
     },
@@ -39,7 +28,18 @@
       "spawned_at": "2026-04-03T06:51:24.157919+00:00",
       "tasks_completed": 0,
       "tasks_failed": 0,
-      "pid": 8167
+      "pid": null
+    },
+    "af7ff118df43": {
+      "id": "af7ff118df43",
+      "name": "stream-json-researcher",
+      "role": "researcher",
+      "status": "working",
+      "current_task_id": "d6737f40a6cd",
+      "spawned_at": "2026-04-03T06:59:44.868628+00:00",
+      "tasks_completed": 0,
+      "tasks_failed": 0,
+      "pid": 17153
     }
   },
   "tasks": {
@@ -48,15 +48,15 @@
       "title": "Rewrite _stream_agent_output + switch output format + fix monitor_agents",
       "description": "Three tightly coupled changes in src/autodev/swarm/controller.py:\n\n1. REWRITE _stream_agent_output (lines 1011-1051): Change from plain text accumulation to JSON line parsing. Each stdout line should be parsed with self._parse_stream_event(). Keep trace file writing (raw lines). Keep _agent_outputs accumulation for any non-JSON lines. Store tool calls in self._agent_tool_calls[agent_id] at the end. Track pending_tool_uses dict within the method. The spec's exact implementation is in docs/superpowers/specs/2026-03-15-tool-call-tracking-design.md section 4.\n\n2. SWITCH OUTPUT FORMAT (line 983): Change output_format='text' to output_format='stream-json' in _spawn_agent().\n\n3. FIX monitor_agents (lines 1154-1157): Currently line 1156 does `output = self._agent_outputs.pop(agent_id, '')` and line 1157 DISCARDS _agent_final_results. Reverse this: try _agent_final_results FIRST, fall back to _agent_outputs. Per spec section 6: `output = self._agent_final_results.pop(agent_id, '') or self._agent_outputs.pop(agent_id, '')`\n\nCRITICAL CONTEXT: A previous agent found that stream-json breaks AD_RESULT parsing when using the raw JSON stream (escaped quotes confuse the brace-counting parser). The solution is already in place: _parse_stream_event extracts clean result text from the 'result' event type and stores in _agent_final_results. The monitor_agents fix ensures we use that clean text for AD_RESULT parsing.\n\nAfter changes, run: .venv/bin/python -m pytest tests/test_tool_tracking.py -v && .venv/bin/python -m pytest tests/ -q --tb=short && .venv/bin/ruff check src/autodev/swarm/controller.py",
       "priority": 3,
-      "status": "claimed",
+      "status": "completed",
       "claimed_by": "e9c1f3dd313c",
       "depends_on": [],
       "files_hint": [
         "src/autodev/swarm/controller.py"
       ],
-      "attempt_count": 1,
+      "attempt_count": 2,
       "max_attempts": 3,
-      "result_summary": "Process exited (code 0) without emitting AD_RESULT"
+      "result_summary": "Reverted controller.py to committed version. The uncommitted changes re-introduced the stream-json output format bug (violating documented gotcha). Committed version already has the correct output_format=text fix from e6397f5."
     },
     "73999f4ee803": {
       "id": "73999f4ee803",
@@ -78,8 +78,8 @@
       "title": "P2: Add _parse_stream_event() method to controller.py",
       "description": "In src/autodev/swarm/controller.py, add a new method _parse_stream_event(self, agent_id: str, event: dict) that handles stream-json events.\n\nEvent types to handle:\n- 'init': Extract MCP server connection status from event data. Call db.record_mcp_status() for each server.\n- 'assistant' with content_block type 'tool_use': Record the start of a tool call. Store in self._pending_tool_uses[agent_id] with tool name, input, and start timestamp.\n- 'user' with tool_result: Match to pending tool_use by tool_use_id. Calculate duration. Call db.record_tool_call() with all fields. Extract MCP server name from tool name pattern mcp__server__tool -> server.\n- 'result': Store the final result text in self._agent_final_results[agent_id].\n- Invalid/unknown events: log warning, skip.\n\nAdd instance attributes in __init__: self._pending_tool_uses = {}, self._agent_final_results = {}, self._agent_tool_calls = {}\n\nRead the full spec at docs/superpowers/specs/2026-03-15-tool-call-tracking-design.md. File: src/autodev/swarm/controller.py ONLY. Do NOT modify _stream_agent_output or _spawn_agent yet.",
       "priority": 2,
-      "status": "pending",
-      "claimed_by": null,
+      "status": "claimed",
+      "claimed_by": "af7ff118df43",
       "depends_on": [],
       "files_hint": [
         "src/autodev/swarm/controller.py"
@@ -150,7 +150,7 @@
     }
   },
   "planner": {
-    "cycle_count": 3,
+    "cycle_count": 4,
     "test_history": [],
     "completion_history": [
       0,
@@ -167,9 +167,11 @@
       0,
       0,
       0,
-      0
+      0,
+      1
     ],
     "failure_history": [
+      0,
       0,
       0,
       0,
@@ -187,6 +189,7 @@
       0
     ],
     "cost_history": [
+      0.0,
       0.0,
       0.0,
       0.0,

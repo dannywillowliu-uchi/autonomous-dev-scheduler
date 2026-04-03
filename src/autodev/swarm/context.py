@@ -552,7 +552,7 @@ class ContextSynthesizer:
 			return ""
 		lines = ["## Tool Failures This Run"]
 		for f in failures:
-			lines.append(f"- {f['tool_name']}: {f['failure_count']} failures. Last error: {f['last_error'][:100]}")
+			lines.append(f"- {f['tool_name']}: {f['error_count']} failures. Last error: {f['last_error'][:100]}")
 		return "\n".join(lines)
 
 	def _render_mcp_status(self, run_id: str) -> str:

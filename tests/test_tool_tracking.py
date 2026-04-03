@@ -329,9 +329,9 @@ class TestDBToolTracking:
 
 		# Most failures first
 		assert summary[0]["tool_name"] == "Read"
-		assert summary[0]["failure_count"] == 3
+		assert summary[0]["error_count"] == 3
 		assert summary[1]["tool_name"] == "Write"
-		assert summary[1]["failure_count"] == 1
+		assert summary[1]["error_count"] == 1
 
 	def test_db_mcp_status(self, real_db: Database) -> None:
 		"""record_mcp_status and get_mcp_status should round-trip correctly."""
