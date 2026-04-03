@@ -83,3 +83,6 @@
 00:19:09 INFO autodev.swarm.controller: Planner waiting 90s: Both active agents (cli-tool-usage at 3.5min, p7-integration-tests at 2min) are young and working. P1-P5 already committed with 3321 tests passing. Let them finish before taking any action.
 00:20:39 INFO autodev.swarm.controller: Created task 850c00a71e59: Final verification and commit after P6+P7
 00:20:39 INFO autodev.swarm.planner: Cycle 9: 2 decisions (wait, create_task), 2 ok, 0 failed
+00:21:10 INFO autodev.swarm.controller: Auto-committed task 'P6: Add autodev tool-usage CLI command': dea1e07a
+00:21:10 INFO httpx: HTTP Request: POST https://api.telegram.org/bot8685447637:AAGCWVSvkG9QrpUalBgVwhwi9KL0NvbCUrs/sendMessage "HTTP/1.1 200 OK"
+00:21:11 INFO autodev.swarm.controller: Auto-pushed to origin/main
